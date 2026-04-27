@@ -40,16 +40,32 @@ export class ConnectionsService {
     }))
   }
 
+  private getRedirectUri(provider: string, overrideUri?: string): string {
+    if (overrideUri) return overrideUri
+    // ML requires a registered https:// URI — use the one registered in the ML app
+    if (provider === 'mercadolibre') {
+      return process.env.ML_REDIRECT_URI || 'https://stockcentral.app/api/v1/connections/oauth/mercadolibre/callback'
+    }
+    return `${process.env.API_URL || 'http://localhost:3001'}/api/v1/connections/oauth/${provider}/callback`
+  }
+
   async getAuthUrl(provider: string, config: Record<string, string>) {
     const driver = getDriver(provider)
     if (!driver.getAuthUrl) {
       throw new BadRequestException(`El proveedor ${provider} no usa OAuth`)
     }
-    const redirectUri =
-      config.redirectUri ||
-      `${process.env.API_URL || 'http://localhost:3001'}/api/v1/connections/oauth/${provider}/callback`
+    const redirectUri = this.getRedirectUri(provider, config.redirectUri)
     const url = driver.getAuthUrl({ ...config, redirectUri })
-    return { url }
+    return { url, redirectUri }
+  }
+
+  async exchangeOAuthCode(
+    provider: string,
+    code: string,
+    tenantId: string,
+    config: Record<string, string>,
+  ) {
+    return this.handleOAuthCallback(provider, code, tenantId, config)
   }
 
   async handleOAuthCallback(
@@ -63,9 +79,7 @@ export class ConnectionsService {
       throw new BadRequestException(`El proveedor ${provider} no usa OAuth`)
     }
 
-    const redirectUri =
-      config.redirectUri ||
-      `${process.env.API_URL || 'http://localhost:3001'}/api/v1/connections/oauth/${provider}/callback`
+    const redirectUri = this.getRedirectUri(provider, config.redirectUri)
 
     const tokens = await driver.exchangeCode(code, { ...config, redirectUri })
 

@@ -53,13 +53,9 @@ const PROVIDER_META: Record<string, {
   },
   mercadolibre: {
     label: 'Mercado Libre', type: 'marketplace', color: 'text-yellow-600', bg: 'bg-yellow-50',
-    authType: 'oauth',
-    fields: [
-      { key: 'accessToken', label: 'Access Token', placeholder: 'APP_USR-...', secret: true, hint: 'Obtenido via OAuth o desde el Developer Portal' },
-      { key: 'sellerId', label: 'Seller ID (User ID)', placeholder: '123456789', hint: 'Tu ID de vendedor en ML' },
-      { key: 'refreshToken', label: 'Refresh Token', placeholder: 'TG-...', secret: true, hint: 'Opcional — para renovación automática' },
-    ],
-    docs: 'https://developers.mercadolibre.com.ar/es_ar/autenticacion-y-autorizacion',
+    authType: 'oauth_manual' as any,
+    fields: [],
+    docs: 'https://developers.mercadolibre.cl/es_ar/autenticacion-y-autorizacion',
   },
   falabella: {
     label: 'Falabella', type: 'marketplace', color: 'text-green-700', bg: 'bg-green-50',
@@ -469,7 +465,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
 
 // ─── Connect modal ────────────────────────────────────────────────────────────
 
-type Step = 'select' | 'configure'
+type Step = 'select' | 'configure' | 'oauth_ml'
 
 function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [step, setStep] = useState<Step>('select')
@@ -487,7 +483,7 @@ function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
     setProvider(p)
     setCredentials({})
     setName(PROVIDER_META[p]?.label || p)
-    setStep('configure')
+    setStep(p === 'mercadolibre' ? 'oauth_ml' : 'configure')
   }
 
   const handleConnect = async () => {
@@ -510,37 +506,36 @@ function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
 
   const canSubmit = meta?.fields.every((f) => !f.secret ? true : credentials[f.key]?.trim())
 
+  const stepTitle: Record<Step, string> = {
+    select: 'Nueva conexión',
+    configure: `Configurar ${meta?.label || ''}`,
+    oauth_ml: 'Conectar Mercado Libre',
+  }
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="p-6 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3">
-            {step === 'configure' && (
+            {step !== 'select' && (
               <button onClick={() => setStep('select')} className="text-gray-400 hover:text-gray-600 mr-1">
                 <ChevronRight className="w-5 h-5 rotate-180" />
               </button>
             )}
-            {step === 'configure' && provider && <ProviderIcon provider={provider} size="sm" />}
+            {step !== 'select' && provider && <ProviderIcon provider={provider} size="sm" />}
             <div>
-              <h2 className="text-base font-semibold text-gray-900">
-                {step === 'select' ? 'Nueva conexión' : `Configurar ${meta?.label}`}
-              </h2>
-              {step === 'select' && (
-                <p className="text-xs text-gray-400 mt-0.5">Selecciona la plataforma a conectar</p>
-              )}
+              <h2 className="text-base font-semibold text-gray-900">{stepTitle[step]}</h2>
+              {step === 'select' && <p className="text-xs text-gray-400 mt-0.5">Selecciona la plataforma a conectar</p>}
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-5 h-5" />
-          </button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
         </div>
 
         {/* Body */}
         <div className="overflow-y-auto flex-1">
-          {step === 'select' ? (
-            <ProviderGrid onSelect={handleSelect} />
-          ) : (
+          {step === 'select' && <ProviderGrid onSelect={handleSelect} />}
+          {step === 'configure' && (
             <CredentialsForm
               provider={provider!}
               meta={meta!}
@@ -550,34 +545,31 @@ function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
               onFieldChange={setField}
             />
           )}
+          {step === 'oauth_ml' && (
+            <MLOAuthFlow
+              onSuccess={onSuccess}
+              onBack={() => setStep('select')}
+            />
+          )}
         </div>
 
-        {/* Footer */}
+        {/* Footer — only for standard credential flow */}
         {step === 'configure' && (
           <div className="p-6 border-t border-gray-100 flex-shrink-0">
             {meta?.docs && (
-              <a
-                href={meta.docs}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 text-xs text-gray-400 hover:text-sky-600 mb-4 transition-colors"
-              >
+              <a href={meta.docs} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-sky-600 mb-4 transition-colors">
                 <ExternalLink className="w-3 h-3" />
                 Ver documentación de {meta.label}
               </a>
             )}
             <div className="flex gap-3">
-              <button
-                onClick={() => setStep('select')}
-                className="px-4 py-2.5 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors"
-              >
+              <button onClick={() => setStep('select')}
+                className="px-4 py-2.5 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">
                 Atrás
               </button>
-              <button
-                onClick={handleConnect}
-                disabled={loading || !canSubmit}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 text-white rounded-lg text-sm font-medium transition-colors"
-              >
+              <button onClick={handleConnect} disabled={loading || !canSubmit}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 text-white rounded-lg text-sm font-medium transition-colors">
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
                 {loading ? 'Verificando credenciales…' : 'Conectar y verificar'}
               </button>
@@ -585,6 +577,166 @@ function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ─── ML OAuth manual flow ─────────────────────────────────────────────────────
+
+function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () => void }) {
+  const [mlStep, setMlStep] = useState<'credentials' | 'authorize' | 'code'>('credentials')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [authUrl, setAuthUrl] = useState('')
+  const [code, setCode] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleGetUrl = async () => {
+    if (!clientId.trim() || !clientSecret.trim()) {
+      toast.error('Ingresa el App ID y Secret Key')
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await api.post('/connections/oauth/mercadolibre/init', {
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+      })
+      setAuthUrl(res.data.url)
+      setMlStep('authorize')
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Error al generar URL de autorización')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleExchange = async () => {
+    const rawCode = code.trim()
+    if (!rawCode) { toast.error('Pega el código de autorización'); return }
+    setLoading(true)
+    try {
+      await api.post('/connections/oauth/mercadolibre/exchange', {
+        code: rawCode,
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+      })
+      toast.success('Mercado Libre conectado correctamente')
+      onSuccess()
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Código inválido o expirado — genera uno nuevo')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const extractCodeFromUrl = (val: string) => {
+    try {
+      const u = new URL(val)
+      const c = u.searchParams.get('code')
+      if (c) { setCode(c); toast.success('Código extraído de la URL') }
+      else setCode(val)
+    } catch {
+      setCode(val)
+    }
+  }
+
+  return (
+    <div className="p-6 space-y-5">
+      {/* Step 1 — App credentials */}
+      <div className={`rounded-xl border p-4 space-y-3 transition-opacity ${mlStep !== 'credentials' ? 'opacity-60' : ''}`}>
+        <div className="flex items-center gap-2">
+          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${mlStep === 'credentials' ? 'bg-sky-600 text-white' : 'bg-green-500 text-white'}`}>
+            {mlStep === 'credentials' ? '1' : '✓'}
+          </span>
+          <p className="text-sm font-semibold text-gray-800">Credenciales de tu app en ML</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">App ID <span className="text-gray-400 font-normal">(Client ID)</span></label>
+          <input
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            disabled={mlStep !== 'credentials'}
+            placeholder="Ej: 1505665045196548"
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:bg-gray-50"
+          />
+          <p className="text-xs text-gray-400 mt-1">Encuéntralo en developers.mercadolibre.cl → Tu app → App ID</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Secret Key <span className="text-gray-400 font-normal">(Client Secret)</span></label>
+          <input
+            type="password"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            disabled={mlStep !== 'credentials'}
+            placeholder="Ej: ACL4bXCIAw7KSARA..."
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 disabled:bg-gray-50"
+          />
+          <p className="text-xs text-gray-400 mt-1">Mismo panel — Secret Key. Nunca lo compartas.</p>
+        </div>
+        {mlStep === 'credentials' && (
+          <button onClick={handleGetUrl} disabled={loading || !clientId.trim() || !clientSecret.trim()}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 text-white rounded-lg text-sm font-medium transition-colors">
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
+            Generar enlace de autorización
+          </button>
+        )}
+      </div>
+
+      {/* Step 2 — Authorize */}
+      {(mlStep === 'authorize' || mlStep === 'code') && (
+        <div className={`rounded-xl border p-4 space-y-3 transition-opacity ${mlStep === 'code' ? 'opacity-60' : ''}`}>
+          <div className="flex items-center gap-2">
+            <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${mlStep === 'authorize' ? 'bg-sky-600 text-white' : 'bg-green-500 text-white'}`}>
+              {mlStep === 'authorize' ? '2' : '✓'}
+            </span>
+            <p className="text-sm font-semibold text-gray-800">Autorizar en Mercado Libre</p>
+          </div>
+          <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-xs text-amber-700 space-y-1">
+            <p>1. Haz clic en el botón de abajo para abrir ML en una nueva pestaña.</p>
+            <p>2. Inicia sesión con tu cuenta de vendedor y acepta los permisos.</p>
+            <p>3. ML redirigirá a una página que no existe — <strong>eso es normal</strong>. Copia toda la URL de esa página.</p>
+            <p>4. Pega la URL (o solo el código) en el paso siguiente.</p>
+          </div>
+          <a href={authUrl} target="_blank" rel="noopener noreferrer"
+            className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-yellow-400 hover:bg-yellow-500 text-yellow-900 rounded-lg text-sm font-semibold transition-colors">
+            <ExternalLink className="w-4 h-4" />
+            Abrir Mercado Libre para autorizar
+          </a>
+          {mlStep === 'authorize' && (
+            <button onClick={() => setMlStep('code')}
+              className="w-full px-4 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">
+              Ya autoricé — continuar
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Step 3 — Paste code */}
+      {mlStep === 'code' && (
+        <div className="rounded-xl border border-sky-200 bg-sky-50/30 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-sky-600 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">3</span>
+            <p className="text-sm font-semibold text-gray-800">Pega la URL de redirección</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">URL completa o código de autorización</label>
+            <textarea
+              value={code}
+              onChange={(e) => extractCodeFromUrl(e.target.value)}
+              rows={3}
+              placeholder={"https://stockcentral.app/api/v1/connections/oauth/mercadolibre/callback?code=TG-XXXXX...\n\nO solo el código: TG-68371890234..."}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+            />
+            <p className="text-xs text-gray-400 mt-1">Pega la URL completa — StockCentral extrae el código automáticamente. El código expira en 10 minutos.</p>
+          </div>
+          <button onClick={handleExchange} disabled={loading || !code.trim()}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 text-white rounded-lg text-sm font-medium transition-colors">
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+            {loading ? 'Conectando con Mercado Libre…' : 'Completar conexión'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

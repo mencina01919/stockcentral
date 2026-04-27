@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Redirect, UseGuards } from '@nestjs/common'
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { ConnectionsService } from './connections.service'
@@ -63,6 +63,22 @@ export class ConnectionsController {
     @Query('state') state?: string,
   ) {
     const connection = await this.connectionsService.handleOAuthCallback(provider, code, tenantId, {})
+    return { success: true, connection: { id: connection.id, name: connection.name, provider: connection.provider, status: connection.status } }
+  }
+
+  @Post('oauth/:provider/exchange')
+  @ApiOperation({ summary: 'Intercambiar código OAuth manualmente (cuando el redirect URI no es local)' })
+  async exchangeCode(
+    @TenantId() tenantId: string,
+    @Param('provider') provider: string,
+    @Body() body: { code: string; clientId: string; clientSecret: string },
+  ) {
+    const connection = await this.connectionsService.exchangeOAuthCode(
+      provider,
+      body.code,
+      tenantId,
+      { clientId: body.clientId, clientSecret: body.clientSecret },
+    )
     return { success: true, connection: { id: connection.id, name: connection.name, provider: connection.provider, status: connection.status } }
   }
 
