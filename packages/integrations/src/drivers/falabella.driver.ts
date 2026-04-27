@@ -44,19 +44,23 @@ const STAGING_URLS: Record<string, string> = {
 export class FalabellaDriver implements IMarketplaceDriver {
   readonly provider = 'falabella'
 
-  // ─── Signature (per official docs) ──────────────────────────────────────────
+  // ─── Signature ──────────────────────────────────────────────────────────────
   //
-  // 1. Collect all query params EXCEPT Signature itself
-  // 2. Sort keys alphabetically (case-sensitive)
-  // 3. Concatenate as: key1value1key2value2...
-  // 4. HMAC-SHA256 with apiKey as secret, hex-encode result
+  // Real algorithm confirmed via API Explorer reverse-engineering:
+  // 1. Sort all params (except Signature) alphabetically by key
+  // 2. URL-encode each key and value with encodeURIComponent
+  // 3. Join as key=value&key=value (standard query string)
+  // 4. HMAC-SHA256 with apiKey as secret, hex output
+  //
+  // Note: Falabella SC does NOT validate timestamp freshness,
+  // but does validate signature correctness strictly.
   //
   private buildSignature(params: Record<string, string>, apiKey: string): string {
-    const concatenated = Object.keys(params)
-      .sort()
-      .map((k) => `${k}${params[k]}`)
-      .join('')
-    return crypto.createHmac('sha256', apiKey).update(concatenated).digest('hex')
+    const qs = Object.entries(params)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&')
+    return crypto.createHmac('sha256', apiKey).update(qs).digest('hex')
   }
 
   private getBaseUrl(credentials: DriverCredentials, config?: DriverConfig): string {
@@ -73,14 +77,24 @@ export class FalabellaDriver implements IMarketplaceDriver {
     })
   }
 
-  // Builds query params with valid ISO8601 timestamp and HMAC signature
+  // Builds query params with local-offset timestamp and HMAC signature.
+  // Falabella SC requires local timezone offset (e.g. -04:00 for Chile), not UTC.
   private buildParams(
     credentials: DriverCredentials,
     action: string,
     extra: Record<string, string> = {},
   ): Record<string, string> {
-    // ISO8601 with timezone offset as required by the API
-    const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, '+00:00')
+    // Use local time with offset instead of UTC — server validates format strictly
+    const now = new Date()
+    const offsetMin = -now.getTimezoneOffset()
+    const sign = offsetMin >= 0 ? '+' : '-'
+    const absMin = Math.abs(offsetMin)
+    const hh = String(Math.floor(absMin / 60)).padStart(2, '0')
+    const mm = String(absMin % 60).padStart(2, '0')
+    const localIso = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
+      .toISOString()
+      .replace(/\.\d{3}Z$/, '')
+    const timestamp = `${localIso}${sign}${hh}:${mm}`
 
     const params: Record<string, string> = {
       Action: action,
@@ -378,51 +392,67 @@ export class FalabellaDriver implements IMarketplaceDriver {
 
   private mapProduct(data: any): MarketplaceProduct {
     const images = data.Images?.Image
+    // Price and stock live inside BusinessUnits.BusinessUnit (single BU or array)
+    const bu = data.BusinessUnits?.BusinessUnit
+    const firstBu = Array.isArray(bu) ? bu[0] : bu
+    const price = parseFloat(firstBu?.SpecialPrice || firstBu?.Price || data.Price || '0')
+    const stock = parseInt(firstBu?.Stock || data.Quantity || '0', 10)
+    const status = firstBu?.Status === 'active' ? 'active' : 'paused'
     return {
       externalId: data.SellerSku,
       externalSku: data.SellerSku,
       title: data.Name,
       description: data.Description,
-      price: parseFloat(data.Price || '0'),
-      stock: parseInt(data.Quantity || '0', 10),
+      price,
+      stock,
       images: images ? (Array.isArray(images) ? images : [images]) : [],
-      status: data.Status === 'active' ? 'active' : 'paused',
+      status,
       rawData: data,
     }
   }
 
   private mapOrder(header: any, items: any[]): MarketplaceOrder {
     const addr = header.AddressShipping
+    // Status lives in Statuses.Status (string or array)
+    const statusRaw = header.Statuses?.Status
+    const status = Array.isArray(statusRaw) ? statusRaw[0] : (statusRaw || header.Status || 'pending')
+
+    const mappedItems = items.map((item: any) => ({
+      externalId: String(item.OrderItemId),
+      sku: item.Sku || item.SellerSku || item.ShopSku,
+      title: item.Name,
+      quantity: 1, // Falabella SC: each OrderItem = 1 unit (separate items for qty > 1)
+      unitPrice: parseFloat(item.PaidPrice || item.ItemPrice || '0'),
+      totalPrice: parseFloat(item.PaidPrice || item.ItemPrice || '0'),
+    }))
+
+    const currency = items[0]?.Currency || 'CLP'
+    const subtotal = parseFloat(header.ProductTotal?.replace(/,/g, '') || header.Price || '0')
+    const shipping = parseFloat(header.ShippingFeeTotal?.replace(/,/g, '') || '0')
+    const total = parseFloat(header.GrandTotal?.replace(/,/g, '') || header.Price || '0')
+
     return {
       externalId: String(header.OrderId),
       externalOrderNumber: String(header.OrderNumber || header.OrderId),
-      status: header.Status,
+      status,
       buyerName: header.CustomerFirstName
         ? `${header.CustomerFirstName} ${header.CustomerLastName || ''}`.trim()
-        : 'Unknown',
-      buyerEmail: header.CustomerEmail,
-      items: items.map((item: any) => ({
-        externalId: String(item.OrderItemId),
-        sku: item.SellerSku || item.ShopSku,
-        title: item.Name,
-        quantity: parseInt(item.QtyOrdered || '1', 10),
-        unitPrice: parseFloat(item.PaidPrice || item.Price || '0'),
-        totalPrice: parseFloat(item.PaidPrice || '0') * parseInt(item.QtyOrdered || '1', 10),
-      })),
-      subtotal: parseFloat(header.Price || '0'),
-      shippingCost: 0,
-      total: parseFloat(header.Price || '0'),
-      currency: header.CurrencyCode || 'CLP',
+        : (addr?.FirstName || 'Unknown'),
+      buyerEmail: header.AddressBilling?.CustomerEmail || header.CustomerEmail,
+      items: mappedItems,
+      subtotal,
+      shippingCost: shipping,
+      total,
+      currency,
       shippingAddress: addr
         ? {
             name: `${addr.FirstName || ''} ${addr.LastName || ''}`.trim(),
-            address1: addr.Address1,
-            address2: addr.Address2 || undefined,
+            address1: [addr.Address1, addr.Address2, addr.Address3].filter(Boolean).join(', '),
             city: addr.City,
-            state: addr.Ward || addr.State,
-            zipCode: addr.PostCode,
+            state: addr.Ward || addr.Region,
+            zipCode: addr.PostCode || undefined,
             country: addr.Country || 'CL',
-            phone: addr.Phone,
+            phone: addr.Phone || undefined,
           }
         : undefined,
       createdAt: new Date(header.CreatedAt),
