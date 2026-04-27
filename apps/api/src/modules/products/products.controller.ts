@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, Query } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { ProductsService } from './products.service'
+import { SyncService } from '../sync/sync.service'
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto/product.dto'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
 
@@ -8,7 +9,10 @@ import { TenantId } from '../../common/decorators/tenant-id.decorator'
 @ApiBearerAuth()
 @Controller('products')
 export class ProductsController {
-  constructor(private productsService: ProductsService) {}
+  constructor(
+    private productsService: ProductsService,
+    private syncService: SyncService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Listar productos' })
@@ -38,6 +42,12 @@ export class ProductsController {
   @ApiOperation({ summary: 'Actualizar producto' })
   update(@TenantId() tenantId: string, @Param('id') id: string, @Body() dto: UpdateProductDto) {
     return this.productsService.update(tenantId, id, dto)
+  }
+
+  @Post(':id/push')
+  @ApiOperation({ summary: 'Empujar producto a todos los marketplaces conectados' })
+  push(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.syncService.pushProductToMarketplaces(tenantId, id)
   }
 
   @Delete(':id')

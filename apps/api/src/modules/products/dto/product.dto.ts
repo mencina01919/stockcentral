@@ -57,10 +57,15 @@ export class UpdateProductDto {
   @IsOptional() @IsString() description?: string
   @IsOptional() @IsString() shortDescription?: string
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) basePrice?: number
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) salePrice?: number
+  @IsOptional() @IsString() saleStartDate?: string
+  @IsOptional() @IsString() saleEndDate?: string
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) costPrice?: number
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) weight?: number
   @IsOptional() @IsArray() tags?: string[]
+  @IsOptional() @IsArray() images?: string[]
   @IsOptional() @IsString() status?: string
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) stock?: number
 }
 
 export class ProductQueryDto {

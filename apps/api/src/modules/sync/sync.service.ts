@@ -276,7 +276,17 @@ export class SyncService {
           const existing = await this.prisma.order.findFirst({
             where: { tenantId, externalOrderId: marketOrder.externalId, source: connection.provider },
           })
-          if (existing) continue
+          if (existing) {
+            await this.prisma.order.update({
+              where: { id: existing.id },
+              data: {
+                status: this.mapMarketplaceOrderStatus(marketOrder.status),
+                paymentStatus: ['delivered', 'shipped', 'ready_to_ship'].includes(marketOrder.status) ? 'paid' : 'pending',
+                shipmentStatus: this.mapShipmentStatus(marketOrder.status),
+              },
+            })
+            continue
+          }
 
           const orderNumber = `${connection.provider.toUpperCase()}-${marketOrder.externalOrderNumber || marketOrder.externalId}`
 
@@ -296,9 +306,9 @@ export class SyncService {
               discount: 0,
               total: marketOrder.total,
               currency: marketOrder.currency,
-              status: 'pending',
-              paymentStatus: 'pending',
-              shipmentStatus: 'pending',
+              status: this.mapMarketplaceOrderStatus(marketOrder.status),
+              paymentStatus: ['delivered', 'shipped', 'ready_to_ship'].includes(marketOrder.status) ? 'paid' : 'pending',
+              shipmentStatus: this.mapShipmentStatus(marketOrder.status),
               shippingAddress: marketOrder.shippingAddress as any,
               items: {
                 create: marketOrder.items.map((item) => ({
@@ -416,6 +426,66 @@ export class SyncService {
     }
   }
 
+  async pushProductToMarketplaces(tenantId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      include: {
+        inventory: { where: { variantId: null }, take: 1 },
+        marketplaceMappings: { include: { connection: true } },
+      },
+    })
+    if (!product) throw new NotFoundException(`Producto ${productId} no encontrado`)
+
+    const stock = product.inventory[0]?.quantity ?? 0
+    const images = (product.images as string[] | null) || []
+    const results: any[] = []
+
+    for (const mapping of product.marketplaceMappings) {
+      const connection = mapping.connection as any
+      if (connection.status !== 'connected') continue
+
+      const driver = getDriver(connection.provider)
+      const credentials = connection.credentials as Record<string, string>
+      const config = connection.config as Record<string, unknown> | undefined
+      const externalId = mapping.marketplaceProductId || product.sku
+
+      try {
+        // Update product fields
+        const updateResult = await driver.updateProduct(credentials, externalId, {
+          sku: product.sku,
+          title: product.name,
+          description: product.description || undefined,
+          price: Number(product.basePrice),
+          stock,
+          images,
+        }, config)
+
+        // Update images separately if driver supports it and images are provided
+        if (images.length > 0 && driver.updateImages) {
+          await driver.updateImages(credentials, externalId, images, config)
+        }
+
+        // Update stock separately
+        await driver.updateStock(credentials, externalId, stock, config)
+
+        await this.prisma.marketplaceMapping.update({
+          where: { id: mapping.id },
+          data: { syncStatus: updateResult.success ? 'success' : 'error', lastSyncAt: new Date(), errorMessage: updateResult.success ? null : updateResult.error },
+        })
+
+        results.push({ connection: connection.name, success: updateResult.success, error: updateResult.error })
+      } catch (err: any) {
+        results.push({ connection: connection.name, success: false, error: err.message })
+        await this.prisma.marketplaceMapping.update({
+          where: { id: mapping.id },
+          data: { syncStatus: 'error', errorMessage: err.message },
+        })
+      }
+    }
+
+    return { productId, results }
+  }
+
   async getQueueStats() {
     const [waiting, active, completed, failed] = await Promise.all([
       this.syncQueue.getWaitingCount(),
@@ -468,5 +538,33 @@ export class SyncService {
         responseData: responseData as any,
       },
     })
+  }
+
+  private mapMarketplaceOrderStatus(marketStatus: string): string {
+    const map: Record<string, string> = {
+      pending: 'pending',
+      ready_to_ship: 'confirmed',
+      shipped: 'fulfilled',
+      delivered: 'completed',
+      canceled: 'cancelled',
+      failed: 'cancelled',
+      returned: 'cancelled',
+      // Falabella raw statuses (lowercase with underscores)
+      readytoship: 'confirmed',
+    }
+    return map[marketStatus?.toLowerCase()] || 'pending'
+  }
+
+  private mapShipmentStatus(marketStatus: string): string {
+    const map: Record<string, string> = {
+      pending: 'pending',
+      ready_to_ship: 'pending',
+      shipped: 'shipped',
+      delivered: 'delivered',
+      canceled: 'cancelled',
+      failed: 'cancelled',
+      returned: 'returned',
+    }
+    return map[marketStatus?.toLowerCase()] || 'pending'
   }
 }

@@ -92,8 +92,25 @@ export class ProductsService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateProductDto) {
-    await this.findOne(tenantId, id)
-    return this.prisma.product.update({ where: { id }, data: dto })
+    const product = await this.findOne(tenantId, id)
+
+    const { stock, ...productFields } = dto
+
+    const updated = await this.prisma.product.update({ where: { id }, data: productFields })
+
+    if (stock !== undefined) {
+      const inv = await this.prisma.inventory.findFirst({ where: { productId: id, variantId: null } })
+      if (inv) {
+        await this.prisma.inventory.update({ where: { id: inv.id }, data: { quantity: stock } })
+      } else {
+        const warehouse = await this.prisma.warehouse.findFirst({ where: { tenantId, active: true } })
+        if (warehouse) {
+          await this.prisma.inventory.create({ data: { tenantId, productId: id, warehouseId: warehouse.id, quantity: stock, reservedQuantity: 0 } })
+        }
+      }
+    }
+
+    return this.findOne(tenantId, id)
   }
 
   async remove(tenantId: string, id: string) {

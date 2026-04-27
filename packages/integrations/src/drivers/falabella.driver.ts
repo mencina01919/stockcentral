@@ -297,6 +297,48 @@ export class FalabellaDriver implements IMarketplaceDriver {
     }
   }
 
+  // Image — associates hosted image URLs with a product SKU
+  // Docs: https://developers.falabella.com/v500/reference/image
+  // Images must be publicly accessible URLs; Falabella fetches them server-side.
+  // The first image listed becomes the product's default image.
+  async updateImages(
+    credentials: DriverCredentials,
+    externalId: string,
+    imageUrls: string[],
+    config?: DriverConfig,
+  ): Promise<SyncResult> {
+    try {
+      const client = this.buildClient(credentials, config)
+      const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+      const imageXml = imageUrls
+        .slice(0, 8) // Falabella accepts up to 8 images per product
+        .map((url, i) => `<Image${i + 1}>${esc(url)}</Image${i + 1}>`)
+        .join('')
+
+      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?><Request><Product><SellerSku>${esc(externalId)}</SellerSku>${imageXml}</Product></Request>`
+      const params = this.buildParams(credentials, 'Image')
+
+      const res = await client.post('', xmlPayload, {
+        params,
+        headers: { 'Content-Type': 'text/xml; charset=UTF-8' },
+      })
+
+      if (res.data?.ErrorResponse) {
+        const msg = res.data.ErrorResponse?.Head?.ErrorMessage || res.data.ErrorResponse?.Body?.ErrorMessage || 'Error desconocido'
+        return { success: false, error: msg }
+      }
+
+      return { success: true, externalId, rawResponse: res.data }
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.ErrorResponse?.Head?.ErrorMessage ||
+        err?.response?.data?.ErrorResponse?.Body?.ErrorMessage ||
+        err.message
+      return { success: false, error: msg }
+    }
+  }
+
   // UpdateStock — dedicated action, different from ProductUpdate
   // Docs: https://developers.falabella.com/v500/reference/updatestock
   async updateStock(

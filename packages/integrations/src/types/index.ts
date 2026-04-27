@@ -146,6 +146,13 @@ export interface IMarketplaceDriver {
     config?: DriverConfig,
   ): Promise<SyncResult>
 
+  updateImages?(
+    credentials: DriverCredentials,
+    externalId: string,
+    imageUrls: string[],
+    config?: DriverConfig,
+  ): Promise<SyncResult>
+
   getOrders(
     credentials: DriverCredentials,
     config?: DriverConfig,
