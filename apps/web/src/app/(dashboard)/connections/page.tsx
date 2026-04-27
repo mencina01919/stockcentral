@@ -2,22 +2,109 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Plug, Loader2, RefreshCw, Trash2, CheckCircle, XCircle, Clock } from 'lucide-react'
+import {
+  Plus, Plug, Loader2, RefreshCw, Trash2, CheckCircle, XCircle,
+  Clock, AlertTriangle, ChevronRight, ExternalLink, Zap, BarChart2, X,
+  ShieldCheck, Globe, Key,
+} from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { formatRelativeDate, CONNECTION_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
 import { toast } from 'sonner'
 
-const PROVIDERS = [
-  { value: 'shopify', label: 'Shopify', type: 'ecommerce', color: 'bg-green-500' },
-  { value: 'woocommerce', label: 'WooCommerce', type: 'ecommerce', color: 'bg-purple-500' },
-  { value: 'jumpseller', label: 'Jumpseller', type: 'ecommerce', color: 'bg-blue-500' },
-  { value: 'mercadolibre', label: 'Mercado Libre', type: 'marketplace', color: 'bg-yellow-500' },
-  { value: 'falabella', label: 'Falabella', type: 'marketplace', color: 'bg-green-600' },
-  { value: 'walmart', label: 'Walmart', type: 'marketplace', color: 'bg-blue-600' },
-  { value: 'ripley', label: 'Ripley', type: 'marketplace', color: 'bg-red-500' },
-  { value: 'paris', label: 'Paris', type: 'marketplace', color: 'bg-red-600' },
-]
+// ─── Provider metadata ────────────────────────────────────────────────────────
+
+const PROVIDER_META: Record<string, {
+  label: string
+  type: 'ecommerce' | 'marketplace'
+  color: string
+  bg: string
+  authType: 'oauth' | 'apikey' | 'basic'
+  fields: CredentialField[]
+  docs?: string
+}> = {
+  shopify: {
+    label: 'Shopify', type: 'ecommerce', color: 'text-green-600', bg: 'bg-green-50',
+    authType: 'oauth',
+    fields: [
+      { key: 'shopDomain', label: 'Dominio de la tienda', placeholder: 'mitienda.myshopify.com', hint: 'Sin https://' },
+      { key: 'accessToken', label: 'Access Token', placeholder: 'shpat_...', secret: true, hint: 'Admin API access token' },
+    ],
+    docs: 'https://shopify.dev/docs/api/admin-rest',
+  },
+  woocommerce: {
+    label: 'WooCommerce', type: 'ecommerce', color: 'text-purple-600', bg: 'bg-purple-50',
+    authType: 'basic',
+    fields: [
+      { key: 'siteUrl', label: 'URL del sitio', placeholder: 'https://mitienda.com', hint: 'URL completa con https' },
+      { key: 'consumerKey', label: 'Consumer Key', placeholder: 'ck_...', hint: 'WooCommerce → Ajustes → API' },
+      { key: 'consumerSecret', label: 'Consumer Secret', placeholder: 'cs_...', secret: true },
+    ],
+    docs: 'https://woocommerce.github.io/woocommerce-rest-api-docs/',
+  },
+  jumpseller: {
+    label: 'Jumpseller', type: 'ecommerce', color: 'text-blue-600', bg: 'bg-blue-50',
+    authType: 'oauth',
+    fields: [
+      { key: 'login', label: 'Login (email)', placeholder: 'tu@correo.com' },
+      { key: 'authToken', label: 'Auth Token', placeholder: 'xxxxxxxxxxxxxxxx', secret: true, hint: 'Jumpseller → Configuración → API' },
+    ],
+    docs: 'https://jumpseller.com/support/api-authentication/',
+  },
+  mercadolibre: {
+    label: 'Mercado Libre', type: 'marketplace', color: 'text-yellow-600', bg: 'bg-yellow-50',
+    authType: 'oauth',
+    fields: [
+      { key: 'accessToken', label: 'Access Token', placeholder: 'APP_USR-...', secret: true, hint: 'Obtenido via OAuth o desde el Developer Portal' },
+      { key: 'sellerId', label: 'Seller ID (User ID)', placeholder: '123456789', hint: 'Tu ID de vendedor en ML' },
+      { key: 'refreshToken', label: 'Refresh Token', placeholder: 'TG-...', secret: true, hint: 'Opcional — para renovación automática' },
+    ],
+    docs: 'https://developers.mercadolibre.com.ar/es_ar/autenticacion-y-autorizacion',
+  },
+  falabella: {
+    label: 'Falabella', type: 'marketplace', color: 'text-green-700', bg: 'bg-green-50',
+    authType: 'apikey',
+    fields: [
+      { key: 'userId', label: 'User ID (Seller Email)', placeholder: 'seller@example.com', hint: 'Email de tu cuenta Seller Center' },
+      { key: 'apiSecret', label: 'API Secret', placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', secret: true, hint: 'Seller Center → API Keys' },
+    ],
+    docs: 'https://developers.falabella.com',
+  },
+  walmart: {
+    label: 'Walmart', type: 'marketplace', color: 'text-blue-700', bg: 'bg-blue-50',
+    authType: 'apikey',
+    fields: [
+      { key: 'userId', label: 'User ID', placeholder: 'seller@walmart.com' },
+      { key: 'apiSecret', label: 'API Secret', placeholder: 'xxxxxxxx', secret: true },
+    ],
+  },
+  ripley: {
+    label: 'Ripley', type: 'marketplace', color: 'text-red-600', bg: 'bg-red-50',
+    authType: 'apikey',
+    fields: [
+      { key: 'userId', label: 'User ID', placeholder: 'seller@ripley.com' },
+      { key: 'apiSecret', label: 'API Secret', placeholder: 'xxxxxxxx', secret: true },
+    ],
+  },
+  paris: {
+    label: 'Paris', type: 'marketplace', color: 'text-red-700', bg: 'bg-red-50',
+    authType: 'apikey',
+    fields: [
+      { key: 'userId', label: 'User ID', placeholder: 'seller@paris.cl' },
+      { key: 'apiSecret', label: 'API Secret', placeholder: 'xxxxxxxx', secret: true },
+    ],
+  },
+}
+
+interface CredentialField {
+  key: string
+  label: string
+  placeholder?: string
+  hint?: string
+  secret?: boolean
+}
+
+// ─── Status helpers ───────────────────────────────────────────────────────────
 
 function StatusIcon({ status }: { status: string }) {
   if (status === 'connected') return <CheckCircle className="w-4 h-4 text-green-500" />
@@ -26,9 +113,22 @@ function StatusIcon({ status }: { status: string }) {
   return <Clock className="w-4 h-4 text-gray-400" />
 }
 
+function ProviderIcon({ provider, size = 'md' }: { provider: string; size?: 'sm' | 'md' }) {
+  const meta = PROVIDER_META[provider]
+  const dim = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-11 h-11 text-sm'
+  return (
+    <div className={`${dim} ${meta?.bg || 'bg-gray-100'} rounded-xl flex items-center justify-center font-bold ${meta?.color || 'text-gray-600'}`}>
+      {(meta?.label || provider)[0]}
+    </div>
+  )
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
 export default function ConnectionsPage() {
   const queryClient = useQueryClient()
-  const [showForm, setShowForm] = useState(false)
+  const [showModal, setShowModal] = useState(false)
+  const [statusPanel, setStatusPanel] = useState<string | null>(null)
 
   const { data: connections, isLoading } = useQuery({
     queryKey: ['connections'],
@@ -39,8 +139,19 @@ export default function ConnectionsPage() {
     mutationFn: (id: string) => api.post(`/connections/${id}/sync`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connections'] })
-      toast.success('Sincronización iniciada')
+      toast.success('Sincronización encolada')
     },
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Error al sincronizar'),
+  })
+
+  const testMutation = useMutation({
+    mutationFn: (id: string) => api.post(`/connections/${id}/test`).then((r) => r.data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['connections'] })
+      if (data.success) toast.success(`Conexión verificada: ${data.shopName || 'OK'}`)
+      else toast.error(`Falla: ${data.error}`)
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Error al probar'),
   })
 
   const deleteMutation = useMutation({
@@ -49,220 +160,540 @@ export default function ConnectionsPage() {
       queryClient.invalidateQueries({ queryKey: ['connections'] })
       toast.success('Conexión eliminada')
     },
+    onError: (e: any) => toast.error(e?.response?.data?.message || 'Error al eliminar'),
   })
 
-  const ecommerceConnections = connections?.filter((c: any) => c.type === 'ecommerce') || []
-  const marketplaceConnections = connections?.filter((c: any) => c.type === 'marketplace') || []
+  const ecommerce = connections?.filter((c: any) => c.type === 'ecommerce') || []
+  const marketplaces = connections?.filter((c: any) => c.type === 'marketplace') || []
 
   return (
-    <div className="flex flex-col h-full">
-      <Header title="Conexiones" subtitle="Gestiona tus plataformas y marketplaces" />
+    <div className="flex h-full">
+      {/* Main content */}
+      <div className="flex flex-col flex-1 min-w-0">
+        <Header title="Conexiones" subtitle="Gestiona tus plataformas y marketplaces" />
 
-      <div className="flex-1 p-6 overflow-auto space-y-6">
-        <div className="flex justify-between items-center">
-          <div className="text-sm text-gray-500">
-            {connections?.length || 0} conexiones activas
+        <div className="flex-1 p-6 overflow-auto space-y-6">
+          {/* Toolbar */}
+          <div className="flex justify-between items-center">
+            <p className="text-sm text-gray-500">
+              {connections?.length || 0} conexión{connections?.length !== 1 ? 'es' : ''} activa{connections?.length !== 1 ? 's' : ''}
+            </p>
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Nueva conexión
+            </button>
           </div>
+
+          {isLoading ? (
+            <div className="flex items-center justify-center h-48">
+              <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
+            </div>
+          ) : (
+            <>
+              {ecommerce.length > 0 && (
+                <section>
+                  <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Tienda padre / E-commerce</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {ecommerce.map((conn: any) => (
+                      <ConnectionCard
+                        key={conn.id}
+                        conn={conn}
+                        syncing={syncMutation.isPending && syncMutation.variables === conn.id}
+                        testing={testMutation.isPending && testMutation.variables === conn.id}
+                        onSync={() => syncMutation.mutate(conn.id)}
+                        onTest={() => testMutation.mutate(conn.id)}
+                        onDelete={() => deleteMutation.mutate(conn.id)}
+                        onStatus={() => setStatusPanel(statusPanel === conn.id ? null : conn.id)}
+                        showStatus={statusPanel === conn.id}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {marketplaces.length > 0 && (
+                <section>
+                  <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Marketplaces</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {marketplaces.map((conn: any) => (
+                      <ConnectionCard
+                        key={conn.id}
+                        conn={conn}
+                        syncing={syncMutation.isPending && syncMutation.variables === conn.id}
+                        testing={testMutation.isPending && testMutation.variables === conn.id}
+                        onSync={() => syncMutation.mutate(conn.id)}
+                        onTest={() => testMutation.mutate(conn.id)}
+                        onDelete={() => deleteMutation.mutate(conn.id)}
+                        onStatus={() => setStatusPanel(statusPanel === conn.id ? null : conn.id)}
+                        showStatus={statusPanel === conn.id}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {connections?.length === 0 && (
+                <EmptyState onAdd={() => setShowModal(true)} />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Status side panel */}
+      {statusPanel && (
+        <StatusSidePanel
+          connectionId={statusPanel}
+          onClose={() => setStatusPanel(null)}
+        />
+      )}
+
+      {showModal && (
+        <ConnectModal
+          onClose={() => setShowModal(false)}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['connections'] })
+            setShowModal(false)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Connection card ──────────────────────────────────────────────────────────
+
+function ConnectionCard({
+  conn, syncing, testing, onSync, onTest, onDelete, onStatus, showStatus,
+}: {
+  conn: any
+  syncing: boolean
+  testing: boolean
+  onSync: () => void
+  onTest: () => void
+  onDelete: () => void
+  onStatus: () => void
+  showStatus: boolean
+}) {
+  const s = CONNECTION_STATUS_LABELS[conn.status] || CONNECTION_STATUS_LABELS.disconnected
+  const meta = PROVIDER_META[conn.provider]
+  const mappings = conn._count?.marketplaceMappings ?? 0
+
+  return (
+    <div className={`bg-white rounded-xl border transition-shadow hover:shadow-md ${showStatus ? 'border-sky-300 shadow-md' : 'border-gray-200'}`}>
+      <div className="p-5">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <ProviderIcon provider={conn.provider} />
+            <div>
+              <h4 className="font-semibold text-gray-900 text-sm leading-tight">{conn.name}</h4>
+              <p className="text-xs text-gray-400 mt-0.5">{meta?.label || conn.provider}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <StatusIcon status={conn.status} />
+            <span className={`text-xs font-medium ${s.color}`}>{s.label}</span>
+          </div>
+        </div>
+
+        {/* Meta row */}
+        <div className="flex items-center gap-3 text-xs text-gray-400 mb-4">
+          {conn.lastSync && (
+            <span>Sync: {formatRelativeDate(conn.lastSync)}</span>
+          )}
+          {mappings > 0 && (
+            <span className="flex items-center gap-1">
+              <BarChart2 className="w-3 h-3" />
+              {mappings} producto{mappings !== 1 ? 's' : ''}
+            </span>
+          )}
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${meta?.authType === 'oauth' ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+            {meta?.authType === 'oauth' ? 'OAuth' : meta?.authType === 'basic' ? 'Basic' : 'API Key'}
+          </span>
+        </div>
+
+        {conn.lastError && (
+          <div className="flex items-start gap-1.5 text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-4">
+            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+            <span className="line-clamp-2">{conn.lastError}</span>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-2">
           <button
-            onClick={() => setShowForm(true)}
-            className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            onClick={onSync}
+            disabled={syncing}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
           >
-            <Plus className="w-4 h-4" />
-            Nueva conexión
+            <RefreshCw className={`w-3 h-3 ${syncing ? 'animate-spin' : ''}`} />
+            Sincronizar
+          </button>
+          <button
+            onClick={onTest}
+            disabled={testing}
+            className="flex items-center justify-center p-2 bg-gray-50 hover:bg-gray-100 text-gray-500 hover:text-green-600 rounded-lg transition-colors disabled:opacity-50"
+            title="Probar conexión"
+          >
+            {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={onStatus}
+            className={`flex items-center justify-center p-2 rounded-lg transition-colors ${showStatus ? 'bg-sky-100 text-sky-600' : 'bg-gray-50 hover:bg-gray-100 text-gray-500 hover:text-sky-600'}`}
+            title="Ver estado y logs"
+          >
+            <BarChart2 className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onDelete}
+            className="flex items-center justify-center p-2 bg-gray-50 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-lg transition-colors"
+            title="Eliminar conexión"
+          >
+            <Trash2 className="w-4 h-4" />
           </button>
         </div>
-
-        {isLoading ? (
-          <div className="flex items-center justify-center h-48">
-            <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
-          </div>
-        ) : (
-          <>
-            {ecommerceConnections.length > 0 && (
-              <section>
-                <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Tienda padre</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {ecommerceConnections.map((conn: any) => (
-                    <ConnectionCard key={conn.id} conn={conn} onSync={() => syncMutation.mutate(conn.id)} onDelete={() => deleteMutation.mutate(conn.id)} />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {marketplaceConnections.length > 0 && (
-              <section>
-                <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Marketplaces</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {marketplaceConnections.map((conn: any) => (
-                    <ConnectionCard key={conn.id} conn={conn} onSync={() => syncMutation.mutate(conn.id)} onDelete={() => deleteMutation.mutate(conn.id)} />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {connections?.length === 0 && (
-              <div className="bg-white rounded-xl border border-gray-200 py-20 text-center">
-                <Plug className="w-14 h-14 text-gray-300 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-gray-700 mb-2">Sin conexiones aún</h3>
-                <p className="text-gray-400 text-sm mb-6 max-w-sm mx-auto">
-                  Conecta tu tienda y marketplaces para comenzar a sincronizar productos y órdenes.
-                </p>
-                <button onClick={() => setShowForm(true)} className="bg-sky-600 hover:bg-sky-700 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-colors">
-                  Conectar primera plataforma
-                </button>
-              </div>
-            )}
-          </>
-        )}
       </div>
-
-      {showForm && <ConnectModal onClose={() => setShowForm(false)} onSuccess={() => {
-        queryClient.invalidateQueries({ queryKey: ['connections'] })
-        setShowForm(false)
-      }} />}
     </div>
   )
 }
 
-function ConnectionCard({ conn, onSync, onDelete }: { conn: any; onSync: () => void; onDelete: () => void }) {
-  const s = CONNECTION_STATUS_LABELS[conn.status] || CONNECTION_STATUS_LABELS.disconnected
+// ─── Status side panel ────────────────────────────────────────────────────────
+
+function StatusSidePanel({ connectionId, onClose }: { connectionId: string; onClose: () => void }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['connection-status', connectionId],
+    queryFn: () => api.get(`/connections/${connectionId}/status`).then((r) => r.data),
+    refetchInterval: 10000,
+  })
+
+  const statusColors: Record<string, string> = {
+    success: 'text-green-600 bg-green-50',
+    error: 'text-red-600 bg-red-50',
+    pending: 'text-yellow-600 bg-yellow-50',
+  }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center text-lg font-bold text-gray-600">
-            {(PROVIDER_LABELS[conn.provider] || conn.name)[0]}
-          </div>
+    <div className="w-80 border-l border-gray-200 bg-white flex flex-col">
+      <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+        <h3 className="font-semibold text-gray-800 text-sm">Estado de sincronización</h3>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="w-5 h-5 animate-spin text-sky-500" />
+        </div>
+      ) : data ? (
+        <div className="flex-1 overflow-auto p-4 space-y-4">
+          {/* Mappings */}
           <div>
-            <h4 className="font-medium text-gray-900 text-sm">{conn.name}</h4>
-            <p className="text-xs text-gray-400">{PROVIDER_LABELS[conn.provider] || conn.provider}</p>
+            <p className="text-xs font-semibold text-gray-400 uppercase mb-2">Productos sincronizados</p>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: 'Sync', value: data.mappings?.synced ?? 0, color: 'text-green-600' },
+                { label: 'Error', value: data.mappings?.error ?? 0, color: 'text-red-600' },
+                { label: 'Pendiente', value: data.mappings?.pending ?? 0, color: 'text-yellow-600' },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="bg-gray-50 rounded-lg p-2 text-center">
+                  <div className={`text-lg font-bold ${color}`}>{value}</div>
+                  <div className="text-[10px] text-gray-400">{label}</div>
+                </div>
+              ))}
+            </div>
           </div>
+
+          {/* Last sync */}
+          {data.lastSync && (
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase mb-1">Última sincronización</p>
+              <p className="text-sm text-gray-600">{new Date(data.lastSync).toLocaleString('es-CL')}</p>
+            </div>
+          )}
+
+          {/* Last error */}
+          {data.lastError && (
+            <div className="bg-red-50 rounded-lg p-3">
+              <p className="text-xs font-semibold text-red-600 mb-1">Último error</p>
+              <p className="text-xs text-red-700">{data.lastError}</p>
+            </div>
+          )}
+
+          {/* Recent logs */}
+          {data.recentLogs?.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase mb-2">Historial reciente</p>
+              <div className="space-y-2">
+                {data.recentLogs.map((log: any) => (
+                  <div key={log.id} className="flex items-start gap-2 text-xs">
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ${statusColors[log.status] || 'text-gray-600 bg-gray-100'}`}>
+                      {log.status}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-gray-700 font-medium">{log.action}</p>
+                      <p className="text-gray-400">{formatRelativeDate(log.createdAt)}</p>
+                      {log.errorMessage && <p className="text-red-500 truncate">{log.errorMessage}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-1.5">
-          <StatusIcon status={conn.status} />
-          <span className={`text-xs font-medium ${s.color}`}>{s.label}</span>
-        </div>
-      </div>
-
-      {conn.lastSync && (
-        <p className="text-xs text-gray-400 mb-3">
-          Última sync: {formatRelativeDate(conn.lastSync)}
-        </p>
-      )}
-
-      {conn.lastError && (
-        <p className="text-xs text-red-500 bg-red-50 rounded px-2 py-1 mb-3">
-          {conn.lastError}
-        </p>
-      )}
-
-      <div className="flex gap-2">
-        <button
-          onClick={onSync}
-          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-sky-50 hover:bg-sky-100 text-sky-600 rounded-lg text-xs font-medium transition-colors"
-        >
-          <RefreshCw className="w-3 h-3" />
-          Sincronizar
-        </button>
-        <button
-          onClick={onDelete}
-          className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
+      ) : null}
     </div>
   )
 }
 
+// ─── Empty state ──────────────────────────────────────────────────────────────
+
+function EmptyState({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 py-20 text-center">
+      <Plug className="w-14 h-14 text-gray-300 mx-auto mb-4" />
+      <h3 className="text-lg font-semibold text-gray-700 mb-2">Sin conexiones aún</h3>
+      <p className="text-gray-400 text-sm mb-6 max-w-sm mx-auto">
+        Conecta tu tienda y marketplaces para comenzar a sincronizar productos y órdenes automáticamente.
+      </p>
+      <button onClick={onAdd} className="bg-sky-600 hover:bg-sky-700 text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-colors">
+        Conectar primera plataforma
+      </button>
+    </div>
+  )
+}
+
+// ─── Connect modal ────────────────────────────────────────────────────────────
+
+type Step = 'select' | 'configure'
+
 function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
-  const [step, setStep] = useState<'select' | 'configure'>('select')
-  const [selected, setSelected] = useState<typeof PROVIDERS[0] | null>(null)
+  const [step, setStep] = useState<Step>('select')
+  const [provider, setProvider] = useState<string | null>(null)
+  const [credentials, setCredentials] = useState<Record<string, string>>({})
   const [name, setName] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [shopUrl, setShopUrl] = useState('')
   const [loading, setLoading] = useState(false)
 
+  const meta = provider ? PROVIDER_META[provider] : null
+
+  const setField = (key: string, value: string) =>
+    setCredentials((prev) => ({ ...prev, [key]: value }))
+
+  const handleSelect = (p: string) => {
+    setProvider(p)
+    setCredentials({})
+    setName(PROVIDER_META[p]?.label || p)
+    setStep('configure')
+  }
+
   const handleConnect = async () => {
-    if (!selected) return
+    if (!provider || !meta) return
     setLoading(true)
     try {
       await api.post('/connections', {
-        type: selected.type,
-        provider: selected.value,
-        name: name || selected.label,
-        credentials: { apiKey, shopUrl },
+        provider,
+        name: name || meta.label,
+        credentials,
       })
-      toast.success(`${selected.label} conectado correctamente`)
+      toast.success(`${meta.label} conectado correctamente`)
       onSuccess()
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Error al conectar')
+      toast.error(err?.response?.data?.message || 'Credenciales inválidas — verifica los datos')
     } finally {
       setLoading(false)
     }
   }
 
+  const canSubmit = meta?.fields.every((f) => !f.secret ? true : credentials[f.key]?.trim())
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-lg shadow-2xl">
-        <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-gray-900">
-            {step === 'select' ? 'Selecciona una plataforma' : `Configurar ${selected?.label}`}
-          </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
-        </div>
-
-        {step === 'select' ? (
-          <div className="p-6">
-            <p className="text-sm text-gray-500 mb-4">Tiendas</p>
-            <div className="grid grid-cols-2 gap-3 mb-6">
-              {PROVIDERS.filter(p => p.type === 'ecommerce').map((p) => (
-                <button key={p.value} onClick={() => { setSelected(p); setStep('configure') }}
-                  className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:border-sky-300 hover:bg-sky-50 transition-colors text-left">
-                  <div className={`w-8 h-8 ${p.color} rounded-lg flex items-center justify-center text-white text-xs font-bold`}>{p.label[0]}</div>
-                  <span className="text-sm font-medium text-gray-700">{p.label}</span>
-                </button>
-              ))}
-            </div>
-            <p className="text-sm text-gray-500 mb-4">Marketplaces</p>
-            <div className="grid grid-cols-2 gap-3">
-              {PROVIDERS.filter(p => p.type === 'marketplace').map((p) => (
-                <button key={p.value} onClick={() => { setSelected(p); setStep('configure') }}
-                  className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:border-sky-300 hover:bg-sky-50 transition-colors text-left">
-                  <div className={`w-8 h-8 ${p.color} rounded-lg flex items-center justify-center text-white text-xs font-bold`}>{p.label[0]}</div>
-                  <span className="text-sm font-medium text-gray-700">{p.label}</span>
-                </button>
-              ))}
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="p-6 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3">
+            {step === 'configure' && (
+              <button onClick={() => setStep('select')} className="text-gray-400 hover:text-gray-600 mr-1">
+                <ChevronRight className="w-5 h-5 rotate-180" />
+              </button>
+            )}
+            {step === 'configure' && provider && <ProviderIcon provider={provider} size="sm" />}
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                {step === 'select' ? 'Nueva conexión' : `Configurar ${meta?.label}`}
+              </h2>
+              {step === 'select' && (
+                <p className="text-xs text-gray-400 mt-0.5">Selecciona la plataforma a conectar</p>
+              )}
             </div>
           </div>
-        ) : (
-          <div className="p-6 space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Nombre de la conexión</label>
-              <input value={name} onChange={e => setName(e.target.value)} placeholder={selected?.label} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
-            </div>
-            {selected?.type === 'ecommerce' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">URL de la tienda</label>
-                <input value={shopUrl} onChange={e => setShopUrl(e.target.value)} placeholder="mitienda.myshopify.com" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
-              </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1">
+          {step === 'select' ? (
+            <ProviderGrid onSelect={handleSelect} />
+          ) : (
+            <CredentialsForm
+              provider={provider!}
+              meta={meta!}
+              name={name}
+              credentials={credentials}
+              onNameChange={setName}
+              onFieldChange={setField}
+            />
+          )}
+        </div>
+
+        {/* Footer */}
+        {step === 'configure' && (
+          <div className="p-6 border-t border-gray-100 flex-shrink-0">
+            {meta?.docs && (
+              <a
+                href={meta.docs}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-sky-600 mb-4 transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Ver documentación de {meta.label}
+              </a>
             )}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">API Key / Token</label>
-              <input value={apiKey} onChange={e => setApiKey(e.target.value)} type="password" placeholder="••••••••••••" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button onClick={() => setStep('select')} className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50">
+            <div className="flex gap-3">
+              <button
+                onClick={() => setStep('select')}
+                className="px-4 py-2.5 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors"
+              >
                 Atrás
               </button>
-              <button onClick={handleConnect} disabled={loading || !apiKey} className="flex-1 px-4 py-2 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-400 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2">
-                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Conectar
+              <button
+                onClick={handleConnect}
+                disabled={loading || !canSubmit}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                {loading ? 'Verificando credenciales…' : 'Conectar y verificar'}
               </button>
             </div>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Provider grid ────────────────────────────────────────────────────────────
+
+function ProviderGrid({ onSelect }: { onSelect: (p: string) => void }) {
+  const ecommerceProviders = Object.entries(PROVIDER_META).filter(([, m]) => m.type === 'ecommerce')
+  const marketplaceProviders = Object.entries(PROVIDER_META).filter(([, m]) => m.type === 'marketplace')
+
+  return (
+    <div className="p-6 space-y-5">
+      <ProviderSection title="Tiendas / E-commerce" providers={ecommerceProviders} onSelect={onSelect} />
+      <ProviderSection title="Marketplaces" providers={marketplaceProviders} onSelect={onSelect} />
+    </div>
+  )
+}
+
+function ProviderSection({
+  title, providers, onSelect,
+}: {
+  title: string
+  providers: [string, typeof PROVIDER_META[string]][]
+  onSelect: (p: string) => void
+}) {
+  return (
+    <div>
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{title}</p>
+      <div className="grid grid-cols-2 gap-2.5">
+        {providers.map(([key, meta]) => (
+          <button
+            key={key}
+            onClick={() => onSelect(key)}
+            className="flex items-center gap-3 p-3.5 border border-gray-200 rounded-xl hover:border-sky-300 hover:bg-sky-50 transition-all text-left group"
+          >
+            <div className={`w-9 h-9 ${meta.bg} rounded-lg flex items-center justify-center text-sm font-bold ${meta.color} flex-shrink-0`}>
+              {meta.label[0]}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-gray-800 group-hover:text-sky-700">{meta.label}</p>
+              <p className="text-[10px] text-gray-400 flex items-center gap-1 mt-0.5">
+                {meta.authType === 'oauth' ? <><Key className="w-2.5 h-2.5" />OAuth</> : meta.authType === 'basic' ? <><Globe className="w-2.5 h-2.5" />Basic Auth</> : <><Key className="w-2.5 h-2.5" />API Key</>}
+              </p>
+            </div>
+            <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-sky-400 ml-auto" />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Credentials form ─────────────────────────────────────────────────────────
+
+function CredentialsForm({
+  provider, meta, name, credentials, onNameChange, onFieldChange,
+}: {
+  provider: string
+  meta: typeof PROVIDER_META[string]
+  name: string
+  credentials: Record<string, string>
+  onNameChange: (v: string) => void
+  onFieldChange: (key: string, value: string) => void
+}) {
+  return (
+    <div className="p-6 space-y-4">
+      {/* Auth type badge */}
+      <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${meta.authType === 'oauth' ? 'bg-blue-50 text-blue-700' : 'bg-gray-50 text-gray-600'}`}>
+        <ShieldCheck className="w-3.5 h-3.5" />
+        {meta.authType === 'oauth'
+          ? 'Autenticación OAuth 2.0 — tus credenciales viajan cifradas'
+          : meta.authType === 'basic'
+          ? 'Autenticación Basic — consumer key + secret'
+          : 'Autenticación por API Key'}
+      </div>
+
+      {/* Connection name */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1.5">Nombre de la conexión</label>
+        <input
+          value={name}
+          onChange={(e) => onNameChange(e.target.value)}
+          placeholder={meta.label}
+          className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+        />
+      </div>
+
+      {/* Dynamic credential fields */}
+      {meta.fields.map((field) => (
+        <div key={field.key}>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">{field.label}</label>
+          <input
+            type={field.secret ? 'password' : 'text'}
+            value={credentials[field.key] || ''}
+            onChange={(e) => onFieldChange(field.key, e.target.value)}
+            placeholder={field.placeholder}
+            autoComplete={field.secret ? 'new-password' : 'off'}
+            className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent font-mono"
+          />
+          {field.hint && (
+            <p className="text-xs text-gray-400 mt-1">{field.hint}</p>
+          )}
+        </div>
+      ))}
+
+      {/* Tip box */}
+      <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-xs text-amber-700 flex items-start gap-2">
+        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+        Al hacer clic en "Conectar y verificar" se probarán las credenciales contra la API real de {meta.label} antes de guardarlas.
       </div>
     </div>
   )
