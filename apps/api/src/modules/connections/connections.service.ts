@@ -1,10 +1,15 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common'
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../prisma/prisma.service'
+import { SyncService } from '../sync/sync.service'
+import { getDriver, getSupportedProviders } from '@stockcentral/integrations'
 import { CreateConnectionDto, UpdateConnectionDto } from './dto/connection.dto'
 
 @Injectable()
 export class ConnectionsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly syncService: SyncService,
+  ) {}
 
   async findAll(tenantId: string) {
     return this.prisma.connection.findMany({
@@ -28,6 +33,84 @@ export class ConnectionsService {
     return conn
   }
 
+  getProviders() {
+    return getSupportedProviders().map((provider) => ({
+      provider,
+      requiresOAuth: ['mercadolibre', 'shopify', 'jumpseller'].includes(provider),
+    }))
+  }
+
+  async getAuthUrl(provider: string, config: Record<string, string>) {
+    const driver = getDriver(provider)
+    if (!driver.getAuthUrl) {
+      throw new BadRequestException(`El proveedor ${provider} no usa OAuth`)
+    }
+    const redirectUri =
+      config.redirectUri ||
+      `${process.env.API_URL || 'http://localhost:3001'}/api/v1/connections/oauth/${provider}/callback`
+    const url = driver.getAuthUrl({ ...config, redirectUri })
+    return { url }
+  }
+
+  async handleOAuthCallback(
+    provider: string,
+    code: string,
+    tenantId: string,
+    config: Record<string, string>,
+  ) {
+    const driver = getDriver(provider)
+    if (!driver.exchangeCode) {
+      throw new BadRequestException(`El proveedor ${provider} no usa OAuth`)
+    }
+
+    const redirectUri =
+      config.redirectUri ||
+      `${process.env.API_URL || 'http://localhost:3001'}/api/v1/connections/oauth/${provider}/callback`
+
+    const tokens = await driver.exchangeCode(code, { ...config, redirectUri })
+
+    const credentials: Record<string, string> = { accessToken: tokens.accessToken }
+    if (tokens.refreshToken) credentials.refreshToken = tokens.refreshToken
+    if (tokens.sellerId) credentials.sellerId = tokens.sellerId
+
+    const testResult = await driver.testConnection(credentials)
+    if (!testResult.success) {
+      throw new BadRequestException(`No se pudo verificar la conexión: ${testResult.error}`)
+    }
+
+    const existing = await this.prisma.connection.findUnique({
+      where: { tenantId_provider: { tenantId, provider } },
+    })
+
+    const connConfig: Record<string, unknown> = {}
+    if (tokens.expiresAt) connConfig.tokenExpiresAt = tokens.expiresAt.toISOString()
+    if (tokens.siteId) connConfig.siteId = tokens.siteId
+
+    if (existing) {
+      return this.prisma.connection.update({
+        where: { id: existing.id },
+        data: {
+          credentials: credentials as any,
+          config: { ...((existing.config as any) || {}), ...connConfig },
+          status: 'connected',
+          lastError: null,
+        },
+      })
+    }
+
+    return this.prisma.connection.create({
+      data: {
+        tenantId,
+        type: this.getConnectionType(provider),
+        provider,
+        name: testResult.shopName || provider,
+        credentials: credentials as any,
+        config: connConfig as any,
+        status: 'connected',
+      },
+    })
+  }
+
   async create(tenantId: string, dto: CreateConnectionDto) {
     const existing = await this.prisma.connection.findUnique({
       where: { tenantId_provider: { tenantId, provider: dto.provider } },
@@ -36,21 +119,36 @@ export class ConnectionsService {
       throw new ConflictException(`Ya existe una conexión con ${dto.provider}`)
     }
 
+    const driver = getDriver(dto.provider)
+    const testResult = await driver.testConnection(dto.credentials, dto.config)
+    if (!testResult.success) {
+      throw new BadRequestException(`Las credenciales no son válidas: ${testResult.error}`)
+    }
+
     return this.prisma.connection.create({
       data: {
         tenantId,
-        type: dto.type,
+        type: dto.type || this.getConnectionType(dto.provider),
         provider: dto.provider,
-        name: dto.name,
+        name: dto.name || testResult.shopName || dto.provider,
         credentials: dto.credentials as any,
-        config: dto.config as any,
+        config: (dto.config || {}) as any,
         status: 'connected',
       },
     })
   }
 
   async update(tenantId: string, id: string, dto: UpdateConnectionDto) {
-    await this.findOne(tenantId, id)
+    const conn = await this.findOne(tenantId, id)
+
+    if (dto.credentials) {
+      const driver = getDriver((conn as any).provider)
+      const testResult = await driver.testConnection(dto.credentials, dto.config)
+      if (!testResult.success) {
+        throw new BadRequestException(`Las credenciales no son válidas: ${testResult.error}`)
+      }
+    }
+
     return this.prisma.connection.update({
       where: { id },
       data: {
@@ -69,33 +167,12 @@ export class ConnectionsService {
   }
 
   async triggerSync(tenantId: string, id: string) {
-    const conn = await this.findOne(tenantId, id)
+    await this.findOne(tenantId, id)
+    return this.syncService.triggerFullSync(tenantId, id)
+  }
 
-    await this.prisma.connection.update({
-      where: { id },
-      data: { status: 'syncing' },
-    })
-
-    await this.prisma.syncLog.create({
-      data: {
-        tenantId,
-        connectionId: id,
-        type: 'outbound',
-        action: 'sync',
-        entity: 'connection',
-        entityId: id,
-        status: 'pending',
-      },
-    })
-
-    setTimeout(async () => {
-      await this.prisma.connection.update({
-        where: { id },
-        data: { status: 'connected', lastSync: new Date() },
-      })
-    }, 3000)
-
-    return { message: 'Sincronización iniciada', connectionId: id }
+  async testConnection(tenantId: string, id: string) {
+    return this.syncService.testConnection(tenantId, id)
   }
 
   async getStatus(tenantId: string, id: string) {
@@ -103,8 +180,25 @@ export class ConnectionsService {
     const recentLogs = await this.prisma.syncLog.findMany({
       where: { connectionId: id, tenantId },
       orderBy: { createdAt: 'desc' },
-      take: 5,
+      take: 10,
     })
-    return { status: conn.status, lastSync: conn.lastSync, recentLogs }
+    const [pending, error, synced] = await Promise.all([
+      this.prisma.marketplaceMapping.count({ where: { connectionId: id, syncStatus: 'pending' } }),
+      this.prisma.marketplaceMapping.count({ where: { connectionId: id, syncStatus: 'error' } }),
+      this.prisma.marketplaceMapping.count({ where: { connectionId: id, syncStatus: 'success' } }),
+    ])
+    return {
+      status: (conn as any).status,
+      lastSync: (conn as any).lastSync,
+      lastError: (conn as any).lastError,
+      recentLogs,
+      mappings: { pending, error, synced },
+    }
+  }
+
+  private getConnectionType(provider: string): string {
+    const marketplaces = ['mercadolibre', 'falabella', 'walmart', 'ripley', 'paris']
+    if (marketplaces.includes(provider)) return 'marketplace'
+    return 'ecommerce'
   }
 }
