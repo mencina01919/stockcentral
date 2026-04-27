@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, ShoppingCart, Loader2, Eye } from 'lucide-react'
+import { Search, ShoppingCart, Loader2, Eye, Package, MapPin, CreditCard, ExternalLink } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
@@ -13,6 +13,7 @@ export default function OrdersPage() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
   const [page, setPage] = useState(1)
+  const [selectedOrder, setSelectedOrder] = useState<any>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['orders', search, status, page],
@@ -134,7 +135,10 @@ export default function OrdersPage() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-1">
-                            <button className="p-1.5 text-gray-400 hover:text-sky-600 hover:bg-sky-50 rounded transition-colors">
+                            <button
+                              onClick={() => setSelectedOrder(order)}
+                              className="p-1.5 text-gray-400 hover:text-sky-600 hover:bg-sky-50 rounded transition-colors"
+                            >
                               <Eye className="w-4 h-4" />
                             </button>
                             {['pending', 'confirmed'].includes(order.status) && (
@@ -167,6 +171,180 @@ export default function OrdersPage() {
             </div>
           )}
         </div>
+      </div>
+    </div>
+
+      {selectedOrder && (
+        <OrderDetailModal
+          order={selectedOrder}
+          onClose={() => setSelectedOrder(null)}
+          onStatusChange={() => {
+            queryClient.invalidateQueries({ queryKey: ['orders'] })
+            setSelectedOrder(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function OrderDetailModal({ order, onClose, onStatusChange }: { order: any; onClose: () => void; onStatusChange: () => void }) {
+  const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status, color: 'bg-gray-100 text-gray-600' }
+
+  const advanceMutation = useMutation({
+    mutationFn: () => api.patch(`/orders/${order.id}/advance`),
+    onSuccess: () => {
+      toast.success('Estado actualizado')
+      onStatusChange()
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al actualizar estado'),
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: () => api.patch(`/orders/${order.id}/cancel`),
+    onSuccess: () => {
+      toast.success('Orden cancelada')
+      onStatusChange()
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.message || 'No se puede cancelar en este estado'),
+  })
+
+  const canAdvance = !['fulfilled', 'completed', 'cancelled'].includes(order.status)
+  const canCancel = ['pending', 'confirmed'].includes(order.status)
+
+  const nextStatus: Record<string, string> = {
+    pending: 'Confirmar',
+    confirmed: 'Procesar',
+    processing: 'Despachar',
+    fulfilled: 'Completar',
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl w-full max-w-2xl shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="p-6 border-b border-gray-100 flex items-start justify-between">
+          <div>
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-gray-900">{order.orderNumber}</h2>
+              <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusInfo.color}`}>
+                {statusInfo.label}
+              </span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">{formatDate(order.createdAt)}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-gray-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Package className="w-4 h-4 text-gray-400" />
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Cliente</p>
+              </div>
+              <p className="text-sm font-medium text-gray-900">{order.customerName}</p>
+              {order.customerEmail && <p className="text-xs text-gray-500 mt-0.5">{order.customerEmail}</p>}
+              {order.customerPhone && <p className="text-xs text-gray-500">{order.customerPhone}</p>}
+            </div>
+            <div className="bg-gray-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <CreditCard className="w-4 h-4 text-gray-400" />
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pago</p>
+              </div>
+              <p className="text-sm font-medium text-gray-900">{formatCurrency(Number(order.total), order.currency)}</p>
+              <p className={`text-xs mt-0.5 ${order.paymentStatus === 'paid' ? 'text-green-600' : 'text-amber-600'}`}>
+                {order.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente de pago'}
+              </p>
+              <p className="text-xs text-gray-500 mt-1 capitalize">
+                Canal: {PROVIDER_LABELS[order.sourceChannel] || order.sourceChannel}
+              </p>
+            </div>
+          </div>
+
+          {order.shippingAddress && (
+            <div className="bg-gray-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <MapPin className="w-4 h-4 text-gray-400" />
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de envío</p>
+              </div>
+              <p className="text-sm text-gray-700">
+                {order.shippingAddress.address1}
+                {order.shippingAddress.address2 && `, ${order.shippingAddress.address2}`}
+              </p>
+              <p className="text-sm text-gray-700">
+                {order.shippingAddress.city}{order.shippingAddress.state ? `, ${order.shippingAddress.state}` : ''}
+                {order.shippingAddress.zip ? ` ${order.shippingAddress.zip}` : ''}
+              </p>
+              {order.shippingAddress.country && <p className="text-sm text-gray-700">{order.shippingAddress.country}</p>}
+            </div>
+          )}
+
+          {order.items && order.items.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Productos</p>
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      {['Producto', 'SKU', 'Cant.', 'Precio unit.', 'Total'].map((h) => (
+                        <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {order.items.map((item: any) => (
+                      <tr key={item.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 font-medium text-gray-900 text-xs">{item.productName}</td>
+                        <td className="px-4 py-3 font-mono text-gray-500 text-xs">{item.sku}</td>
+                        <td className="px-4 py-3 text-gray-700 text-xs">{item.quantity}</td>
+                        <td className="px-4 py-3 text-gray-700 text-xs">{formatCurrency(Number(item.unitPrice), order.currency)}</td>
+                        <td className="px-4 py-3 font-semibold text-gray-900 text-xs">{formatCurrency(Number(item.totalPrice), order.currency)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="bg-gray-50">
+                    <tr>
+                      <td colSpan={4} className="px-4 py-2.5 text-right text-xs font-semibold text-gray-700">Total</td>
+                      <td className="px-4 py-2.5 text-xs font-bold text-gray-900">{formatCurrency(Number(order.total), order.currency)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {order.externalId && (
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>ID externo: <code className="font-mono bg-gray-100 px-1 rounded">{order.externalId}</code></span>
+            </div>
+          )}
+        </div>
+
+        {(canAdvance || canCancel) && (
+          <div className="p-5 border-t border-gray-100 flex gap-3">
+            {canCancel && (
+              <button
+                onClick={() => cancelMutation.mutate()}
+                disabled={cancelMutation.isPending}
+                className="px-4 py-2 border border-red-200 text-red-600 hover:bg-red-50 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+              >
+                {cancelMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                Cancelar orden
+              </button>
+            )}
+            {canAdvance && nextStatus[order.status] && (
+              <button
+                onClick={() => advanceMutation.mutate()}
+                disabled={advanceMutation.isPending}
+                className="flex-1 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                {advanceMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                {nextStatus[order.status]}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

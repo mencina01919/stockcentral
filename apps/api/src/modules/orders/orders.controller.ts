@@ -49,4 +49,10 @@ export class OrdersController {
   cancel(@TenantId() tenantId: string, @Param('id') id: string) {
     return this.ordersService.cancel(tenantId, id)
   }
+
+  @Patch(':id/advance')
+  @ApiOperation({ summary: 'Avanzar orden al siguiente estado' })
+  advance(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.ordersService.advance(tenantId, id)
+  }
 }

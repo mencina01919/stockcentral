@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard, Package, ShoppingCart, Warehouse, Plug, BarChart3,
-  Settings, LogOut, Package2,
+  Settings, LogOut, Package2, Webhook,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth.store'
@@ -16,6 +16,7 @@ const navItems = [
   { href: '/inventory', label: 'Inventario', icon: Warehouse },
   { href: '/connections', label: 'Conexiones', icon: Plug },
   { href: '/reports', label: 'Reportes', icon: BarChart3 },
+  { href: '/webhooks', label: 'Webhooks', icon: Webhook },
 ]
 
 export function Sidebar() {

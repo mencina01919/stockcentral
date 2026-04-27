@@ -107,6 +107,19 @@ export class OrdersService {
     return this.updateStatus(tenantId, id, { status: 'cancelled', reason })
   }
 
+  async advance(tenantId: string, id: string) {
+    const order = await this.findOne(tenantId, id)
+    const nextMap: Record<string, string> = {
+      pending: 'confirmed',
+      confirmed: 'processing',
+      processing: 'fulfilled',
+      fulfilled: 'completed',
+    }
+    const next = nextMap[order.status]
+    if (!next) throw new BadRequestException(`Cannot advance order from status '${order.status}'`)
+    return this.updateStatus(tenantId, id, { status: next })
+  }
+
   async getStats(tenantId: string) {
     const today = new Date()
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1)

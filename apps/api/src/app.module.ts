@@ -13,6 +13,7 @@ import { OrdersModule } from './modules/orders/orders.module'
 import { ConnectionsModule } from './modules/connections/connections.module'
 import { DashboardModule } from './modules/dashboard/dashboard.module'
 import { SyncModule } from './modules/sync/sync.module'
+import { WebhooksModule } from './modules/webhooks/webhooks.module'
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { SyncModule } from './modules/sync/sync.module'
     ConnectionsModule,
     DashboardModule,
     SyncModule,
+    WebhooksModule,
   ],
 })
 export class AppModule {}
