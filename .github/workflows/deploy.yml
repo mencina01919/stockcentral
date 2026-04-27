@@ -1,0 +1,25 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push Docker images
+        run: |
+          echo "Docker build & push steps go here"
+          echo "Configure with your registry (ECR, GHCR, etc.)"
+
+      - name: Deploy to server
+        run: |
+          echo "Deploy steps go here"
+          echo "Configure with your deployment target (ECS, Railway, Fly.io, etc.)"

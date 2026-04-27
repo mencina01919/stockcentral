@@ -1,0 +1,31 @@
+{
+  "name": "stockcentral",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "db:push": "pnpm --filter @stockcentral/database db:push",
+    "db:migrate": "pnpm --filter @stockcentral/database db:migrate",
+    "db:generate": "pnpm --filter @stockcentral/database db:generate",
+    "db:seed": "pnpm --filter @stockcentral/database db:seed",
+    "db:studio": "pnpm --filter @stockcentral/database db:studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.3",
+    "prettier": "^3.4.2",
+    "@types/node": "^22.10.7"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@10.33.2"
+}
