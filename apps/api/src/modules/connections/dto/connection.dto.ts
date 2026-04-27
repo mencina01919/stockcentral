@@ -4,7 +4,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 export class CreateConnectionDto {
   @ApiPropertyOptional({ enum: ['ecommerce', 'marketplace', 'shipping'] })
   @IsOptional()
-  @IsString()
   type?: string
 
   @ApiProperty({

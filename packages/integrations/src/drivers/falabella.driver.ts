@@ -1,5 +1,8 @@
 import axios, { AxiosInstance } from 'axios'
 import * as crypto from 'crypto'
+import { XMLParser } from 'fast-xml-parser'
+
+const xmlParser = new XMLParser({ ignoreAttributes: false, isArray: (name) => ['Product', 'Order', 'OrderItem', 'Brand', 'Image'].includes(name) })
 import {
   IMarketplaceDriver,
   DriverCredentials,
@@ -71,10 +74,18 @@ export class FalabellaDriver implements IMarketplaceDriver {
   }
 
   private buildClient(credentials: DriverCredentials, config?: DriverConfig): AxiosInstance {
-    return axios.create({
+    const client = axios.create({
       baseURL: this.getBaseUrl(credentials, config),
       timeout: 20000,
     })
+    // Falabella SC only supports Format=XML — parse XML response into JS object
+    client.interceptors.response.use((response) => {
+      if (typeof response.data === 'string' && response.data.trim().startsWith('<')) {
+        response.data = xmlParser.parse(response.data)
+      }
+      return response
+    })
+    return client
   }
 
   // Builds query params with local-offset timestamp and HMAC signature.
@@ -96,9 +107,10 @@ export class FalabellaDriver implements IMarketplaceDriver {
       .replace(/\.\d{3}Z$/, '')
     const timestamp = `${localIso}${sign}${hh}:${mm}`
 
+    // Falabella Chile SC only accepts Format=XML — JSON returns signature mismatch
     const params: Record<string, string> = {
       Action: action,
-      Format: 'JSON',
+      Format: 'XML',
       Timestamp: timestamp,
       UserID: credentials.userId,
       Version: '1.0',
@@ -115,13 +127,21 @@ export class FalabellaDriver implements IMarketplaceDriver {
   async testConnection(credentials: DriverCredentials, config?: DriverConfig): Promise<ConnectionTestResult> {
     try {
       const client = this.buildClient(credentials, config)
-      const params = this.buildParams(credentials, 'GetSeller')
+      // GetSeller is not available in Falabella CL — use GetBrands as connectivity probe
+      const params = this.buildParams(credentials, 'GetBrands')
       const res = await client.get('', { params })
 
-      const seller = res.data?.SuccessResponse?.Body?.Seller
+      if (res.data?.ErrorResponse) {
+        const msg =
+          res.data.ErrorResponse?.Head?.ErrorMessage ||
+          res.data.ErrorResponse?.Body?.ErrorMessage ||
+          'Error desconocido'
+        return { success: false, error: msg }
+      }
+
       return {
         success: true,
-        shopName: seller?.Name || credentials.userId,
+        shopName: credentials.userId,
         sellerId: credentials.userId,
       }
     } catch (err: any) {

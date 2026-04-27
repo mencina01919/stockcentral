@@ -8,10 +8,11 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "axios": "^1.7.9"
+    "axios": "^1.7.9",
+    "fast-xml-parser": "^5.7.2"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
-    "@types/node": "^22.10.7"
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3"
   }
 }
