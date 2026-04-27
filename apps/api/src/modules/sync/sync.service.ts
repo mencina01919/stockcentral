@@ -281,7 +281,7 @@ export class SyncService {
               where: { id: existing.id },
               data: {
                 status: this.mapMarketplaceOrderStatus(marketOrder.status),
-                paymentStatus: ['delivered', 'shipped', 'ready_to_ship'].includes(marketOrder.status) ? 'paid' : 'pending',
+                paymentStatus: this.mapPaymentStatus(marketOrder.status),
                 shipmentStatus: this.mapShipmentStatus(marketOrder.status),
               },
             })
@@ -307,7 +307,7 @@ export class SyncService {
               total: marketOrder.total,
               currency: marketOrder.currency,
               status: this.mapMarketplaceOrderStatus(marketOrder.status),
-              paymentStatus: ['delivered', 'shipped', 'ready_to_ship'].includes(marketOrder.status) ? 'paid' : 'pending',
+              paymentStatus: this.mapPaymentStatus(marketOrder.status),
               shipmentStatus: this.mapShipmentStatus(marketOrder.status),
               shippingAddress: marketOrder.shippingAddress as any,
               items: {
@@ -542,15 +542,22 @@ export class SyncService {
 
   private mapMarketplaceOrderStatus(marketStatus: string): string {
     const map: Record<string, string> = {
+      // Falabella
       pending: 'pending',
       ready_to_ship: 'confirmed',
+      readytoship: 'confirmed',
       shipped: 'fulfilled',
       delivered: 'completed',
       canceled: 'cancelled',
       failed: 'cancelled',
       returned: 'cancelled',
-      // Falabella raw statuses (lowercase with underscores)
-      readytoship: 'confirmed',
+      // MercadoLibre
+      payment_required: 'pending',
+      payment_in_process: 'pending',
+      paid: 'confirmed',
+      partially_refunded: 'confirmed',
+      cancelled: 'cancelled',
+      invalid: 'cancelled',
     }
     return map[marketStatus?.toLowerCase()] || 'pending'
   }
@@ -559,12 +566,27 @@ export class SyncService {
     const map: Record<string, string> = {
       pending: 'pending',
       ready_to_ship: 'pending',
+      readytoship: 'pending',
       shipped: 'shipped',
       delivered: 'delivered',
       canceled: 'cancelled',
+      cancelled: 'cancelled',
       failed: 'cancelled',
       returned: 'returned',
+      // ML payment statuses — no shipment yet
+      payment_required: 'pending',
+      payment_in_process: 'pending',
+      paid: 'pending',
     }
     return map[marketStatus?.toLowerCase()] || 'pending'
+  }
+
+  private mapPaymentStatus(marketStatus: string): string {
+    const paid = ['delivered', 'shipped', 'ready_to_ship', 'readytoship', 'paid', 'partially_refunded']
+    const refunded = ['returned']
+    const s = marketStatus?.toLowerCase()
+    if (paid.includes(s)) return 'paid'
+    if (refunded.includes(s)) return 'refunded'
+    return 'pending'
   }
 }

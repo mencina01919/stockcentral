@@ -270,7 +270,7 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
         title: item.item?.title,
         quantity: item.quantity,
         unitPrice: item.unit_price,
-        totalPrice: item.full_unit_price * item.quantity,
+        totalPrice: (item.full_unit_price ?? item.unit_price) * item.quantity,
       })),
       subtotal: data.total_amount,
       shippingCost: data.shipping?.cost || 0,
