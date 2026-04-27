@@ -65,10 +65,10 @@ const PROVIDER_META: Record<string, {
     label: 'Falabella', type: 'marketplace', color: 'text-green-700', bg: 'bg-green-50',
     authType: 'apikey',
     fields: [
-      { key: 'userId', label: 'User ID (Seller Email)', placeholder: 'seller@example.com', hint: 'Email de tu cuenta Seller Center' },
-      { key: 'apiSecret', label: 'API Secret', placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', secret: true, hint: 'Seller Center → API Keys' },
+      { key: 'userId', label: 'User ID (tu email de Seller Center)', placeholder: 'seller@example.com', hint: 'Seller Center → Mi cuenta → Integraciones → User ID' },
+      { key: 'apiKey', label: 'API Key', placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', secret: true, hint: 'Seller Center → Mi cuenta → Integraciones → API Key (no el secret)' },
     ],
-    docs: 'https://developers.falabella.com',
+    docs: 'https://developers.falabella.com/reference/getting-started',
   },
   walmart: {
     label: 'Walmart', type: 'marketplace', color: 'text-blue-700', bg: 'bg-blue-50',
