@@ -293,7 +293,7 @@ function OrderDetailModal({ order, onClose, onStatusChange }: { order: any; onCl
                   <tbody className="divide-y divide-gray-100">
                     {order.items.map((item: any) => (
                       <tr key={item.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 font-medium text-gray-900 text-xs">{item.productName}</td>
+                        <td className="px-4 py-3 font-medium text-gray-900 text-xs">{item.name}</td>
                         <td className="px-4 py-3 font-mono text-gray-500 text-xs">{item.sku}</td>
                         <td className="px-4 py-3 text-gray-700 text-xs">{item.quantity}</td>
                         <td className="px-4 py-3 text-gray-700 text-xs">{formatCurrency(Number(item.unitPrice), order.currency)}</td>

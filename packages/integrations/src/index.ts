@@ -1,4 +1,4 @@
-export * from './types'
+export * from './types/index'
 export * from './drivers/registry'
 export { MercadoLibreDriver } from './drivers/mercadolibre.driver'
 export { ShopifyDriver } from './drivers/shopify.driver'

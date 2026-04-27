@@ -25,6 +25,14 @@ export class SyncService {
     )
   }
 
+  async enqueueProductsInbound(tenantId: string, connectionId: string) {
+    return this.syncQueue.add(
+      SyncJobType.SYNC_PRODUCTS_INBOUND,
+      { tenantId, connectionId },
+      { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+    )
+  }
+
   async enqueueOrdersInbound(tenantId: string, connectionId: string, since?: Date) {
     return this.syncQueue.add(
       SyncJobType.SYNC_ORDERS_INBOUND,
@@ -152,6 +160,100 @@ export class SyncService {
     })
 
     return { synced, errors, total: products.length }
+  }
+
+  async syncProductsInbound(tenantId: string, connectionId: string) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    const driver = getDriver(connection.provider)
+    const credentials = connection.credentials as Record<string, string>
+    const config = connection.config as Record<string, unknown> | undefined
+
+    // Get (or create) the default warehouse for this tenant
+    let warehouse = await this.prisma.warehouse.findFirst({ where: { tenantId, active: true } })
+    if (!warehouse) {
+      warehouse = await this.prisma.warehouse.create({
+        data: { tenantId, name: 'Principal', type: 'physical', active: true },
+      })
+    }
+    const warehouseId = warehouse.id
+
+    let offset = 0
+    const limit = 50
+    let upserted = 0
+    let errors = 0
+    const startTime = Date.now()
+
+    while (true) {
+      const result = await driver.getProducts(credentials, config, offset, limit)
+
+      for (const mp of result.items) {
+        const sku = String(mp.externalSku || mp.externalId)
+        try {
+          const product = await this.prisma.product.upsert({
+            where: { tenantId_sku: { tenantId, sku } },
+            update: {
+              name: mp.title,
+              description: mp.description || null,
+              basePrice: mp.price,
+              images: mp.images as any,
+              status: mp.status === 'active' ? 'active' : 'inactive',
+            },
+            create: {
+              tenantId,
+              sku,
+              name: mp.title,
+              description: mp.description || null,
+              basePrice: mp.price,
+              images: mp.images as any,
+              status: mp.status === 'active' ? 'active' : 'inactive',
+            },
+          })
+
+          const existingInv = await this.prisma.inventory.findFirst({
+            where: { productId: product.id, variantId: null, warehouseId },
+          })
+          if (existingInv) {
+            await this.prisma.inventory.update({ where: { id: existingInv.id }, data: { quantity: mp.stock } })
+          } else {
+            await this.prisma.inventory.create({ data: { tenantId, productId: product.id, variantId: null, warehouseId, quantity: mp.stock, reservedQuantity: 0 } })
+          }
+
+          await this.prisma.marketplaceMapping.upsert({
+            where: { productId_connectionId: { productId: product.id, connectionId } },
+            update: {
+              marketplaceProductId: mp.externalId,
+              syncStatus: 'success',
+              lastSyncAt: new Date(),
+              errorMessage: null,
+            },
+            create: {
+              productId: product.id,
+              connectionId,
+              marketplaceProductId: mp.externalId,
+              syncStatus: 'success',
+              lastSyncAt: new Date(),
+            },
+          })
+
+          upserted++
+        } catch (err: any) {
+          this.logger.error(`Error upserting product ${mp.externalSku}: ${err.message}`)
+          errors++
+        }
+      }
+
+      if (!result.hasMore) break
+      offset += limit
+    }
+
+    const duration = Date.now() - startTime
+    await this.logSync(tenantId, connectionId, 'inbound', 'sync_products_inbound', 'product', null, upserted > 0 || errors === 0 ? 'success' : 'error', duration, { upserted, errors })
+    await this.prisma.connection.update({
+      where: { id: connectionId },
+      data: { lastSync: new Date(), status: 'connected' },
+    })
+
+    return { upserted, errors }
   }
 
   async syncOrdersInbound(tenantId: string, connectionId: string, since?: Date) {
@@ -303,13 +405,14 @@ export class SyncService {
   // ─── Manual Trigger (from controller) ─────────────────────────────────────
 
   async triggerFullSync(tenantId: string, connectionId: string) {
-    const [ordersJob, productsJob] = await Promise.all([
+    const [ordersJob, productsInJob, productsOutJob] = await Promise.all([
       this.enqueueOrdersInbound(tenantId, connectionId),
+      this.enqueueProductsInbound(tenantId, connectionId),
       this.enqueueProductsOutbound(tenantId, connectionId),
     ])
     return {
       message: 'Sincronización encolada',
-      jobs: { orders: ordersJob.id, products: productsJob.id },
+      jobs: { orders: ordersJob.id, productsIn: productsInJob.id, productsOut: productsOutJob.id },
     }
   }
 

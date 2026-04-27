@@ -419,8 +419,8 @@ export class FalabellaDriver implements IMarketplaceDriver {
     const stock = parseInt(firstBu?.Stock || data.Quantity || '0', 10)
     const status = firstBu?.Status === 'active' ? 'active' : 'paused'
     return {
-      externalId: data.SellerSku,
-      externalSku: data.SellerSku,
+      externalId: String(data.SellerSku),
+      externalSku: String(data.SellerSku),
       title: data.Name,
       description: data.Description,
       price,
@@ -439,7 +439,7 @@ export class FalabellaDriver implements IMarketplaceDriver {
 
     const mappedItems = items.map((item: any) => ({
       externalId: String(item.OrderItemId),
-      sku: item.Sku || item.SellerSku || item.ShopSku,
+      sku: String(item.Sku || item.SellerSku || item.ShopSku || ''),
       title: item.Name,
       quantity: 1, // Falabella SC: each OrderItem = 1 unit (separate items for qty > 1)
       unitPrice: parseFloat(item.PaidPrice || item.ItemPrice || '0'),
@@ -447,9 +447,10 @@ export class FalabellaDriver implements IMarketplaceDriver {
     }))
 
     const currency = items[0]?.Currency || 'CLP'
-    const subtotal = parseFloat(header.ProductTotal?.replace(/,/g, '') || header.Price || '0')
-    const shipping = parseFloat(header.ShippingFeeTotal?.replace(/,/g, '') || '0')
-    const total = parseFloat(header.GrandTotal?.replace(/,/g, '') || header.Price || '0')
+    const toNum = (v: unknown) => parseFloat(String(v ?? '0').replace(/,/g, ''))
+    const subtotal = toNum(header.ProductTotal ?? header.Price)
+    const shipping = toNum(header.ShippingFeeTotal)
+    const total = toNum(header.GrandTotal ?? header.Price)
 
     return {
       externalId: String(header.OrderId),

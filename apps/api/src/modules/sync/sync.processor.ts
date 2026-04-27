@@ -16,6 +16,12 @@ export class SyncProcessor {
     await this.syncService.syncProductsOutbound(job.data.tenantId, job.data.connectionId, job.data.productIds)
   }
 
+  @Process(SyncJobType.SYNC_PRODUCTS_INBOUND)
+  async handleProductsInbound(job: Job<{ tenantId: string; connectionId: string }>) {
+    this.logger.log(`Processing products inbound sync for connection ${job.data.connectionId}`)
+    await this.syncService.syncProductsInbound(job.data.tenantId, job.data.connectionId)
+  }
+
   @Process(SyncJobType.SYNC_ORDERS_INBOUND)
   async handleOrdersInbound(job: Job<{ tenantId: string; connectionId: string; since?: string }>) {
     this.logger.log(`Processing orders inbound sync for connection ${job.data.connectionId}`)

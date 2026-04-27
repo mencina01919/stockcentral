@@ -2,6 +2,7 @@ export const SYNC_QUEUE = 'sync'
 
 export const SyncJobType = {
   SYNC_PRODUCTS_OUTBOUND: 'sync:products:outbound',
+  SYNC_PRODUCTS_INBOUND: 'sync:products:inbound',
   SYNC_ORDERS_INBOUND: 'sync:orders:inbound',
   SYNC_STOCK: 'sync:stock',
   TEST_CONNECTION: 'sync:test-connection',
