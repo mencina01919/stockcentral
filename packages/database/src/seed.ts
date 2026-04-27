@@ -72,23 +72,20 @@ async function main() {
       },
     })
 
-    await prisma.inventory.upsert({
-      where: {
-        productId_variantId_warehouseId: {
-          productId: product.id,
-          variantId: null,
-          warehouseId: warehouse.id,
-        },
-      },
-      update: {},
-      create: {
-        tenantId: tenant.id,
-        productId: product.id,
-        warehouseId: warehouse.id,
-        quantity: p.stock,
-        minStock: 5,
-      },
+    const existingInventory = await prisma.inventory.findFirst({
+      where: { productId: product.id, variantId: null, warehouseId: warehouse.id },
     })
+    if (!existingInventory) {
+      await prisma.inventory.create({
+        data: {
+          tenantId: tenant.id,
+          productId: product.id,
+          warehouseId: warehouse.id,
+          quantity: p.stock,
+          minStock: 5,
+        },
+      })
+    }
   }
 
   console.log('Seed completed.')

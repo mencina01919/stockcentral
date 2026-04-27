@@ -3,6 +3,7 @@
   "compilerOptions": {
     "outDir": "./dist",
     "baseUrl": "./",
+    "strictPropertyInitialization": false,
     "paths": {
       "@stockcentral/types": ["../../packages/types/src"]
     }
