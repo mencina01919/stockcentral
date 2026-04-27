@@ -290,119 +290,144 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
-          {/* Basic info */}
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
-              <input
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Descripción</label>
-              <textarea
-                value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })}
-                rows={4}
-                placeholder="Descripción completa del producto (se enviará a Falabella)"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
-              />
-            </div>
+
+          {/* Nombre */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del producto</label>
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="Ej: Monitor MSI MAG 271QP QD-OLED 27'' 240Hz"
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+            <p className="text-xs text-gray-400 mt-1">Nombre visible en StockCentral y en Falabella. Sé descriptivo: marca, modelo, características clave.</p>
           </div>
 
-          {/* Pricing */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Precio base (CLP)</label>
-              <input
-                type="number"
-                value={form.basePrice}
-                onChange={(e) => setForm({ ...form, basePrice: e.target.value })}
-                min="0"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Precio oferta (CLP) <span className="text-gray-400 font-normal">opcional</span></label>
-              <input
-                type="number"
-                value={form.salePrice}
-                onChange={(e) => setForm({ ...form, salePrice: e.target.value })}
-                min="0"
-                placeholder="Dejar vacío si no aplica"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-              />
-            </div>
+          {/* Descripción */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Descripción</label>
+            <textarea
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              rows={5}
+              placeholder="Ej: Monitor gaming QD-OLED de 27 pulgadas con resolución 2560x1440, frecuencia de actualización de 240Hz, tiempo de respuesta 0.03ms, compatible con HDR400 y AMD FreeSync Premium Pro. Ideal para gaming competitivo y trabajo creativo."
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+            />
+            <p className="text-xs text-gray-400 mt-1">Se publica en la ficha del producto en Falabella. Incluye especificaciones técnicas, materiales, compatibilidad y usos recomendados. Sin HTML.</p>
           </div>
 
-          {form.salePrice && (
+          {/* Precios */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Precios</p>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Inicio oferta</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio base (CLP)</label>
                 <input
-                  type="date"
-                  value={form.saleStartDate}
-                  onChange={(e) => setForm({ ...form, saleStartDate: e.target.value })}
+                  type="number"
+                  value={form.basePrice}
+                  onChange={(e) => setForm({ ...form, basePrice: e.target.value })}
+                  min="0"
+                  placeholder="Ej: 599990"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
+                <p className="text-xs text-gray-400 mt-1">Precio normal sin descuento. Se muestra tachado cuando hay oferta activa.</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Fin oferta</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Precio oferta (CLP) <span className="text-gray-400 font-normal">opcional</span>
+                </label>
                 <input
-                  type="date"
-                  value={form.saleEndDate}
-                  onChange={(e) => setForm({ ...form, saleEndDate: e.target.value })}
+                  type="number"
+                  value={form.salePrice}
+                  onChange={(e) => setForm({ ...form, salePrice: e.target.value })}
+                  min="0"
+                  placeholder="Ej: 499990 — dejar vacío si no hay oferta"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
                 />
+                <p className="text-xs text-gray-400 mt-1">Precio con descuento. Debe ser menor al precio base. Requiere fechas de vigencia.</p>
               </div>
             </div>
-          )}
 
-          {/* Stock & Status */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Stock</label>
-              <input
-                type="number"
-                value={form.stock}
-                onChange={(e) => setForm({ ...form, stock: e.target.value })}
-                min="0"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
-              <select
-                value={form.status}
-                onChange={(e) => setForm({ ...form, status: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-              >
-                <option value="draft">Borrador</option>
-                <option value="active">Activo</option>
-                <option value="archived">Archivado</option>
-              </select>
+            {form.salePrice && (
+              <div className="grid grid-cols-2 gap-4 mt-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Inicio de oferta</label>
+                  <input
+                    type="date"
+                    value={form.saleStartDate}
+                    onChange={(e) => setForm({ ...form, saleStartDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Fecha desde la que se activa el precio de oferta en Falabella.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Fin de oferta</label>
+                  <input
+                    type="date"
+                    value={form.saleEndDate}
+                    onChange={(e) => setForm({ ...form, saleEndDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Fecha hasta la que rige el precio oferta. Después vuelve al precio base.</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Stock y Estado */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Inventario y estado</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Stock disponible (unidades)</label>
+                <input
+                  type="number"
+                  value={form.stock}
+                  onChange={(e) => setForm({ ...form, stock: e.target.value })}
+                  min="0"
+                  placeholder="Ej: 10"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+                <p className="text-xs text-gray-400 mt-1">Unidades disponibles en bodega. Se actualiza en Falabella al sincronizar. Si llegas a 0, el producto se pausa automáticamente.</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Estado en StockCentral</label>
+                <select
+                  value={form.status}
+                  onChange={(e) => setForm({ ...form, status: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  <option value="draft">Borrador — visible solo internamente</option>
+                  <option value="active">Activo — se sincroniza con marketplaces</option>
+                  <option value="archived">Archivado — desactivado sin eliminarse</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">Solo los productos <strong>Activos</strong> se sincronizan automáticamente con Falabella.</p>
+              </div>
             </div>
           </div>
 
-          {/* Images */}
+          {/* Imágenes */}
           <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Imágenes del producto</p>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Imágenes <span className="text-gray-400 font-normal">(URLs públicas, una por línea, máx. 8)</span>
+              URLs de imágenes <span className="text-gray-400 font-normal">(una por línea, máx. 8)</span>
             </label>
-            <p className="text-xs text-gray-400 mb-2">Las imágenes deben ser URLs accesibles públicamente. Se enviarán directamente a Falabella al sincronizar.</p>
             <textarea
               value={form.images}
               onChange={(e) => setForm({ ...form, images: e.target.value })}
               rows={4}
-              placeholder="https://ejemplo.com/imagen1.jpg&#10;https://ejemplo.com/imagen2.jpg"
+              placeholder={"https://mitienda.com/img/producto-frente.jpg\nhttps://mitienda.com/img/producto-lateral.jpg\nhttps://mitienda.com/img/producto-detalle.jpg"}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono resize-none"
             />
+            <div className="mt-1.5 space-y-1">
+              <p className="text-xs text-gray-400">• La <strong>primera URL</strong> será la imagen principal en Falabella (la que aparece en resultados de búsqueda).</p>
+              <p className="text-xs text-gray-400">• Las URLs deben ser <strong>públicamente accesibles</strong> (sin contraseña ni login). Falabella descarga las imágenes desde sus servidores.</p>
+              <p className="text-xs text-gray-400">• Formatos aceptados: JPG, PNG. Tamaño recomendado: mínimo 800×800px, fondo blanco.</p>
+            </div>
             {imageList.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 {imageList.slice(0, 8).map((url, i) => (
-                  <div key={i} className="relative group">
+                  <div key={i} className="relative">
                     <img
                       src={url}
                       alt={`Imagen ${i + 1}`}
@@ -410,21 +435,28 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
                       onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none' }}
                     />
                     {i === 0 && (
-                      <span className="absolute bottom-0.5 left-0.5 text-[9px] bg-sky-600 text-white px-1 rounded">Principal</span>
+                      <span className="absolute bottom-0.5 left-0.5 text-[9px] bg-sky-600 text-white px-1 rounded leading-tight">Principal</span>
                     )}
                   </div>
                 ))}
+                {imageList.length > 8 && (
+                  <p className="text-xs text-amber-600 self-center">Solo se usarán las primeras 8 imágenes.</p>
+                )}
               </div>
             )}
           </div>
 
-          {/* Marketplace connections info */}
-          {product._count?.marketplaceMappings > 0 && (
-            <div className="bg-sky-50 rounded-lg p-3 flex items-start gap-2">
+          {/* Info marketplaces */}
+          {product._count?.marketplaceMappings > 0 ? (
+            <div className="bg-sky-50 border border-sky-100 rounded-lg p-3 flex items-start gap-2">
               <ExternalLink className="w-4 h-4 text-sky-600 mt-0.5 flex-shrink-0" />
               <p className="text-xs text-sky-700">
-                Este producto está conectado a <strong>{product._count.marketplaceMappings} canal{product._count.marketplaceMappings > 1 ? 'es' : ''}</strong>. Usa "Guardar y sincronizar" para actualizar nombre, descripción, precio, imágenes y stock en todos los marketplaces.
+                Este producto está publicado en <strong>{product._count.marketplaceMappings} canal{product._count.marketplaceMappings > 1 ? 'es' : ''}</strong>. Usa <strong>"Guardar y sincronizar"</strong> para actualizar nombre, descripción, precio, imágenes y stock en todos los marketplaces al mismo tiempo.
               </p>
+            </div>
+          ) : (
+            <div className="bg-gray-50 border border-gray-100 rounded-lg p-3">
+              <p className="text-xs text-gray-500">Este producto aún no está publicado en ningún marketplace. Cuando lo sincronices por primera vez desde Conexiones, aparecerá aquí.</p>
             </div>
           )}
         </div>
