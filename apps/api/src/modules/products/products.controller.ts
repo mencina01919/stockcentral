@@ -50,6 +50,32 @@ export class ProductsController {
     return this.syncService.pushProductToMarketplaces(tenantId, id)
   }
 
+  @Get(':id/marketplaces')
+  @ApiOperation({ summary: 'Estado de mappings y conexiones disponibles para el producto' })
+  marketplaceStatus(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.productsService.marketplaceStatus(tenantId, id)
+  }
+
+  @Post(':id/marketplaces/:connectionId/detect')
+  @ApiOperation({ summary: 'Buscar este SKU en el marketplace y vincular si existe' })
+  detectMarketplace(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Param('connectionId') connectionId: string,
+  ) {
+    return this.productsService.detectMarketplace(tenantId, id, connectionId)
+  }
+
+  @Delete(':id/marketplaces/:connectionId')
+  @ApiOperation({ summary: 'Desvincular el producto del marketplace (no elimina la publicación)' })
+  unlinkMarketplace(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Param('connectionId') connectionId: string,
+  ) {
+    return this.productsService.unlinkMarketplace(tenantId, id, connectionId)
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Archivar producto' })
   remove(@TenantId() tenantId: string, @Param('id') id: string) {

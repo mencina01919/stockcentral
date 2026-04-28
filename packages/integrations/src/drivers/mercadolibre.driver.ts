@@ -130,6 +130,25 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     return { items, total, offset, limit, hasMore: offset + limit < total }
   }
 
+  async findBySku(credentials: DriverCredentials, sku: string): Promise<MarketplaceProduct[]> {
+    if (!sku) return []
+    const client = this.buildClient(credentials.accessToken)
+    const sellerId = credentials.sellerId
+    const searchRes = await client.get(`/users/${sellerId}/items/search`, {
+      params: { seller_custom_field: sku, limit: 50 },
+    })
+    const ids: string[] = searchRes.data.results || []
+    if (!ids.length) return []
+    const detailRes = await client.get('/items', { params: { ids: ids.join(',') } })
+    const items: MarketplaceProduct[] = []
+    for (const entry of detailRes.data) {
+      if (entry.code === 200 && entry.body?.seller_custom_field === sku) {
+        items.push(this.mapProduct(entry.body))
+      }
+    }
+    return items
+  }
+
   async getProduct(credentials: DriverCredentials, externalId: string): Promise<MarketplaceProduct | null> {
     try {
       const client = this.buildClient(credentials.accessToken)

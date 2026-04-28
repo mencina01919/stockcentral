@@ -69,7 +69,7 @@ export class SyncService {
     }
   }
 
-  @Cron(CronExpression.EVERY_30_MINUTES)
+  @Cron(CronExpression.EVERY_5_MINUTES)
   async scheduledProductsOutbound() {
     const connections = await this.prisma.connection.findMany({
       where: { syncEnabled: true, status: 'connected' },

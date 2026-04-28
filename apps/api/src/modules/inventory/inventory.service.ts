@@ -1,16 +1,65 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common'
 import { PrismaService } from '../../prisma/prisma.service'
 import { UpdateInventoryDto, StockMovementDto, InventoryQueryDto } from './dto/inventory.dto'
+import { SyncService } from '../sync/sync.service'
 
 @Injectable()
 export class InventoryService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(InventoryService.name)
+
+  constructor(
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => SyncService)) private syncService: SyncService,
+  ) {}
+
+  // Encolar push de stock a todos los marketplaces vinculados al producto.
+  // Llamado tras cambios de inventario o movimientos.
+  private async pushStockToMarketplaces(tenantId: string, productId: string, totalStock: number) {
+    const mappings = await this.prisma.marketplaceMapping.findMany({
+      where: {
+        productId,
+        syncStatus: 'connected',
+        marketplaceProductId: { not: null },
+        connection: { syncEnabled: true, status: 'connected' },
+      },
+      include: { connection: true },
+    })
+
+    for (const m of mappings) {
+      try {
+        await this.syncService.enqueueStockSync(
+          tenantId,
+          m.connectionId,
+          productId,
+          m.marketplaceProductId!,
+          totalStock,
+        )
+      } catch (err: any) {
+        this.logger.error(`Failed to enqueue stock sync ${productId}@${m.connectionId}: ${err.message}`)
+      }
+    }
+  }
+
+  private async totalStockForProduct(tenantId: string, productId: string): Promise<number> {
+    const agg = await this.prisma.inventory.aggregate({
+      where: { tenantId, productId, warehouse: { type: 'physical' } },
+      _sum: { quantity: true, reservedQuantity: true },
+    })
+    const qty = agg._sum.quantity || 0
+    const reserved = agg._sum.reservedQuantity || 0
+    return Math.max(0, qty - reserved)
+  }
 
   async findAll(tenantId: string, query: InventoryQueryDto) {
     const { page = 1, limit = 20, search, lowStock, warehouseId } = query
     const skip = (page - 1) * limit
 
-    const where: any = { tenantId }
+    // Inventario solo muestra stock maestro — bodegas físicas, no marketplaces.
+    // Marketplaces consumen este stock vía sync, no se contabilizan aparte.
+    const where: any = {
+      tenantId,
+      warehouse: { type: 'physical' },
+    }
     if (warehouseId) where.warehouseId = warehouseId
     if (search) {
       where.product = {
@@ -93,6 +142,10 @@ export class InventoryService {
       }),
     ])
 
+    // Push stock al/los marketplace(s) vinculados (fire-and-forget).
+    const total = await this.totalStockForProduct(tenantId, inventory.productId)
+    await this.pushStockToMarketplaces(tenantId, inventory.productId, total)
+
     return updated
   }
 
@@ -124,6 +177,9 @@ export class InventoryService {
         data: { quantity: { increment: quantityChange } },
       }),
     ])
+
+    const total = await this.totalStockForProduct(tenantId, inventory.productId)
+    await this.pushStockToMarketplaces(tenantId, inventory.productId, total)
 
     return movement
   }

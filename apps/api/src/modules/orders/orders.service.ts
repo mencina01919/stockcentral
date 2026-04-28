@@ -16,11 +16,12 @@ export class OrdersService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(tenantId: string, query: OrderQueryDto) {
-    const { page = 1, limit = 20, search, status, sourceChannel, sortBy = 'createdAt', sortOrder = 'desc' } = query
+    const { page = 1, limit = 20, search, status, source, sourceChannel, sortBy = 'createdAt', sortOrder = 'desc' } = query
     const skip = (page - 1) * limit
     const where: any = { tenantId }
 
     if (status) where.status = status
+    if (source) where.source = source
     if (sourceChannel) where.sourceChannel = sourceChannel
     if (search) {
       where.OR = [

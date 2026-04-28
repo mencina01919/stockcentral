@@ -195,6 +195,13 @@ export class FalabellaDriver implements IMarketplaceDriver {
     }
   }
 
+  async findBySku(credentials: DriverCredentials, sku: string, config?: DriverConfig): Promise<MarketplaceProduct[]> {
+    if (!sku) return []
+    const product = await this.getProduct(credentials, sku, config)
+    // Falabella SellerSku is the unique key — at most 1 match.
+    return product ? [product] : []
+  }
+
   // ProductCreate — sends XML body, params in query string
   // Docs: https://developers.falabella.com/reference/productcreate
   async createProduct(

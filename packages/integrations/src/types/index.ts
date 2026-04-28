@@ -142,6 +142,16 @@ export interface IMarketplaceDriver {
     config?: DriverConfig,
   ): Promise<MarketplaceProduct | null>
 
+  // Search marketplace listings by seller SKU. Returns:
+  //  - 0 matches → not published in this marketplace
+  //  - 1 match  → auto-link
+  //  - 2+ matches → ambiguous, user must resolve
+  findBySku?(
+    credentials: DriverCredentials,
+    sku: string,
+    config?: DriverConfig,
+  ): Promise<MarketplaceProduct[]>
+
   createProduct(
     credentials: DriverCredentials,
     product: SyncProductInput,

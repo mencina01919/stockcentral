@@ -1,28 +1,91 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Package, ShoppingCart, Warehouse, Plug, BarChart3,
-  Settings, LogOut, Package2, Webhook, Receipt,
+  Settings, LogOut, Package2, Webhook, Receipt, ChevronDown, ChevronRight,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import api from '@/lib/api'
+import { cn, PROVIDER_LABELS } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth.store'
 
-const navItems = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/products', label: 'Productos', icon: Package },
-  { href: '/sales', label: 'Ventas', icon: Receipt },
-  { href: '/orders', label: 'Órdenes', icon: ShoppingCart },
-  { href: '/inventory', label: 'Inventario', icon: Warehouse },
-  { href: '/connections', label: 'Conexiones', icon: Plug },
-  { href: '/reports', label: 'Reportes', icon: BarChart3 },
-  { href: '/webhooks', label: 'Webhooks', icon: Webhook },
-]
+type NavLeaf = { type: 'leaf'; href: string; label: string }
+type NavGroup = {
+  type: 'group'
+  key: string
+  label: string
+  icon: any
+  basePath: string
+  items: NavLeaf[]
+}
+type NavItem = { type: 'leaf'; href: string; label: string; icon: any } | NavGroup
 
 export function Sidebar() {
   const pathname = usePathname()
   const { user, logout } = useAuthStore()
+
+  const { data: connectionsData } = useQuery({
+    queryKey: ['connections'],
+    queryFn: () => api.get('/connections').then((r) => r.data),
+    staleTime: 60_000,
+  })
+  const providers: string[] = (connectionsData?.data || [])
+    .filter((c: any) => c.status === 'connected' || c.status === 'disconnected')
+    .map((c: any) => c.provider)
+  const uniqueProviders = Array.from(new Set(providers))
+
+  const channelLeaves = (basePath: string): NavLeaf[] => [
+    { type: 'leaf', href: `${basePath}/all`, label: 'Todas' },
+    ...uniqueProviders.map((p) => ({
+      type: 'leaf' as const,
+      href: `${basePath}/${p}`,
+      label: PROVIDER_LABELS[p] || p,
+    })),
+  ]
+
+  const productsLeaves: NavLeaf[] = [
+    { type: 'leaf', href: '/products/master', label: 'Maestro' },
+    ...uniqueProviders.map((p) => ({
+      type: 'leaf' as const,
+      href: `/products/${p}`,
+      label: PROVIDER_LABELS[p] || p,
+    })),
+  ]
+
+  const navItems: NavItem[] = [
+    { type: 'leaf', href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    {
+      type: 'group',
+      key: 'products',
+      label: 'Productos',
+      icon: Package,
+      basePath: '/products',
+      items: productsLeaves,
+    },
+    {
+      type: 'group',
+      key: 'sales',
+      label: 'Ventas',
+      icon: Receipt,
+      basePath: '/sales',
+      items: channelLeaves('/sales'),
+    },
+    {
+      type: 'group',
+      key: 'orders',
+      label: 'Órdenes',
+      icon: ShoppingCart,
+      basePath: '/orders',
+      items: channelLeaves('/orders'),
+    },
+    { type: 'leaf', href: '/inventory', label: 'Inventario', icon: Warehouse },
+    { type: 'leaf', href: '/connections', label: 'Conexiones', icon: Plug },
+    { type: 'leaf', href: '/reports', label: 'Reportes', icon: BarChart3 },
+    { type: 'leaf', href: '/webhooks', label: 'Webhooks', icon: Webhook },
+  ]
 
   return (
     <aside className="w-64 bg-gray-900 text-white flex flex-col min-h-screen">
@@ -40,24 +103,28 @@ export function Sidebar() {
         </div>
       </div>
 
-      <nav className="flex-1 p-4 space-y-1">
-        {navItems.map(({ href, label, icon: Icon }) => {
-          const active = pathname === href || pathname.startsWith(href + '/')
-          return (
-            <Link
-              key={href}
-              href={href}
-              className={cn(
-                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-                active
-                  ? 'bg-sky-600 text-white'
-                  : 'text-gray-300 hover:bg-gray-800 hover:text-white',
-              )}
-            >
-              <Icon className="w-4 h-4 flex-shrink-0" />
-              {label}
-            </Link>
-          )
+      <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+        {navItems.map((item) => {
+          if (item.type === 'leaf') {
+            const Icon = item.icon
+            const active = pathname === item.href || pathname.startsWith(item.href + '/')
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                  active
+                    ? 'bg-sky-600 text-white'
+                    : 'text-gray-300 hover:bg-gray-800 hover:text-white',
+                )}
+              >
+                <Icon className="w-4 h-4 flex-shrink-0" />
+                {item.label}
+              </Link>
+            )
+          }
+          return <SidebarGroup key={item.key} group={item} pathname={pathname} />
         })}
       </nav>
 
@@ -92,5 +159,50 @@ export function Sidebar() {
         </div>
       )}
     </aside>
+  )
+}
+
+function SidebarGroup({ group, pathname }: { group: NavGroup; pathname: string }) {
+  const inGroup = pathname === group.basePath || pathname.startsWith(group.basePath + '/')
+  const [open, setOpen] = useState(inGroup)
+  const Icon = group.icon
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+          inGroup
+            ? 'bg-gray-800 text-white'
+            : 'text-gray-300 hover:bg-gray-800 hover:text-white',
+        )}
+      >
+        <Icon className="w-4 h-4 flex-shrink-0" />
+        <span className="flex-1 text-left">{group.label}</span>
+        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+      </button>
+      {open && (
+        <div className="mt-1 ml-3 pl-4 border-l border-gray-700 space-y-0.5">
+          {group.items.map((leaf) => {
+            const active = pathname === leaf.href
+            return (
+              <Link
+                key={leaf.href}
+                href={leaf.href}
+                className={cn(
+                  'block px-3 py-2 rounded-md text-xs font-medium transition-colors',
+                  active
+                    ? 'bg-sky-600 text-white'
+                    : 'text-gray-400 hover:text-white hover:bg-gray-800',
+                )}
+              >
+                {leaf.label}
+              </Link>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
