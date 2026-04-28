@@ -27,12 +27,12 @@ export function Sidebar() {
   const pathname = usePathname()
   const { user, logout } = useAuthStore()
 
-  const { data: connectionsData } = useQuery({
+  const { data: connections } = useQuery<any[]>({
     queryKey: ['connections'],
     queryFn: () => api.get('/connections').then((r) => r.data),
     staleTime: 60_000,
   })
-  const providers: string[] = (connectionsData?.data || [])
+  const providers: string[] = (connections || [])
     .filter((c: any) => c.status === 'connected' || c.status === 'disconnected')
     .map((c: any) => c.provider)
   const uniqueProviders = Array.from(new Set(providers))

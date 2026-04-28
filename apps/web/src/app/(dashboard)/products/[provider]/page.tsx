@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Search, Package, Loader2, ExternalLink, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { Search, Package, Loader2, AlertTriangle, CheckCircle2, ExternalLink } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { formatCurrency, PROVIDER_LABELS } from '@/lib/utils'
@@ -13,27 +13,35 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
 
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
+  const limit = 25
 
-  // Resolve connection for this provider (one per tenant per provider).
-  const { data: connections } = useQuery({
+  const { data: connections } = useQuery<any[]>({
     queryKey: ['connections'],
     queryFn: () => api.get('/connections').then((r) => r.data),
     staleTime: 60_000,
   })
-  const connection = (connections?.data || []).find((c: any) => c.provider === provider)
+  const connection = (connections || []).find((c: any) => c.provider === provider)
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     enabled: !!connection?.id,
-    queryKey: ['products-by-mp', provider, search, page],
+    queryKey: ['marketplace-products', provider, page],
     queryFn: () =>
       api
-        .get('/products', {
-          params: { connectionId: connection.id, search, page, limit: 20 },
+        .get(`/products/marketplace/${connection.id}`, {
+          params: { offset: (page - 1) * limit, limit },
         })
         .then((r) => r.data),
   })
 
-  const products = data?.data || []
+  const items = (data?.data || []).filter((p: any) => {
+    if (!search) return true
+    const s = search.toLowerCase()
+    return (
+      (p.title || '').toLowerCase().includes(s) ||
+      (p.externalSku || '').toLowerCase().includes(s) ||
+      (p.externalId || '').toLowerCase().includes(s)
+    )
+  })
   const meta = data?.meta
 
   if (!connections) {
@@ -55,7 +63,7 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
               No hay una conexión configurada para {providerLabel}
             </p>
             <p className="text-xs text-amber-700 mt-1">
-              Crea la conexión desde la sección Conexiones para ver los productos publicados.
+              Crea la conexión desde la sección Conexiones para ver tus productos publicados.
             </p>
           </div>
         </div>
@@ -67,49 +75,54 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
     <div className="flex flex-col h-full">
       <Header
         title={`Productos en ${providerLabel}`}
-        subtitle={`Productos vinculados a ${connection.name}`}
+        subtitle={`Productos publicados en ${connection.name}`}
       />
 
       <div className="flex-1 p-6 overflow-auto">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="p-4 border-b border-gray-100">
-            <div className="relative max-w-sm">
+          <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
+            <div className="relative max-w-sm flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value)
-                  setPage(1)
-                }}
+                onChange={(e) => setSearch(e.target.value)}
                 placeholder="Buscar por nombre o SKU..."
                 className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
               />
             </div>
+            {meta && (
+              <p className="text-xs text-gray-500">
+                {meta.total} productos publicados
+              </p>
+            )}
           </div>
 
           {isLoading ? (
             <div className="flex items-center justify-center h-48">
               <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
             </div>
-          ) : products.length === 0 ? (
+          ) : error ? (
+            <div className="text-center py-16">
+              <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+              <p className="text-sm font-medium text-amber-800">
+                No se pudieron cargar los productos desde {providerLabel}
+              </p>
+              <p className="text-xs text-amber-700 mt-1">
+                {(error as any)?.response?.data?.message || (error as any)?.message || 'Error desconocido'}
+              </p>
+            </div>
+          ) : items.length === 0 ? (
             <div className="text-center py-16">
               <Package className="w-12 h-12 text-gray-300 mx-auto mb-3" />
               <p className="text-gray-500 font-medium">
-                No hay productos vinculados a {providerLabel}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                Vincúlalos desde el editor de cada producto en{' '}
-                <a href="/products/master" className="text-sky-600 hover:underline">
-                  Productos / Maestro
-                </a>
-                .
+                No hay productos publicados en {providerLabel}
               </p>
             </div>
           ) : (
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  {['Producto', 'SKU', 'Precio base', 'Estado sync', 'Vinculado', 'ID en marketplace'].map((h) => (
+                  {['Producto', 'SKU vendedor', 'ID en marketplace', 'Precio', 'Stock', 'Estado', 'Maestro'].map((h) => (
                     <th
                       key={h}
                       className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
@@ -120,51 +133,77 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {products.map((p: any) => {
-                  const mapping = p.marketplaceMappings?.find(
-                    (m: any) => m.connectionId === connection.id,
-                  )
-                  return (
-                    <tr key={p.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 text-sm font-medium text-gray-900">{p.name}</td>
-                      <td className="px-6 py-4 text-xs font-mono text-gray-500">{p.sku}</td>
-                      <td className="px-6 py-4 text-sm text-gray-700">
-                        {formatCurrency(Number(p.basePrice), 'CLP')}
-                      </td>
-                      <td className="px-6 py-4">
-                        <SyncBadge status={mapping?.syncStatus} />
-                      </td>
-                      <td className="px-6 py-4 text-xs text-gray-500">
-                        {mapping?.lastSyncAt
-                          ? new Date(mapping.lastSyncAt).toLocaleDateString()
-                          : '—'}
-                      </td>
-                      <td className="px-6 py-4 text-xs font-mono text-gray-500">
-                        {mapping?.marketplaceProductId || '—'}
-                      </td>
-                    </tr>
-                  )
-                })}
+                {items.map((p: any) => (
+                  <tr key={p.externalId} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        {p.images?.[0] && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={p.images[0]}
+                            alt=""
+                            className="w-10 h-10 object-cover rounded border border-gray-200"
+                          />
+                        )}
+                        <span className="text-sm font-medium text-gray-900">{p.title}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-xs font-mono text-gray-700">
+                      {p.externalSku || '—'}
+                    </td>
+                    <td className="px-6 py-4 text-xs font-mono text-gray-500">
+                      {p.url ? (
+                        <a
+                          href={p.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-sky-600 hover:underline"
+                        >
+                          {p.externalId} <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ) : (
+                        p.externalId
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-700">
+                      {p.price ? formatCurrency(Number(p.price), 'CLP') : '—'}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-700">{p.stock ?? '—'}</td>
+                    <td className="px-6 py-4">
+                      <StatusBadge status={p.status} />
+                    </td>
+                    <td className="px-6 py-4">
+                      {p.mapping ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-50 text-green-700 text-xs font-medium">
+                          <CheckCircle2 className="w-3 h-3" />
+                          {p.mapping.masterSku}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">No vinculado</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           )}
 
-          {meta && meta.totalPages > 1 && (
+          {meta && meta.total > limit && (
             <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between">
               <p className="text-sm text-gray-500">
-                {meta.total} productos — Página {meta.page} de {meta.totalPages}
+                Página {page} — mostrando {items.length} de {meta.total}
               </p>
               <div className="flex gap-2">
                 <button
                   onClick={() => setPage((x) => x - 1)}
-                  disabled={!meta.hasPrevPage}
+                  disabled={page === 1}
                   className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50"
                 >
                   Anterior
                 </button>
                 <button
                   onClick={() => setPage((x) => x + 1)}
-                  disabled={!meta.hasNextPage}
+                  disabled={!meta.hasMore}
                   className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50"
                 >
                   Siguiente
@@ -178,34 +217,27 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
   )
 }
 
-function SyncBadge({ status }: { status?: string }) {
-  if (status === 'connected') {
+function StatusBadge({ status }: { status?: string }) {
+  if (status === 'active') {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-50 text-green-700 text-xs font-medium">
-        <CheckCircle2 className="w-3 h-3" /> Sincronizado
+        Activo
       </span>
     )
   }
-  if (status === 'sku_not_found') {
+  if (status === 'paused') {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-medium">
-        SKU no encontrado
+        Pausado
       </span>
     )
   }
-  if (status === 'sku_duplicate') {
+  if (status === 'closed') {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-xs font-medium">
-        SKU duplicado
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-xs font-medium">
+        Cerrado
       </span>
     )
   }
-  if (status === 'pending') {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs font-medium">
-        Pendiente
-      </span>
-    )
-  }
-  return <span className="text-xs text-gray-400">—</span>
+  return <span className="text-xs text-gray-400">{status || '—'}</span>
 }

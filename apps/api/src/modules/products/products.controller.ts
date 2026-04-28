@@ -76,6 +76,22 @@ export class ProductsController {
     return this.productsService.unlinkMarketplace(tenantId, id, connectionId)
   }
 
+  @Get('marketplace/:connectionId')
+  @ApiOperation({ summary: 'Listar productos publicados en un marketplace (vía API del proveedor)' })
+  marketplaceProducts(
+    @TenantId() tenantId: string,
+    @Param('connectionId') connectionId: string,
+    @Query('offset') offset?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.productsService.fetchMarketplaceProducts(
+      tenantId,
+      connectionId,
+      offset ? parseInt(offset, 10) : 0,
+      limit ? parseInt(limit, 10) : 25,
+    )
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Archivar producto' })
   remove(@TenantId() tenantId: string, @Param('id') id: string) {

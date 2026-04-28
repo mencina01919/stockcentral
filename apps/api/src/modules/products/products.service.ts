@@ -242,6 +242,67 @@ export class ProductsService {
     return { matched: 1, status: 'connected', marketplaceProductId: m.externalId, title: m.title }
   }
 
+  // Pulls products live from the marketplace API (not from local DB).
+  // Used by /products/{provider} pages so the user sees what's actually
+  // published in that channel, regardless of mapping status.
+  async fetchMarketplaceProducts(tenantId: string, connectionId: string, offset = 0, limit = 25) {
+    const connection = await this.prisma.connection.findFirst({
+      where: { id: connectionId, tenantId },
+    })
+    if (!connection) throw new NotFoundException('Conexión no encontrada')
+
+    const driver = getDriver(connection.provider)
+    const result = await driver.getProducts(
+      connection.credentials as Record<string, string>,
+      connection.config as Record<string, unknown> | undefined,
+      offset,
+      limit,
+    )
+
+    // Cross-reference with local mappings so the UI can show "vinculado" badges.
+    const externalIds = result.items.map((p) => p.externalId).filter(Boolean)
+    const mappings = externalIds.length
+      ? await this.prisma.marketplaceMapping.findMany({
+          where: { connectionId, marketplaceProductId: { in: externalIds } },
+          include: { product: { select: { id: true, sku: true, name: true } } },
+        })
+      : []
+    const mappingByExternalId = new Map(
+      mappings.map((m) => [m.marketplaceProductId, m]),
+    )
+
+    return {
+      data: result.items.map((p) => {
+        const mapping = mappingByExternalId.get(p.externalId)
+        return {
+          externalId: p.externalId,
+          externalSku: p.externalSku,
+          title: p.title,
+          price: p.price,
+          stock: p.stock,
+          status: p.status,
+          images: p.images || [],
+          categoryId: p.categoryId,
+          url: p.url,
+          mapping: mapping
+            ? {
+                masterProductId: mapping.product?.id,
+                masterSku: mapping.product?.sku,
+                masterName: mapping.product?.name,
+                syncStatus: mapping.syncStatus,
+              }
+            : null,
+        }
+      }),
+      meta: {
+        total: result.total,
+        offset: result.offset,
+        limit: result.limit,
+        hasMore: result.hasMore,
+      },
+    }
+  }
+
   async unlinkMarketplace(tenantId: string, productId: string, connectionId: string) {
     const product = await this.prisma.product.findFirst({ where: { id: productId, tenantId } })
     if (!product) throw new NotFoundException('Producto no encontrado')

@@ -86,8 +86,13 @@ const PROVIDER_META: Record<string, {
     label: 'Paris', type: 'marketplace', color: 'text-red-700', bg: 'bg-red-50',
     authType: 'apikey',
     fields: [
-      { key: 'userId', label: 'User ID', placeholder: 'seller@paris.cl' },
-      { key: 'apiSecret', label: 'API Secret', placeholder: 'xxxxxxxx', secret: true },
+      {
+        key: 'apiKey',
+        label: 'API Key',
+        placeholder: '9ca552df-d076-489c-a190-...',
+        secret: true,
+        hint: 'Seller Center → Mi cuenta → API Key (cuenta admin)',
+      },
     ],
   },
 }
