@@ -475,6 +475,7 @@ export class FalabellaDriver implements IMarketplaceDriver {
 
   private mapOrder(header: any, items: any[]): MarketplaceOrder {
     const addr = header.AddressShipping
+    const billAddr = header.AddressBilling
     // Status lives in Statuses.Status (string or array)
     const statusRaw = header.Statuses?.Status
     const status = Array.isArray(statusRaw) ? statusRaw[0] : (statusRaw || header.Status || 'pending')
@@ -494,14 +495,30 @@ export class FalabellaDriver implements IMarketplaceDriver {
     const shipping = toNum(header.ShippingFeeTotal)
     const total = toNum(header.GrandTotal ?? header.Price)
 
+    const buyerEmail = header.AddressBilling?.CustomerEmail || header.CustomerEmail
+    const buyerPhone = addr?.Phone || billAddr?.Phone
+    const buyerName = header.CustomerFirstName
+      ? `${header.CustomerFirstName} ${header.CustomerLastName || ''}`.trim()
+      : (addr?.FirstName ? `${addr.FirstName} ${addr.LastName || ''}`.trim() : 'Unknown')
+
+    const billingName = billAddr
+      ? `${billAddr.FirstName || ''} ${billAddr.LastName || ''}`.trim()
+      : undefined
+
     return {
       externalId: String(header.OrderId),
       externalOrderNumber: String(header.OrderNumber || header.OrderId),
       status,
-      buyerName: header.CustomerFirstName
-        ? `${header.CustomerFirstName} ${header.CustomerLastName || ''}`.trim()
-        : (addr?.FirstName || 'Unknown'),
-      buyerEmail: header.AddressBilling?.CustomerEmail || header.CustomerEmail,
+      buyerName,
+      buyerEmail,
+      buyerPhone,
+      billing: billAddr
+        ? {
+            name: billingName,
+            email: billAddr.CustomerEmail || buyerEmail,
+            phone: billAddr.Phone || billAddr.Phone2,
+          }
+        : undefined,
       items: mappedItems,
       subtotal,
       shippingCost: shipping,
@@ -516,6 +533,17 @@ export class FalabellaDriver implements IMarketplaceDriver {
             zipCode: addr.PostCode || undefined,
             country: addr.Country || 'CL',
             phone: addr.Phone || undefined,
+          }
+        : undefined,
+      billingAddress: billAddr
+        ? {
+            name: billingName || '',
+            address1: [billAddr.Address1, billAddr.Address2, billAddr.Address3].filter(Boolean).join(', '),
+            city: billAddr.City,
+            state: billAddr.Ward || billAddr.Region,
+            zipCode: billAddr.PostCode || undefined,
+            country: billAddr.Country || 'CL',
+            phone: billAddr.Phone || undefined,
           }
         : undefined,
       createdAt: new Date(header.CreatedAt),

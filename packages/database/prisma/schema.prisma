@@ -31,6 +31,7 @@ model Tenant {
   users        User[]
   products     Product[]
   orders       Order[]
+  sales        Sale[]
   connections  Connection[]
   warehouses   Warehouse[]
   webhooks     Webhook[]
@@ -190,17 +191,82 @@ model StockMovement {
 // ORDERS
 // =====================
 
+model Sale {
+  id               String  @id @default(uuid())
+  tenantId         String
+  saleNumber       String
+  source           String
+  externalGroupId  String?
+
+  customerName        String
+  customerEmail       String?
+  customerPhone       String?
+  customerDocType     String?
+  customerDocNumber   String?
+
+  invoiceType         String   @default("boleta")
+  billingName         String?
+  billingDocType      String?
+  billingDocNumber    String?
+  billingEmail        String?
+  billingPhone        String?
+  economicActivity    String?
+  taxContributor      String?
+
+  shippingAddress Json?
+  billingAddress  Json?
+
+  subtotal     Decimal @db.Decimal(12, 2)
+  shippingCost Decimal @default(0) @db.Decimal(12, 2)
+  tax          Decimal @default(0) @db.Decimal(12, 2)
+  discount     Decimal @default(0) @db.Decimal(12, 2)
+  total        Decimal @db.Decimal(12, 2)
+  currency     String  @default("CLP")
+
+  status         String @default("pending")
+  paymentStatus  String @default("pending")
+  shipmentStatus String @default("pending")
+
+  notes    String?
+  metadata Json?
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, saleNumber])
+  @@unique([tenantId, source, externalGroupId])
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdAt])
+}
+
 model Order {
   id              String  @id @default(uuid())
   tenantId        String
+  saleId          String?
   orderNumber     String
   source          String
   sourceChannel   String
   externalOrderId String?
+  packId          String?
 
-  customerName  String
-  customerEmail String?
-  customerPhone String?
+  customerName        String
+  customerEmail       String?
+  customerPhone       String?
+  customerDocType     String?
+  customerDocNumber   String?
+
+  invoiceType         String   @default("boleta")
+  billingName         String?
+  billingDocType      String?
+  billingDocNumber    String?
+  billingEmail        String?
+  billingPhone        String?
+  economicActivity    String?
+  taxContributor      String?
 
   shippingAddress Json?
   billingAddress  Json?
@@ -220,6 +286,7 @@ model Order {
   metadata Json?
 
   tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sale   Sale?       @relation(fields: [saleId], references: [id], onDelete: Cascade)
   items  OrderItem[]
 
   createdAt DateTime @default(now())
@@ -227,9 +294,11 @@ model Order {
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId])
+  @@index([saleId])
   @@index([status])
   @@index([sourceChannel])
   @@index([createdAt])
+  @@index([tenantId, packId])
 }
 
 model OrderItem {

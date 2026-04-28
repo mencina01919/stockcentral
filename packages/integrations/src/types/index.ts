@@ -23,19 +23,35 @@ export interface MarketplaceProduct {
 export interface MarketplaceOrder {
   externalId: string
   externalOrderNumber?: string
+  packId?: string
   status: string
   buyerName: string
   buyerEmail?: string
   buyerPhone?: string
+  buyerDocType?: string
+  buyerDocNumber?: string
+  billing?: MarketplaceBilling
   items: MarketplaceOrderItem[]
   subtotal: number
   shippingCost: number
   total: number
   currency: string
   shippingAddress?: MarketplaceAddress
+  billingAddress?: MarketplaceAddress
   createdAt: Date
   updatedAt: Date
   rawData?: unknown
+}
+
+export interface MarketplaceBilling {
+  name?: string
+  docType?: string
+  docNumber?: string
+  email?: string
+  phone?: string
+  invoiceType?: 'boleta' | 'factura'
+  economicActivity?: string
+  taxContributor?: string
 }
 
 export interface MarketplaceOrderItem {

@@ -39,3 +39,6 @@ coverage/
 
 # Prisma
 prisma/migrations/dev/
+
+# TypeScript build info
+*.tsbuildinfo

@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard, Package, ShoppingCart, Warehouse, Plug, BarChart3,
-  Settings, LogOut, Package2, Webhook,
+  Settings, LogOut, Package2, Webhook, Receipt,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth.store'
@@ -12,6 +12,7 @@ import { useAuthStore } from '@/stores/auth.store'
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/products', label: 'Productos', icon: Package },
+  { href: '/sales', label: 'Ventas', icon: Receipt },
   { href: '/orders', label: 'Órdenes', icon: ShoppingCart },
   { href: '/inventory', label: 'Inventario', icon: Warehouse },
   { href: '/connections', label: 'Conexiones', icon: Plug },

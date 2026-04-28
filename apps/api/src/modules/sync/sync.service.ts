@@ -277,29 +277,73 @@ export class SyncService {
             where: { tenantId, externalOrderId: marketOrder.externalId, source: connection.provider },
           })
           if (existing) {
+            // If the order already has a Sale and no packId is given, keep its current Sale.
+            // Only re-resolve when a packId arrived (potential regrouping) or when no Sale yet.
+            let targetSaleId: string
+            if (marketOrder.packId || !existing.saleId) {
+              const targetSale = await this.resolveSale(tenantId, connection.provider, marketOrder)
+              targetSaleId = targetSale.id
+            } else {
+              targetSaleId = existing.saleId
+            }
+            const previousSaleId = existing.saleId
             await this.prisma.order.update({
               where: { id: existing.id },
               data: {
+                saleId: targetSaleId,
+                packId: marketOrder.packId || existing.packId,
+                customerName: marketOrder.buyerName,
+                customerEmail: marketOrder.buyerEmail || null,
+                customerPhone: marketOrder.buyerPhone || null,
+                customerDocType: marketOrder.buyerDocType || null,
+                customerDocNumber: marketOrder.buyerDocNumber || null,
+                invoiceType: marketOrder.billing?.invoiceType || 'boleta',
+                billingName: marketOrder.billing?.name || null,
+                billingDocType: marketOrder.billing?.docType || null,
+                billingDocNumber: marketOrder.billing?.docNumber || null,
+                billingEmail: marketOrder.billing?.email || null,
+                billingPhone: marketOrder.billing?.phone || null,
+                economicActivity: marketOrder.billing?.economicActivity || null,
+                taxContributor: marketOrder.billing?.taxContributor || null,
+                shippingAddress: (marketOrder.shippingAddress as any) ?? undefined,
+                billingAddress: (marketOrder.billingAddress as any) ?? undefined,
                 status: this.mapMarketplaceOrderStatus(marketOrder.status),
                 paymentStatus: this.mapPaymentStatus(marketOrder.status),
                 shipmentStatus: this.mapShipmentStatus(marketOrder.status),
               },
             })
+            await this.recalculateSale(targetSaleId)
+            if (previousSaleId && previousSaleId !== targetSaleId) {
+              await this.cleanupSaleIfEmpty(previousSaleId)
+            }
             continue
           }
 
           const orderNumber = `${connection.provider.toUpperCase()}-${marketOrder.externalOrderNumber || marketOrder.externalId}`
+          const sale = await this.resolveSale(tenantId, connection.provider, marketOrder)
 
           await this.prisma.order.create({
             data: {
               tenantId,
+              saleId: sale.id,
               orderNumber,
               source: connection.provider,
               sourceChannel: connection.name,
               externalOrderId: marketOrder.externalId,
+              packId: marketOrder.packId || null,
               customerName: marketOrder.buyerName,
               customerEmail: marketOrder.buyerEmail || null,
               customerPhone: marketOrder.buyerPhone || null,
+              customerDocType: marketOrder.buyerDocType || null,
+              customerDocNumber: marketOrder.buyerDocNumber || null,
+              invoiceType: marketOrder.billing?.invoiceType || 'boleta',
+              billingName: marketOrder.billing?.name || null,
+              billingDocType: marketOrder.billing?.docType || null,
+              billingDocNumber: marketOrder.billing?.docNumber || null,
+              billingEmail: marketOrder.billing?.email || null,
+              billingPhone: marketOrder.billing?.phone || null,
+              economicActivity: marketOrder.billing?.economicActivity || null,
+              taxContributor: marketOrder.billing?.taxContributor || null,
               subtotal: marketOrder.subtotal,
               shippingCost: marketOrder.shippingCost,
               tax: 0,
@@ -310,6 +354,7 @@ export class SyncService {
               paymentStatus: this.mapPaymentStatus(marketOrder.status),
               shipmentStatus: this.mapShipmentStatus(marketOrder.status),
               shippingAddress: marketOrder.shippingAddress as any,
+              billingAddress: marketOrder.billingAddress as any,
               items: {
                 create: marketOrder.items.map((item) => ({
                   sku: item.sku,
@@ -321,6 +366,7 @@ export class SyncService {
               },
             },
           })
+          await this.recalculateSale(sale.id)
           created++
         } catch (err: any) {
           this.logger.error(`Error creating order ${marketOrder.externalId}: ${err.message}`)
@@ -588,5 +634,149 @@ export class SyncService {
     if (paid.includes(s)) return 'paid'
     if (refunded.includes(s)) return 'refunded'
     return 'pending'
+  }
+
+  // ─── Sale helpers ─────────────────────────────────────────────────────────
+
+  private async resolveSale(
+    tenantId: string,
+    source: string,
+    marketOrder: import('@stockcentral/integrations').MarketplaceOrder,
+  ) {
+    if (marketOrder.packId) {
+      const existing = await this.prisma.sale.findUnique({
+        where: {
+          tenantId_source_externalGroupId: {
+            tenantId,
+            source,
+            externalGroupId: marketOrder.packId,
+          },
+        },
+      })
+      if (existing) return existing
+    }
+
+    return this.createSaleWithRetry(tenantId, {
+      source,
+      externalGroupId: marketOrder.packId || null,
+      customerName: marketOrder.buyerName,
+      customerEmail: marketOrder.buyerEmail || null,
+      customerPhone: marketOrder.buyerPhone || null,
+      customerDocType: marketOrder.buyerDocType || null,
+      customerDocNumber: marketOrder.buyerDocNumber || null,
+      invoiceType: marketOrder.billing?.invoiceType || 'boleta',
+      billingName: marketOrder.billing?.name || null,
+      billingDocType: marketOrder.billing?.docType || null,
+      billingDocNumber: marketOrder.billing?.docNumber || null,
+      billingEmail: marketOrder.billing?.email || null,
+      billingPhone: marketOrder.billing?.phone || null,
+      economicActivity: marketOrder.billing?.economicActivity || null,
+      taxContributor: marketOrder.billing?.taxContributor || null,
+      shippingAddress: (marketOrder.shippingAddress as any) ?? undefined,
+      billingAddress: (marketOrder.billingAddress as any) ?? undefined,
+      currency: marketOrder.currency,
+      subtotal: 0,
+      shippingCost: 0,
+      tax: 0,
+      discount: 0,
+      total: 0,
+      status: 'pending',
+      paymentStatus: 'pending',
+      shipmentStatus: 'pending',
+    })
+  }
+
+  // Race-safe Sale create: retries on unique constraint violation by recomputing saleNumber.
+  private async createSaleWithRetry(
+    tenantId: string,
+    data: Omit<import('@prisma/client').Prisma.SaleUncheckedCreateInput, 'tenantId' | 'saleNumber'>,
+    attempt = 0,
+  ): Promise<import('@prisma/client').Sale> {
+    const saleNumber = await this.nextSaleNumber(tenantId)
+    try {
+      return await this.prisma.sale.create({
+        data: { ...data, tenantId, saleNumber },
+      })
+    } catch (err: any) {
+      const isUniqueViolation = err?.code === 'P2002'
+      if (isUniqueViolation && attempt < 10) {
+        return this.createSaleWithRetry(tenantId, data, attempt + 1)
+      }
+      throw err
+    }
+  }
+
+  private async nextSaleNumber(tenantId: string): Promise<string> {
+    // Sort lexicographically — works because saleNumber is zero-padded ('SALE-000001').
+    const last = await this.prisma.sale.findFirst({
+      where: { tenantId, saleNumber: { startsWith: 'SALE-' } },
+      orderBy: { saleNumber: 'desc' },
+      select: { saleNumber: true },
+    })
+    const lastNum = last ? parseInt(last.saleNumber.replace(/\D/g, ''), 10) || 0 : 0
+    return `SALE-${String(lastNum + 1).padStart(6, '0')}`
+  }
+
+  private async recalculateSale(saleId: string) {
+    const orders = await this.prisma.order.findMany({
+      where: { saleId },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    if (orders.length === 0) return
+
+    const sum = (key: 'subtotal' | 'shippingCost' | 'tax' | 'discount' | 'total') =>
+      orders.reduce((acc, o) => acc + Number(o[key] || 0), 0)
+
+    // Pick the first order with a real customer name as the canonical source
+    // for customer/billing fields on the Sale.
+    const canonical = orders.find((o) => o.customerName && o.customerName !== 'Unknown') || orders[0]
+
+    await this.prisma.sale.update({
+      where: { id: saleId },
+      data: {
+        subtotal: sum('subtotal'),
+        shippingCost: sum('shippingCost'),
+        tax: sum('tax'),
+        discount: sum('discount'),
+        total: sum('total'),
+        status: this.aggregateStatus(orders.map((o) => o.status)),
+        paymentStatus: this.aggregateStatus(orders.map((o) => o.paymentStatus)),
+        shipmentStatus: this.aggregateStatus(orders.map((o) => o.shipmentStatus)),
+        customerName: canonical.customerName,
+        customerEmail: canonical.customerEmail,
+        customerPhone: canonical.customerPhone,
+        customerDocType: canonical.customerDocType,
+        customerDocNumber: canonical.customerDocNumber,
+        invoiceType: canonical.invoiceType || 'boleta',
+        billingName: canonical.billingName,
+        billingDocType: canonical.billingDocType,
+        billingDocNumber: canonical.billingDocNumber,
+        billingEmail: canonical.billingEmail,
+        billingPhone: canonical.billingPhone,
+        economicActivity: canonical.economicActivity,
+        taxContributor: canonical.taxContributor,
+        shippingAddress: (canonical.shippingAddress as any) ?? undefined,
+        billingAddress: (canonical.billingAddress as any) ?? undefined,
+      },
+    })
+  }
+
+  private async cleanupSaleIfEmpty(saleId: string) {
+    const remaining = await this.prisma.order.count({ where: { saleId } })
+    if (remaining === 0) {
+      await this.prisma.sale.delete({ where: { id: saleId } }).catch(() => undefined)
+    } else {
+      await this.recalculateSale(saleId)
+    }
+  }
+
+  private aggregateStatus(statuses: string[]): string {
+    if (statuses.length === 0) return 'pending'
+    const unique = Array.from(new Set(statuses))
+    if (unique.length === 1) return unique[0]
+    if (unique.every((s) => s === 'cancelled')) return 'cancelled'
+    if (unique.includes('pending')) return 'pending'
+    return unique[0]
   }
 }

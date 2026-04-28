@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, UseGuards } from '@nestjs/common'
+import { Controller, Get, Post, Param, Query, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
@@ -25,8 +25,16 @@ export class SyncController {
 
   @Post('connections/:id/orders')
   @ApiOperation({ summary: 'Importar órdenes desde el marketplace' })
-  syncOrders(@TenantId() tenantId: string, @Param('id') connectionId: string) {
-    return this.syncService.enqueueOrdersInbound(tenantId, connectionId)
+  syncOrders(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Query('since') since?: string,
+    @Query('days') days?: string,
+  ) {
+    let sinceDate: Date | undefined
+    if (since) sinceDate = new Date(since)
+    else if (days) sinceDate = new Date(Date.now() - parseInt(days, 10) * 86400000)
+    return this.syncService.enqueueOrdersInbound(tenantId, connectionId, sinceDate)
   }
 
   @Post('connections/:id/test')

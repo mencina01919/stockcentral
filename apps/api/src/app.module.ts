@@ -10,6 +10,7 @@ import { TenantsModule } from './modules/tenants/tenants.module'
 import { ProductsModule } from './modules/products/products.module'
 import { InventoryModule } from './modules/inventory/inventory.module'
 import { OrdersModule } from './modules/orders/orders.module'
+import { SalesModule } from './modules/sales/sales.module'
 import { ConnectionsModule } from './modules/connections/connections.module'
 import { DashboardModule } from './modules/dashboard/dashboard.module'
 import { SyncModule } from './modules/sync/sync.module'
@@ -38,6 +39,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module'
     ProductsModule,
     InventoryModule,
     OrdersModule,
+    SalesModule,
     ConnectionsModule,
     DashboardModule,
     SyncModule,

@@ -212,7 +212,11 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     if (since) params['date_created.from'] = since.toISOString()
 
     const res = await client.get('/orders/search', { params })
-    const orders: MarketplaceOrder[] = res.data.results.map((o: any) => this.mapOrder(o))
+    const orders: MarketplaceOrder[] = []
+    for (const o of res.data.results) {
+      const detailed = await this.fetchOrderDetail(client, o)
+      orders.push(this.mapOrder(detailed))
+    }
     const total = res.data.paging.total
 
     return { items: orders, total, offset, limit, hasMore: offset + limit < total }
@@ -222,10 +226,24 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     try {
       const client = this.buildClient(credentials.accessToken)
       const res = await client.get(`/orders/${externalId}`)
-      return this.mapOrder(res.data)
+      const detailed = await this.fetchOrderDetail(client, res.data)
+      return this.mapOrder(detailed)
     } catch {
       return null
     }
+  }
+
+  // Hydrates an order with shipment receiver + billing_info — both endpoints
+  // require separate calls. ML privacy rules omit them from /orders/search.
+  private async fetchOrderDetail(client: any, order: any): Promise<any> {
+    const shippingId = order.shipping?.id
+    const [shipmentData, billingData] = await Promise.all([
+      shippingId
+        ? client.get(`/shipments/${shippingId}`).then((r: any) => r.data).catch(() => null)
+        : Promise.resolve(null),
+      client.get(`/orders/${order.id}/billing_info`).then((r: any) => r.data).catch(() => null),
+    ])
+    return { ...order, _shipment: shipmentData, _billingInfo: billingData }
   }
 
   async confirmOrder(credentials: DriverCredentials, externalId: string): Promise<SyncResult> {
@@ -256,14 +274,75 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
   }
 
   private mapOrder(data: any): MarketplaceOrder {
+    const buyer = data.buyer || {}
+    const ident = buyer.identification || {}
+    const shipment = data._shipment || {}
+    const receiver = shipment.receiver_address || data.shipping?.receiver_address || {}
+    // billing_info endpoint returns { billing_info: { doc_number, doc_type, additional_info: [{type,value}] } }
+    const bInfo = data._billingInfo?.billing_info || data._billingInfo || {}
+    const additional: Record<string, string> = {}
+    for (const kv of bInfo.additional_info || []) {
+      if (kv?.type) additional[kv.type] = kv.value
+    }
+
+    const billingDocType = bInfo.doc_type || additional.DOC_TYPE
+    const billingDocNumber = bInfo.doc_number || additional.DOC_NUMBER
+    const billingName =
+      additional.BUSINESS_NAME ||
+      additional.LEGAL_NAME ||
+      (additional.FIRST_NAME
+        ? `${additional.FIRST_NAME} ${additional.LAST_NAME || ''}`.trim()
+        : undefined)
+    const billingAddressLine =
+      additional.STREET_NAME
+        ? `${additional.STREET_NAME} ${additional.STREET_NUMBER || ''}`.trim()
+        : undefined
+
+    const buyerNameFromOrder =
+      buyer.first_name || buyer.last_name
+        ? `${buyer.first_name || ''} ${buyer.last_name || ''}`.trim()
+        : ''
+    const buyerNameFromShipment =
+      receiver.receiver_name ||
+      (receiver.first_name
+        ? `${receiver.first_name} ${receiver.last_name || ''}`.trim()
+        : '')
+    const buyerName = buyerNameFromOrder || buyerNameFromShipment || 'Unknown'
+
+    const buyerPhone =
+      receiver.receiver_phone ||
+      (buyer.phone?.number
+        ? `${buyer.phone.area_code || ''}${buyer.phone.number}`.trim()
+        : undefined)
+
     return {
       externalId: String(data.id),
       externalOrderNumber: String(data.id),
+      packId: data.pack_id ? String(data.pack_id) : undefined,
       status: data.status,
-      buyerName: data.buyer
-        ? `${data.buyer.first_name || ''} ${data.buyer.last_name || ''}`.trim()
-        : 'Unknown',
-      buyerEmail: data.buyer?.email,
+      buyerName,
+      buyerEmail: buyer.email || shipment.receiver_email,
+      buyerPhone,
+      buyerDocType: ident.type,
+      buyerDocNumber: ident.number,
+      billing:
+        billingName || billingDocNumber
+          ? {
+              name: billingName,
+              docType: billingDocType,
+              docNumber: billingDocNumber,
+              email: additional.EMAIL || buyer.email,
+              phone: additional.PHONE,
+              // Presence of BUSINESS_NAME or ECONOMIC_ACTIVITY = factura empresa.
+              // Otherwise it's a boleta (consumer).
+              invoiceType:
+                additional.BUSINESS_NAME || additional.ECONOMIC_ACTIVITY
+                  ? 'factura'
+                  : 'boleta',
+              economicActivity: additional.ECONOMIC_ACTIVITY,
+              taxContributor: additional.TAX_CONTRIBUTOR,
+            }
+          : undefined,
       items: (data.order_items || []).map((item: any) => ({
         externalId: String(item.item?.id),
         sku: item.item?.seller_custom_field || item.item?.id,
@@ -273,19 +352,32 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
         totalPrice: (item.full_unit_price ?? item.unit_price) * item.quantity,
       })),
       subtotal: data.total_amount,
-      shippingCost: data.shipping?.cost || 0,
+      shippingCost: shipment.shipping_option?.cost || data.shipping?.cost || 0,
       total: data.total_amount,
       currency: data.currency_id,
-      shippingAddress: data.shipping?.receiver_address
+      shippingAddress: receiver.street_name || receiver.address_line
         ? {
-            name: data.buyer?.first_name || '',
-            address1: data.shipping.receiver_address.street_name + ' ' + data.shipping.receiver_address.street_number,
-            city: data.shipping.receiver_address.city?.name || '',
-            state: data.shipping.receiver_address.state?.name,
-            zipCode: data.shipping.receiver_address.zip_code,
-            country: data.shipping.receiver_address.country?.id || 'CL',
+            name: buyerName,
+            address1: receiver.address_line ||
+              `${receiver.street_name || ''} ${receiver.street_number || ''}`.trim(),
+            city: receiver.city?.name || receiver.city || '',
+            state: receiver.state?.name || receiver.state,
+            zipCode: receiver.zip_code,
+            country: receiver.country?.id || receiver.country || 'CL',
+            phone: buyerPhone,
           }
         : undefined,
+      billingAddress:
+        billingAddressLine
+          ? {
+              name: billingName || '',
+              address1: billingAddressLine,
+              city: additional.CITY_NAME || '',
+              state: additional.STATE_NAME,
+              zipCode: additional.ZIP_CODE,
+              country: additional.COUNTRY_ID || 'CL',
+            }
+          : undefined,
       createdAt: new Date(data.date_created),
       updatedAt: new Date(data.last_updated),
       rawData: data,
