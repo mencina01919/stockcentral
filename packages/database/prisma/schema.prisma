@@ -88,6 +88,9 @@ model Product {
   tags             String[]
   status           String   @default("draft")
   metadata         Json?
+  // Per-marketplace publication data. Each marketplace driver knows its own
+  // shape (categories, attributes, etc.) so we keep these as opaque JSON.
+  parisData        Json?
 
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   variants            ProductVariant[]

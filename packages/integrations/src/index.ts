@@ -5,3 +5,10 @@ export { ShopifyDriver } from './drivers/shopify.driver'
 export { WooCommerceDriver } from './drivers/woocommerce.driver'
 export { FalabellaDriver } from './drivers/falabella.driver'
 export { JumpsellerDriver } from './drivers/jumpseller.driver'
+export { ParisDriver } from './drivers/paris.driver'
+export type {
+  ParisPublishInput,
+  ParisAttributeValue,
+  ParisVariantInput,
+  ParisPriceInput,
+} from './drivers/paris.driver'

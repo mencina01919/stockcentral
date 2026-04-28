@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Search, Loader2, Package, Edit, Trash2, RefreshCw, X, Image as ImageIcon, ExternalLink } from 'lucide-react'
 import api from '@/lib/api'
@@ -279,17 +279,44 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
   const imageList = form.images.split('\n').map((s) => s.trim()).filter(Boolean)
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-2xl shadow-2xl max-h-[90vh] flex flex-col">
-        <div className="p-6 border-b border-gray-100 flex items-start justify-between">
+    <div className="fixed inset-0 bg-white z-50 flex flex-col">
+      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-white shadow-sm">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onClose}
+            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+            title="Volver al listado"
+          >
+            <X className="w-5 h-5" />
+          </button>
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Editar producto</h2>
             <p className="text-xs text-gray-400 mt-0.5 font-mono">{product.sku}</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none"><X className="w-5 h-5" /></button>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSave}
+            disabled={saving || pushing}
+            className="px-4 py-2 border border-sky-200 text-sky-700 hover:bg-sky-50 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            {saving && !pushing && <Loader2 className="w-4 h-4 animate-spin" />}
+            Guardar
+          </button>
+          <button
+            onClick={handlePush}
+            disabled={saving || pushing}
+            className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          >
+            {pushing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            Guardar y sincronizar
+          </button>
+        </div>
+      </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+      <div className="flex-1 overflow-y-auto bg-gray-50">
+        <div className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-5">
 
           {/* Nombre */}
           <div>
@@ -446,33 +473,17 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
             )}
           </div>
 
-          {/* Info marketplaces */}
-          <MarketplaceSyncBlock productId={product.id} sku={product.sku} />
-        </div>
+          </div>
 
-        <div className="p-5 border-t border-gray-100 flex gap-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors"
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || pushing}
-            className="px-4 py-2 border border-sky-200 text-sky-700 hover:bg-sky-50 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-          >
-            {saving && !pushing && <Loader2 className="w-4 h-4 animate-spin" />}
-            Guardar
-          </button>
-          <button
-            onClick={handlePush}
-            disabled={saving || pushing}
-            className="flex-1 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
-          >
-            {pushing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Guardar y sincronizar en marketplaces
-          </button>
+          <aside className="lg:col-span-1 space-y-5">
+            <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-5">
+              <MarketplaceSyncBlock productId={product.id} sku={product.sku} />
+            </div>
+
+            <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-5">
+              <ParisConfigBlock product={product} />
+            </div>
+          </aside>
         </div>
       </div>
     </div>
@@ -593,6 +604,611 @@ function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: stri
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+function ParisConfigBlock({ product }: { product: any }) {
+  const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const initial = product.parisData || {}
+  const [familyId, setFamilyId] = useState<string>(initial.familyId || '')
+  const [categoryId, setCategoryId] = useState<string>(initial.categoryId || '')
+  const [priceTypeId, setPriceTypeId] = useState<string>(initial.priceTypeId || '')
+  const [sellerSku, setSellerSku] = useState<string>(initial.sellerSku || '')
+  const [productAttrs, setProductAttrs] = useState<Record<string, string>>(
+    Object.fromEntries((initial.productAttributes || []).map((a: any) => [a.id, a.value])),
+  )
+  const [variantAttrs, setVariantAttrs] = useState<Record<string, string>>(
+    Object.fromEntries(
+      ((initial.variants?.[0]?.attributes) || []).map((a: any) => [a.id, a.value]),
+    ),
+  )
+  const [hasVariants, setHasVariants] = useState<boolean>(initial.hasVariants ?? false)
+  const [saving, setSaving] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+
+  const { data: families } = useQuery<any>({
+    enabled: open,
+    queryKey: ['paris-families'],
+    queryFn: () => api.get('/products/paris/families').then((r) => r.data),
+    staleTime: 60 * 60 * 1000,
+  })
+
+  const { data: categories } = useQuery<any>({
+    enabled: open && !!familyId,
+    queryKey: ['paris-categories', familyId],
+    queryFn: () =>
+      api.get(`/products/paris/families/${familyId}/categories`).then((r) => r.data),
+    staleTime: 60 * 60 * 1000,
+  })
+
+  const { data: attributes } = useQuery<any>({
+    enabled: open && !!familyId,
+    queryKey: ['paris-attrs', familyId, 'product'],
+    queryFn: () =>
+      api
+        .get(`/products/paris/families/${familyId}/attributes`, { params: { kind: 'product' } })
+        .then((r) => r.data),
+    staleTime: 60 * 60 * 1000,
+  })
+
+  const { data: vAttributes } = useQuery<any>({
+    enabled: open && !!familyId,
+    queryKey: ['paris-attrs', familyId, 'variant'],
+    queryFn: () =>
+      api
+        .get(`/products/paris/families/${familyId}/attributes`, { params: { kind: 'variant' } })
+        .then((r) => r.data),
+    staleTime: 60 * 60 * 1000,
+  })
+
+  const { data: priceTypes } = useQuery<any>({
+    enabled: open,
+    queryKey: ['paris-price-types'],
+    queryFn: () => api.get('/products/paris/price-types').then((r) => r.data),
+    staleTime: 60 * 60 * 1000,
+  })
+
+  const allAttrs: any[] = attributes?.results || []
+  const requiredAttrs: any[] = allAttrs.filter(
+    (a: any) => a.familyAttributes?.[0]?.attributeValidation?.isRequired,
+  )
+  // Highlight description/feature fields even if optional — sellers always want them.
+  const FEATURED_REGEX = /^(descripci[oó]n corta|descripci[oó]n larga\/?(emocional)?|caracter[ií]sticas)$/i
+  const featuredAttrs: any[] = allAttrs.filter(
+    (a: any) =>
+      !a.familyAttributes?.[0]?.attributeValidation?.isRequired &&
+      FEATURED_REGEX.test(a.name || ''),
+  )
+
+  // Auto-populate "Descripción corta" / "Descripción Larga" from master if empty.
+  useEffect(() => {
+    if (!attributes?.results) return
+    const next: Record<string, string> = { ...productAttrs }
+    let changed = false
+    for (const a of featuredAttrs) {
+      if (next[a.id]) continue
+      if (/descripci/i.test(a.name) && product.description) {
+        next[a.id] = product.description
+        changed = true
+      }
+    }
+    if (changed) setProductAttrs(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [familyId, attributes?.results])
+
+  const variantAttrsList: any[] = vAttributes?.results || []
+  const requiredVariantAttrs: any[] = variantAttrsList.filter(
+    (a: any) => a.familyAttributes?.[0]?.attributeValidation?.isRequired,
+  )
+
+  // Default neutral values when the product has no real variants. The IDs are
+  // the same the user would pick manually for "Talla Única" and "Color Negro".
+  const DEFAULT_VARIANT_VALUES: Record<string, string> = {
+    '07fa21d9-3b74-48d8-b811-1faa3117fba4': '529f9f29-796c-43a3-97ba-b6ae6f7446e2', // Talla → Talla Única
+    '705bb298-6558-425c-9a4c-3e1b65c73060': 'd578892b-b766-43e8-88bf-f9a289b016a2', // Color → Negro
+  }
+
+  const effectiveVariantAttrs: Record<string, string> = hasVariants
+    ? variantAttrs
+    : Object.fromEntries(
+        requiredVariantAttrs.map((a) => [a.id, DEFAULT_VARIANT_VALUES[a.id] || '']),
+      )
+
+  const allRequiredFilled =
+    requiredAttrs.every((a) => (productAttrs[a.id] || '').trim() !== '') &&
+    requiredVariantAttrs.every((a) => (effectiveVariantAttrs[a.id] || '').trim() !== '')
+  const canPublish = !!familyId && !!categoryId && !!priceTypeId && allRequiredFilled
+
+  const buildPayload = () => ({
+    sellerSku: sellerSku || product.sku,
+    familyId,
+    categoryId,
+    priceTypeId,
+    hasVariants,
+    productAttributes: [...requiredAttrs, ...featuredAttrs]
+      .map((a) => ({ id: a.id, value: productAttrs[a.id] }))
+      .filter((a) => a.value && String(a.value).trim() !== ''),
+    variants: [
+      {
+        sellerSku: sellerSku || product.sku,
+        attributes: requiredVariantAttrs
+          .map((a) => ({ id: a.id, value: effectiveVariantAttrs[a.id] }))
+          .filter((a) => a.value && String(a.value).trim() !== ''),
+      },
+    ],
+  })
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.patch(`/products/${product.id}/paris-data`, buildPayload())
+      toast.success('Configuración Paris guardada')
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Error al guardar')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const publish = async () => {
+    setPublishing(true)
+    try {
+      await api.patch(`/products/${product.id}/paris-data`, buildPayload())
+      const res = await api.post(`/products/${product.id}/paris/publish`)
+      if (res.data?.success) {
+        toast.success(`Publicado en Paris (ID: ${res.data.externalId})`)
+        queryClient.invalidateQueries({ queryKey: ['product-marketplaces', product.id] })
+      } else {
+        toast.error(`Error: ${typeof res.data?.error === 'string' ? res.data.error : JSON.stringify(res.data?.error)}`)
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Error al publicar')
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  return (
+    <div className="border border-red-100 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between p-3 bg-red-50 hover:bg-red-100 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="px-2 py-0.5 rounded bg-red-700 text-white text-xs font-bold">PARIS</span>
+          <span className="text-sm font-medium text-gray-900">Configuración para publicar en Paris</span>
+        </div>
+        <span className="text-xs text-gray-500">{open ? '▼' : '▶'}</span>
+      </button>
+
+      {open && (
+        <div className="p-4 space-y-4 bg-white">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">SKU para Paris (opcional)</label>
+            <input
+              value={sellerSku}
+              onChange={(e) => setSellerSku(e.target.value)}
+              placeholder={product.sku}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Si lo dejas vacío usaremos el SKU del maestro: <code>{product.sku}</code>
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <LocalCombobox
+              label="Familia"
+              required
+              options={(families?.results || []).map((f: any) => ({ id: f.id, name: f.name }))}
+              value={familyId}
+              onChange={(v) => {
+                setFamilyId(v)
+                setCategoryId('')
+                setProductAttrs({})
+              }}
+            />
+
+            <LocalCombobox
+              label="Categoría"
+              required
+              disabled={!familyId}
+              options={(categories?.results || []).map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                hint: c.path,
+              }))}
+              value={categoryId}
+              onChange={setCategoryId}
+              footer={
+                categoryId
+                  ? (categories?.results || []).find((c: any) => c.id === categoryId)?.path
+                  : undefined
+              }
+            />
+          </div>
+
+          <div>
+            <LocalCombobox
+              label="Tipo de precio"
+              required
+              options={(priceTypes?.results || []).map((p: any) => ({ id: p.id, name: p.name }))}
+              value={priceTypeId}
+              onChange={setPriceTypeId}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Se usará el precio base del maestro: {formatCurrency(Number(product.basePrice), 'CLP')}
+            </p>
+          </div>
+
+          {familyId && requiredAttrs.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                Atributos requeridos ({requiredAttrs.length})
+              </p>
+              <div className="space-y-2">
+                {requiredAttrs.map((attr: any) => (
+                  <ParisAttributeInput
+                    key={attr.id}
+                    attribute={attr}
+                    value={productAttrs[attr.id] || ''}
+                    onChange={(v) => setProductAttrs({ ...productAttrs, [attr.id]: v })}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {familyId && requiredVariantAttrs.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                Variantes
+              </p>
+              <p className="text-xs text-gray-600 mb-2">
+                ¿Tu producto tiene variantes (talla, color, etc.)?
+              </p>
+              <div className="flex gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => setHasVariants(false)}
+                  className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                    !hasVariants
+                      ? 'bg-red-700 text-white border-red-700'
+                      : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  No, es un producto único
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHasVariants(true)}
+                  className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                    hasVariants
+                      ? 'bg-red-700 text-white border-red-700'
+                      : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  Sí, tiene variantes
+                </button>
+              </div>
+              {!hasVariants && (
+                <p className="text-xs text-gray-500 bg-gray-50 rounded p-2">
+                  Se asignarán automáticamente <strong>Talla Única</strong> y <strong>Color Negro</strong>{' '}
+                  como valores neutros. Paris exige estos atributos aunque el producto no tenga variantes.
+                </p>
+              )}
+              {hasVariants && (
+                <div className="space-y-2">
+                  {requiredVariantAttrs.map((attr: any) => (
+                    <ParisAttributeInput
+                      key={attr.id}
+                      attribute={attr}
+                      value={variantAttrs[attr.id] || ''}
+                      onChange={(v) => setVariantAttrs({ ...variantAttrs, [attr.id]: v })}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {familyId && featuredAttrs.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                Descripción y ficha técnica
+                <span className="text-gray-400 font-normal ml-1">(opcional, recomendado)</span>
+              </p>
+              <div className="space-y-2">
+                {featuredAttrs.map((attr: any) => (
+                  <ParisAttributeInput
+                    key={attr.id}
+                    attribute={attr}
+                    value={productAttrs[attr.id] || ''}
+                    onChange={(v) => setProductAttrs({ ...productAttrs, [attr.id]: v })}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {familyId && requiredAttrs.length === 0 && attributes && (
+            <p className="text-xs text-gray-500">Esta familia no tiene atributos requeridos.</p>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={save}
+              disabled={!familyId || !categoryId || saving || publishing}
+              className="px-4 py-2 border border-red-200 text-red-700 hover:bg-red-50 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
+            >
+              {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+              Guardar configuración
+            </button>
+            <button
+              onClick={publish}
+              disabled={!canPublish || saving || publishing}
+              className="flex-1 px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {publishing && <Loader2 className="w-4 h-4 animate-spin" />}
+              Publicar en Paris
+            </button>
+          </div>
+
+          {!canPublish && (
+            <p className="text-xs text-gray-400">
+              Completa familia, categoría, tipo de precio y los atributos requeridos para publicar.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ParisAttributeInput({
+  attribute,
+  value,
+  onChange,
+}: {
+  attribute: any
+  value: string
+  onChange: (v: string) => void
+}) {
+  // Heuristic for "has options": Paris returns attributeOptions but for lists with
+  // thousands of items (like Marca with 28k+) it can be empty in the family payload.
+  // Trust the validation type instead — the API has its own type field.
+  const validation = attribute.familyAttributes?.[0]?.attributeValidation
+  const length = validation?.length
+  const hasInlineOptions = (attribute.attributeOptions || []).length > 0
+  // Treat as a searchable list for known dropdown attributes (Marca, Condición, etc.)
+  // — Paris returns isList via attribute.type but here we use a probe: try fetch with q=''.
+  const isListLikely = hasInlineOptions || /marca|condici/i.test(attribute.name || '')
+
+  if (isListLikely) {
+    return (
+      <ParisOptionPicker
+        attributeId={attribute.id}
+        label={attribute.name}
+        inlineOptions={attribute.attributeOptions}
+        value={value}
+        onChange={onChange}
+      />
+    )
+  }
+
+  const required = !!validation?.isRequired
+  const isLong = (length || 0) >= 1000
+
+  return (
+    <div>
+      <label className="block text-xs text-gray-700 mb-1">
+        {attribute.name} {required && <span className="text-red-500">*</span>}
+        {length ? <span className="text-gray-400 font-normal"> (max {length})</span> : null}
+      </label>
+      {isLong ? (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value.slice(0, length || 5000))}
+          rows={4}
+          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-y"
+        />
+      ) : (
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value.slice(0, length || 5000))}
+          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+        />
+      )}
+      {value && length ? (
+        <p className="text-[10px] text-gray-400 mt-0.5 text-right">
+          {value.length}/{length}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function LocalCombobox({
+  label,
+  options,
+  value,
+  onChange,
+  required,
+  disabled,
+  footer,
+}: {
+  label: string
+  options: Array<{ id: string; name: string; hint?: string }>
+  value: string
+  onChange: (v: string) => void
+  required?: boolean
+  disabled?: boolean
+  footer?: string
+}) {
+  const [search, setSearch] = useState('')
+  const [open, setOpen] = useState(false)
+
+  const selected = options.find((o) => o.id === value)
+  const filtered = search.trim()
+    ? options.filter((o) =>
+        (o.name + ' ' + (o.hint || '')).toLowerCase().includes(search.toLowerCase()),
+      )
+    : options
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-700 mb-1">
+        {label} {required && <span className="text-red-500">*</span>}
+      </label>
+      <div className="relative">
+        <input
+          value={open ? search : selected?.name || ''}
+          onChange={(e) => {
+            setSearch(e.target.value)
+            if (!open) setOpen(true)
+          }}
+          onFocus={() => !disabled && setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 200)}
+          disabled={disabled}
+          placeholder={disabled ? '' : 'Escribe para filtrar…'}
+          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm disabled:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-red-500"
+        />
+        {open && !disabled && (
+          <div className="absolute z-10 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-gray-400">Sin resultados</div>
+            ) : (
+              filtered.slice(0, 100).map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    onChange(o.id)
+                    setSearch('')
+                    setOpen(false)
+                  }}
+                  title={o.hint}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-red-50 transition-colors ${
+                    value === o.id ? 'bg-red-50 font-medium' : ''
+                  }`}
+                >
+                  {o.name}
+                  {o.hint && (
+                    <span className="block text-[10px] text-gray-400 truncate">{o.hint}</span>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+      {footer && (
+        <p className="text-xs text-gray-500 mt-1 truncate" title={footer}>
+          {footer}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function ParisOptionPicker({
+  attributeId,
+  label,
+  inlineOptions,
+  value,
+  onChange,
+}: {
+  attributeId: string
+  label: string
+  inlineOptions?: any[]
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [search, setSearch] = useState('')
+  const [open, setOpen] = useState(false)
+  const [debounced, setDebounced] = useState('')
+  // Cache the picked option's display name. The remote list changes when the
+  // user types; without this we'd show the raw ID after a refresh.
+  const [selectedName, setSelectedName] = useState<string>('')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(search), 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const { data, isFetching } = useQuery<any>({
+    enabled: open,
+    queryKey: ['paris-attr-options', attributeId, debounced],
+    queryFn: () =>
+      api
+        .get(`/products/paris/attributes/${attributeId}/options`, {
+          params: debounced ? { q: debounced } : {},
+        })
+        .then((r) => r.data),
+    staleTime: 60 * 1000,
+  })
+
+  const options: any[] = data?.results || inlineOptions || []
+
+  // If we got a value but no cached name yet, try to backfill from inline options.
+  useEffect(() => {
+    if (value && !selectedName) {
+      const inline = (inlineOptions || []).find((o: any) => o.id === value)
+      if (inline) setSelectedName(inline.name || inline.value || '')
+    }
+    if (!value) setSelectedName('')
+  }, [value, inlineOptions, selectedName])
+
+  return (
+    <div>
+      <label className="block text-xs text-gray-700 mb-1">
+        {label} <span className="text-red-500">*</span>
+      </label>
+      <div className="relative">
+        <input
+          value={open ? search : selectedName}
+          onChange={(e) => {
+            setSearch(e.target.value)
+            if (!open) setOpen(true)
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 200)}
+          placeholder="Escribe para buscar…"
+          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+        />
+        {open && (
+          <div className="absolute z-10 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+            {isFetching && options.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-gray-400">Buscando…</div>
+            ) : options.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-gray-400">Sin resultados</div>
+            ) : (
+              options.slice(0, 50).map((o: any) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    onChange(o.id)
+                    setSelectedName(o.name || o.value || '')
+                    setSearch('')
+                    setOpen(false)
+                  }}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-red-50 transition-colors ${
+                    value === o.id ? 'bg-red-50 font-medium' : ''
+                  }`}
+                >
+                  {o.name || o.value}
+                </button>
+              ))
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

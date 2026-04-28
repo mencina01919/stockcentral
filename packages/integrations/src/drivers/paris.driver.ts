@@ -29,6 +29,35 @@ const STAGING_BASE = 'https://api-developers.ecomm-stg.cencosud.com'
  * Config:
  *   - staging?:  true to use staging environment
  */
+export interface ParisAttributeValue {
+  id: string
+  value: string | number | boolean
+}
+
+export interface ParisVariantInput {
+  sellerSku: string
+  medias?: Array<{ position?: number; src: string }>
+  attributes?: ParisAttributeValue[]
+}
+
+export interface ParisPriceInput {
+  priceTypeId: string
+  value: number
+  startDate?: string
+  endDate?: string
+}
+
+export interface ParisPublishInput {
+  name: string
+  sellerSku: string
+  familyId: string
+  categoryId: string
+  productAttributes?: ParisAttributeValue[]
+  variants?: ParisVariantInput[]
+  images?: string[]
+  prices?: ParisPriceInput[]
+}
+
 export class ParisDriver implements IMarketplaceDriver {
   readonly provider = 'paris'
 
@@ -153,18 +182,139 @@ export class ParisDriver implements IMarketplaceDriver {
     }
   }
 
+  // Paris API helpers — exposed as raw passthroughs so the backend can build
+  // the editor UI (families, categories, attributes, options, price types).
+
+  async listFamilies(credentials: DriverCredentials, config?: DriverConfig, offset = 0, limit = 200) {
+    const client = await this.buildClient(credentials, config)
+    const res = await client.get('/v2/families', { params: { limit, offset } })
+    return res.data
+  }
+
+  async listCategories(credentials: DriverCredentials, familyId: string, config?: DriverConfig, offset = 0, limit = 200) {
+    const client = await this.buildClient(credentials, config)
+    const res = await client.get(`/v2/categories/family/${familyId}`, { params: { limit, offset } })
+    return res.data
+  }
+
+  async listProductAttributes(credentials: DriverCredentials, familyId: string, config?: DriverConfig) {
+    const client = await this.buildClient(credentials, config)
+    const res = await client.get(`/v2/attributes/product/family/${familyId}`, { params: { limit: 200, offset: 0 } })
+    return res.data
+  }
+
+  async listVariantAttributes(credentials: DriverCredentials, familyId: string, config?: DriverConfig) {
+    const client = await this.buildClient(credentials, config)
+    const res = await client.get(`/v2/attributes/variant/family/${familyId}`, { params: { limit: 200, offset: 0 } })
+    return res.data
+  }
+
+  async listAttributeOptions(
+    credentials: DriverCredentials,
+    attributeId: string,
+    config?: DriverConfig,
+    q?: string,
+  ) {
+    const client = await this.buildClient(credentials, config)
+    const params: Record<string, unknown> = { limit: 50, offset: 0 }
+    if (q) params.q = q
+    const res = await client.get(`/v2/attributes-options/attribute/${attributeId}`, { params })
+    return res.data
+  }
+
+  async listPriceTypes(credentials: DriverCredentials, config?: DriverConfig) {
+    const client = await this.buildClient(credentials, config)
+    const res = await client.get('/v2/price-types')
+    return res.data
+  }
+
   async createProduct(
     _credentials: DriverCredentials,
     _product: SyncProductInput,
     _config?: DriverConfig,
   ): Promise<SyncResult> {
-    // Paris requires homologation: family + category + family-specific attributes
-    // must be resolved before POST /v2/products. Implement once the master
-    // product schema captures Paris-specific fields (familyId, categoryId, attributes).
+    // Use publish() instead — createProduct is the generic interface signature
+    // and Paris requires the richer ParisPublishInput shape.
     return {
       success: false,
-      error:
-        'Crear productos en Paris requiere familia, categoría y atributos homologados. Pendiente: configurar campos Paris en metadata del producto maestro.',
+      error: 'Use el método publish específico de Paris con familia, categoría y atributos.',
+    }
+  }
+
+  async publish(
+    credentials: DriverCredentials,
+    input: ParisPublishInput,
+    config?: DriverConfig,
+  ): Promise<SyncResult> {
+    try {
+      const client = await this.buildClient(credentials, config)
+
+      // Paris API field names per validation errors:
+      //   - product.sellerSku is fine
+      //   - variants[].skuSeller (NOT sellerSku) — yes, the API is asymmetric
+      //   - variants[].attributes must contain >=1 variant attribute object
+      //   - prices[].type (string) and prices[].storePrice (string)
+      const variantAttributes = (input.variants?.[0]?.attributes || []).map((a) => ({
+        id: a.id,
+        value: String(a.value),
+      }))
+
+      const variants =
+        input.variants && input.variants.length > 0
+          ? input.variants
+          : [
+              {
+                sellerSku: input.sellerSku,
+                medias: (input.images || []).map((url, i) => ({ position: i + 1, src: url })),
+                attributes: variantAttributes,
+              },
+            ]
+
+      const payload: Record<string, unknown> = {
+        product: {
+          name: input.name,
+          sellerSku: input.sellerSku,
+          familyId: input.familyId,
+          category: input.categoryId,
+          attributes: (input.productAttributes || []).map((a) => ({
+            id: a.id,
+            value: String(a.value),
+          })),
+        },
+        variants: variants.map((v) => ({
+          skuSeller: (v.sellerSku || input.sellerSku).slice(0, 50),
+          medias:
+            v.medias && v.medias.length > 0
+              ? v.medias
+              : (input.images || []).map((url, i) => ({ position: i + 1, src: url })),
+          attributes: (v.attributes && v.attributes.length > 0
+            ? v.attributes
+            : variantAttributes
+          ).map((a) => ({ id: a.id, value: String(a.value) })),
+        })),
+      }
+
+      // NOTE: precios NO se envían en el POST de creación. Paris exige cargarlos
+      // por separado (POST /v2/prices/product/{sku}), pero el shape exacto
+      // (storePrice, store.code, etc.) varía entre la API REST pública y el
+      // SDK oficial — el SDK usa { store: { code: 'default' }, price: { code:
+      // 'clp-list-prices' } } pero la API REST acepta otro formato distinto.
+      // Bloqueado hasta tener acceso al SDK oficial o ambiente staging.
+      // Por ahora el producto se crea sin precio y se carga manualmente desde
+      // el Seller Center.
+
+      const res = await client.post('/v2/products', payload)
+      return {
+        success: true,
+        externalId: res.data?.id,
+        rawResponse: res.data,
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.response?.data?.message || err?.response?.data || err.message,
+        rawResponse: err?.response?.data,
+      }
     }
   }
 

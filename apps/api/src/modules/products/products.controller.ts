@@ -76,6 +76,61 @@ export class ProductsController {
     return this.productsService.unlinkMarketplace(tenantId, id, connectionId)
   }
 
+  // ─── Paris configuration helpers ───────────────────────────────────────
+
+  @Get('paris/families')
+  parisFamilies(@TenantId() tenantId: string) {
+    return this.productsService.parisFamilies(tenantId)
+  }
+
+  @Get('paris/families/:familyId/categories')
+  parisCategories(@TenantId() tenantId: string, @Param('familyId') familyId: string) {
+    return this.productsService.parisCategories(tenantId, familyId)
+  }
+
+  @Get('paris/families/:familyId/attributes')
+  parisAttributes(
+    @TenantId() tenantId: string,
+    @Param('familyId') familyId: string,
+    @Query('kind') kind?: string,
+  ) {
+    return this.productsService.parisAttributes(
+      tenantId,
+      familyId,
+      kind === 'variant' ? 'variant' : 'product',
+    )
+  }
+
+  @Get('paris/attributes/:attributeId/options')
+  parisAttributeOptions(
+    @TenantId() tenantId: string,
+    @Param('attributeId') attributeId: string,
+    @Query('q') q?: string,
+  ) {
+    return this.productsService.parisAttributeOptions(tenantId, attributeId, q)
+  }
+
+  @Get('paris/price-types')
+  parisPriceTypes(@TenantId() tenantId: string) {
+    return this.productsService.parisPriceTypes(tenantId)
+  }
+
+  @Patch(':id/paris-data')
+  @ApiOperation({ summary: 'Guardar configuración Paris en el producto maestro' })
+  updateParisData(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.productsService.updateParisData(tenantId, id, body)
+  }
+
+  @Post(':id/paris/publish')
+  @ApiOperation({ summary: 'Publicar el producto en Paris' })
+  publishToParis(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.productsService.publishToParis(tenantId, id)
+  }
+
   @Get('marketplace/:connectionId')
   @ApiOperation({ summary: 'Listar productos publicados en un marketplace (vía API del proveedor)' })
   marketplaceProducts(

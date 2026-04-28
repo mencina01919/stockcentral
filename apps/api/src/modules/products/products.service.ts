@@ -1,7 +1,7 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common'
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../prisma/prisma.service'
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto/product.dto'
-import { getDriver } from '@stockcentral/integrations'
+import { getDriver, ParisDriver } from '@stockcentral/integrations'
 
 @Injectable()
 export class ProductsService {
@@ -311,5 +311,142 @@ export class ProductsService {
       where: { productId, connectionId },
     })
     return { unlinked: true }
+  }
+
+  // ─── Paris-specific helpers ────────────────────────────────────────────────
+
+  // Resolves the Paris connection for the tenant (one per tenant per provider).
+  private async parisConnection(tenantId: string) {
+    const conn = await this.prisma.connection.findFirst({
+      where: { tenantId, provider: 'paris' },
+    })
+    if (!conn) throw new NotFoundException('No hay conexión de Paris configurada')
+    return conn
+  }
+
+  private parisDriver() {
+    return getDriver('paris') as ParisDriver
+  }
+
+  async parisFamilies(tenantId: string) {
+    const conn = await this.parisConnection(tenantId)
+    return this.parisDriver().listFamilies(
+      conn.credentials as Record<string, string>,
+      conn.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  async parisCategories(tenantId: string, familyId: string) {
+    const conn = await this.parisConnection(tenantId)
+    return this.parisDriver().listCategories(
+      conn.credentials as Record<string, string>,
+      familyId,
+      conn.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  async parisAttributes(tenantId: string, familyId: string, kind: 'product' | 'variant') {
+    const conn = await this.parisConnection(tenantId)
+    const driver = this.parisDriver()
+    const cred = conn.credentials as Record<string, string>
+    const cfg = conn.config as Record<string, unknown> | undefined
+    return kind === 'variant'
+      ? driver.listVariantAttributes(cred, familyId, cfg)
+      : driver.listProductAttributes(cred, familyId, cfg)
+  }
+
+  async parisAttributeOptions(tenantId: string, attributeId: string, q?: string) {
+    const conn = await this.parisConnection(tenantId)
+    return this.parisDriver().listAttributeOptions(
+      conn.credentials as Record<string, string>,
+      attributeId,
+      conn.config as Record<string, unknown> | undefined,
+      q,
+    )
+  }
+
+  async parisPriceTypes(tenantId: string) {
+    const conn = await this.parisConnection(tenantId)
+    return this.parisDriver().listPriceTypes(
+      conn.credentials as Record<string, string>,
+      conn.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  async publishToParis(tenantId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+    })
+    if (!product) throw new NotFoundException('Producto no encontrado')
+
+    const data = (product.parisData as any) || {}
+    if (!data.familyId || !data.categoryId) {
+      throw new BadRequestException(
+        'Falta configurar Paris: familia y categoría son obligatorias',
+      )
+    }
+
+    const conn = await this.parisConnection(tenantId)
+    const sellerSku = data.sellerSku || product.sku
+    const images = Array.isArray(product.images) ? (product.images as string[]) : []
+
+    const prices = data.priceTypeId
+      ? [{ priceTypeId: data.priceTypeId, value: Number(product.basePrice) }]
+      : undefined
+
+    const result = await this.parisDriver().publish(
+      conn.credentials as Record<string, string>,
+      {
+        name: product.name,
+        sellerSku,
+        familyId: data.familyId,
+        categoryId: data.categoryId,
+        productAttributes: data.productAttributes || [],
+        variants: data.variants && data.variants.length > 0
+          ? data.variants
+          : undefined,
+        images,
+        prices,
+      },
+      conn.config as Record<string, unknown> | undefined,
+    )
+
+    if (result.success && result.externalId) {
+      await this.prisma.marketplaceMapping.upsert({
+        where: { productId_connectionId: { productId, connectionId: conn.id } },
+        update: {
+          marketplaceProductId: result.externalId,
+          marketplaceSku: sellerSku,
+          marketplacePrice: product.basePrice,
+          syncStatus: 'connected',
+          errorMessage: null,
+          lastSyncAt: new Date(),
+        },
+        create: {
+          productId,
+          connectionId: conn.id,
+          marketplaceProductId: result.externalId,
+          marketplaceSku: sellerSku,
+          marketplacePrice: product.basePrice,
+          syncStatus: 'connected',
+          lastSyncAt: new Date(),
+        },
+      })
+    }
+
+    return result
+  }
+
+  async updateParisData(tenantId: string, productId: string, data: any) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+    })
+    if (!product) throw new NotFoundException('Producto no encontrado')
+
+    return this.prisma.product.update({
+      where: { id: productId },
+      data: { parisData: data },
+      select: { id: true, parisData: true },
+    })
   }
 }
