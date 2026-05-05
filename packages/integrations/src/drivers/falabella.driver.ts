@@ -107,7 +107,8 @@ export class FalabellaDriver implements IMarketplaceDriver {
       .replace(/\.\d{3}Z$/, '')
     const timestamp = `${localIso}${sign}${hh}:${mm}`
 
-    // Falabella Chile SC only accepts Format=XML — JSON returns signature mismatch
+    // Format defaults to XML (default content-type for write actions). For JSON
+    // metadata reads, callers can override via extra.Format = 'JSON'.
     const params: Record<string, string> = {
       Action: action,
       Format: 'XML',
@@ -204,6 +205,15 @@ export class FalabellaDriver implements IMarketplaceDriver {
 
   // ProductCreate — sends XML body, params in query string
   // Docs: https://developers.falabella.com/reference/productcreate
+  //
+  // Top-level XML fields (per Falabella spec): SellerSku, Name, Description, Brand,
+  // PrimaryCategory, ProductId, ProductIdType, TaxClass, Variation, ParentSku,
+  // Quantity, Price, SalePrice, SaleStartDate, SaleEndDate, Status, BusinessUnits,
+  // Images, ProductData (container for category-specific attrs).
+  //
+  // Anything sent in formData using the attribute's FeedName (returned by
+  // GetCategoryAttributes) goes into ProductData. Top-level fields are taken from
+  // the SyncProductInput and a small whitelist below.
   async createProduct(
     credentials: DriverCredentials,
     product: SyncProductInput,
@@ -212,34 +222,97 @@ export class FalabellaDriver implements IMarketplaceDriver {
     try {
       const client = this.buildClient(credentials, config)
       const cfg = (config || {}) as Record<string, unknown>
+      const fd = ((product as any).formData ?? {}) as Record<string, any>
+
+      const esc = (s: string) =>
+        String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+      // Top-level fields at <Product> level (NOT in ProductData, NOT in BusinessUnits)
+      const TOP_LEVEL = new Set([
+        'SellerSku', 'Name', 'Description', 'Brand', 'PrimaryCategory',
+        'ProductId', 'ProductIdType', 'TaxClass', 'Variation', 'ParentSku', 'Status',
+      ])
+      // Fields that belong inside <BusinessUnits><BusinessUnit>...</BusinessUnit></BusinessUnits>
+      const BU_LEVEL = new Set(['Price', 'SalePrice', 'SaleStartDate', 'SaleEndDate', 'Stock', 'Quantity', 'IsPublished'])
 
       const today = new Date().toISOString().split('T')[0]
       const nextYear = new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0]
 
-      // Escape XML special chars
-      const esc = (s: string) =>
-        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      // Build top-level fields with explicit precedence: formData > product/cfg defaults
+      const topLevel: Record<string, string> = {
+        SellerSku:       String(product.sku),
+        Name:            String(fd.Name || product.title),
+        Description:     String(fd.Description || product.description || product.title),
+        Brand:           String(fd.Brand || cfg.brand || ''),
+        PrimaryCategory: String(fd.PrimaryCategory || product.categoryId || cfg.defaultCategoryId || ''),
+        Status:          String(fd.Status || 'active'),
+        TaxClass:        String(fd.TaxClass || cfg.taxClass || 'IVA 19%'),
+        Variation:       String(fd.Variation || 'NO'),
+      }
+      if (fd.ProductId)     topLevel.ProductId = String(fd.ProductId)
+      if (fd.ProductIdType) topLevel.ProductIdType = String(fd.ProductIdType)
+      if (fd.ParentSku)     topLevel.ParentSku = String(fd.ParentSku)
+
+      // Build BusinessUnits — defaults to a single BU with the seller's account.
+      // OperatorCode 'facl' = Falabella Chile. For multi-BU sellers (Tottus,
+      // Sodimac, Linio), pass formData.BusinessUnits as an array of BU objects.
+      const businessUnits = Array.isArray(fd.BusinessUnits) && fd.BusinessUnits.length
+        ? fd.BusinessUnits
+        : [{
+            OperatorCode: String(fd.OperatorCode || cfg.operatorCode || 'facl'),
+            Price:        Number(fd.Price ?? product.price).toFixed(2),
+            Stock:        String(fd.Stock ?? fd.Quantity ?? product.stock ?? 0),
+            Status:       String(fd.Status || 'active'),
+            IsPublished:  String(fd.IsPublished ?? '1'),
+            ...(fd.SalePrice ? { SalePrice: Number(fd.SalePrice).toFixed(2) } : {}),
+            ...(fd.SaleStartDate ? { SaleStartDate: String(fd.SaleStartDate) } : {}),
+            ...(fd.SaleEndDate ? { SaleEndDate: String(fd.SaleEndDate) } : {}),
+          }]
+
+      const businessUnitsXml = '<BusinessUnits>\n      ' +
+        businessUnits.map((bu: Record<string, any>) =>
+          `<BusinessUnit>\n        ${
+            Object.entries(bu)
+              .filter(([, v]) => v !== undefined && v !== null && v !== '')
+              .map(([k, v]) => `<${k}>${esc(String(v))}</${k}>`)
+              .join('\n        ')
+          }\n      </BusinessUnit>`
+        ).join('\n      ') +
+        '\n    </BusinessUnits>'
+
+      // Everything else from formData goes into <ProductData> using its FeedName key
+      const productDataFields: string[] = []
+      for (const [k, v] of Object.entries(fd)) {
+        if (TOP_LEVEL.has(k) || BU_LEVEL.has(k)) continue
+        if (k === 'BusinessUnits' || k === 'OperatorCode') continue
+        if (v === undefined || v === null || v === '') continue
+        if (Array.isArray(v)) {
+          productDataFields.push(`<${k}>${esc(v.join(','))}</${k}>`)
+        } else {
+          productDataFields.push(`<${k}>${esc(String(v))}</${k}>`)
+        }
+      }
+
+      const topLevelXml = Object.entries(topLevel)
+        .map(([k, v]) => `<${k}>${esc(v)}</${k}>`)
+        .join('\n    ')
+
+      const imagesXml = (product.images || [])
+        .map((url) => `<Image>${esc(url)}</Image>`)
+        .join('\n      ')
+
+      const productDataXml = productDataFields.length
+        ? `<ProductData>\n      ${productDataFields.join('\n      ')}\n    </ProductData>`
+        : '<ProductData></ProductData>'
 
       const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
 <Request>
   <Product>
-    <SellerSku>${esc(product.sku)}</SellerSku>
-    <Name>${esc(product.title)}</Name>
-    <Description>${esc(product.description || product.title)}</Description>
-    <Brand>${esc(String(cfg.brand || 'Generic'))}</Brand>
-    <Price>${product.price.toFixed(2)}</Price>
-    <SalePrice>${product.price.toFixed(2)}</SalePrice>
-    <SaleStartDate>${today}</SaleStartDate>
-    <SaleEndDate>${nextYear}</SaleEndDate>
-    <Status>active</Status>
-    <Quantity>${product.stock}</Quantity>
-    <PrimaryCategory>${esc(String(product.categoryId || cfg.defaultCategoryId || ''))}</PrimaryCategory>
-    <TaxClass>${esc(String(cfg.taxClass || 'default'))}</TaxClass>
-    <ProductData>
-      <ConditionType>${esc(String(cfg.conditionType || 'new'))}</ConditionType>
-    </ProductData>
+    ${topLevelXml}
+    ${businessUnitsXml}
+    ${productDataXml}
     <Images>
-      ${(product.images || []).map((url) => `<Image>${esc(url)}</Image>`).join('\n      ')}
+      ${imagesXml}
     </Images>
   </Product>
 </Request>`
@@ -250,17 +323,36 @@ export class FalabellaDriver implements IMarketplaceDriver {
         headers: { 'Content-Type': 'text/xml; charset=UTF-8' },
       })
 
-      // ProductCreate is async — returns a FeedID, not the product ID immediately
-      const feedId = res.data?.SuccessResponse?.Body?.RequestId
+      if (res.data?.ErrorResponse) {
+        const head = res.data.ErrorResponse?.Head
+        const body = res.data.ErrorResponse?.Body
+        // Body.Errors.Error[] holds detailed cause list when present
+        const detailErrors = body?.Errors?.Error
+        const detailList = Array.isArray(detailErrors) ? detailErrors : (detailErrors ? [detailErrors] : [])
+        const detailMsg = detailList.map((e: any) => e?.Message || e?.message || JSON.stringify(e)).join(' | ')
+        return {
+          success: false,
+          error: detailMsg || head?.ErrorMessage || 'ProductCreate error',
+          rawResponse: res.data,
+        }
+      }
+
+      const feedId = res.data?.SuccessResponse?.Head?.RequestId ||
+                     res.data?.SuccessResponse?.Body?.RequestId ||
+                     res.data?.SuccessResponse?.Body?.FeedId
       return {
         success: true,
         externalId: product.sku, // SellerSku is the stable external ID for Falabella
         rawResponse: { feedId, ...res.data },
       }
     } catch (err: any) {
-      const msg =
-        err?.response?.data?.ErrorResponse?.Head?.ErrorMessage ||
-        err?.response?.data?.ErrorResponse?.Body?.ErrorMessage ||
+      const data = err?.response?.data
+      const detailErrors = data?.ErrorResponse?.Body?.Errors?.Error
+      const detailList = Array.isArray(detailErrors) ? detailErrors : (detailErrors ? [detailErrors] : [])
+      const detailMsg = detailList.map((e: any) => e?.Message || e?.message || JSON.stringify(e)).join(' | ')
+      const msg = detailMsg ||
+        data?.ErrorResponse?.Head?.ErrorMessage ||
+        data?.ErrorResponse?.Body?.ErrorMessage ||
         err.message
       return { success: false, error: msg }
     }
@@ -455,6 +547,82 @@ export class FalabellaDriver implements IMarketplaceDriver {
     } catch {
       return this.mapOrder(orderHeader, [])
     }
+  }
+
+  // ─── Metadata (categories / attributes / brands) ────────────────────────────
+
+  // Internal helper: makes a JSON-formatted GET request, returns raw response body.
+  private async callJson(
+    credentials: DriverCredentials,
+    config: DriverConfig | undefined,
+    action: string,
+    extra: Record<string, string> = {},
+  ): Promise<any> {
+    // Use a JSON-only client (no XML interceptor) for metadata reads
+    const baseUrl = this.getBaseUrl(credentials, config)
+    const params = this.buildParams(credentials, action, { ...extra, Format: 'JSON' })
+    const res = await axios.get(baseUrl, { params, timeout: 20000 })
+    if (res.data?.ErrorResponse) {
+      const head = res.data.ErrorResponse?.Head
+      throw new Error(head?.ErrorMessage || 'Falabella API error')
+    }
+    return res.data?.SuccessResponse?.Body
+  }
+
+  // GetCategoryTree — full category tree. Cache externally; rarely changes.
+  // Docs: https://developers.falabella.com/reference/getcategorytree
+  async getCategoryTree(credentials: DriverCredentials, config?: DriverConfig): Promise<any> {
+    const body = await this.callJson(credentials, config, 'GetCategoryTree')
+    return body?.Categories?.Category || []
+  }
+
+  // GetCategoryAttributes — list attributes for a leaf category.
+  // Docs: https://developers.falabella.com/reference/getcategoryattributes
+  async getCategoryAttributes(
+    credentials: DriverCredentials,
+    categoryId: string,
+    config?: DriverConfig,
+  ): Promise<any[]> {
+    const body = await this.callJson(credentials, config, 'GetCategoryAttributes', {
+      PrimaryCategory: categoryId,
+    })
+    const raw = body?.Attribute
+    if (!raw) return []
+    return Array.isArray(raw) ? raw : [raw]
+  }
+
+  // GetBrands — paginated. Falabella has thousands of brands; caller paginates.
+  // Docs: https://developers.falabella.com/reference/getbrands
+  async getBrands(
+    credentials: DriverCredentials,
+    config?: DriverConfig,
+    offset = 0,
+    limit = 100,
+  ): Promise<{ items: any[]; total: number; offset: number; limit: number }> {
+    const body = await this.callJson(credentials, config, 'GetBrands', {
+      Offset: String(offset),
+      Limit: String(limit),
+    })
+    const raw = body?.Brands?.Brand
+    const items = !raw ? [] : (Array.isArray(raw) ? raw : [raw])
+    const total = parseInt(body?.TotalCount || String(items.length), 10)
+    return { items, total, offset, limit }
+  }
+
+  // GetQcStatus — quality-check status for already-created products.
+  // Falabella has no pre-publish validate; closest signal is QC after ProductCreate.
+  // Docs: https://developers.falabella.com/reference/getqcstatus
+  async getQcStatus(
+    credentials: DriverCredentials,
+    skus: string[],
+    config?: DriverConfig,
+  ): Promise<any[]> {
+    const body = await this.callJson(credentials, config, 'GetQcStatus', {
+      SkuSellerList: JSON.stringify(skus),
+    })
+    const raw = body?.Status?.Status || body?.Status
+    if (!raw || raw === '') return []
+    return Array.isArray(raw) ? raw : [raw]
   }
 
   // ─── Mappers ─────────────────────────────────────────────────────────────────

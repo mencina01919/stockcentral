@@ -103,31 +103,82 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
   ): Promise<PaginatedResult<MarketplaceProduct>> {
     const client = this.buildClient(credentials.accessToken)
     const sellerId = credentials.sellerId
+    const cfg = (config || {}) as Record<string, any>
+    const statusFilter: string | undefined = cfg.statusFilter
+    const searchQuery: string | undefined = cfg.searchQuery
 
-    // Get listing IDs
-    const searchRes = await client.get(`/users/${sellerId}/items/search`, {
-      params: { offset, limit },
-    })
-    const ids: string[] = searchRes.data.results
-    const total: number = searchRes.data.paging.total
+    // When a text search is provided, ML supports `q` natively — single call, no multi-status merging needed
+    if (searchQuery) {
+      const params: Record<string, any> = { q: searchQuery, offset, limit }
+      if (statusFilter) params.status = statusFilter
+      const res = await client.get(`/users/${sellerId}/items/search`, { params })
+      const ids: string[] = res.data.results || []
+      const total: number = res.data.paging.total
 
-    if (!ids.length) {
-      return { items: [], total, offset, limit, hasMore: offset + limit < total }
+      if (!ids.length) return { items: [], total, offset, limit, hasMore: offset + limit < total }
+
+      // Fetch details — for search results we don't know the status beforehand,
+      // so we trust data.status from the detail endpoint
+      const items: MarketplaceProduct[] = []
+      for (const chunk of this.chunkArray(ids, 20)) {
+        const detailRes = await client.get('/items', { params: { ids: chunk.join(',') } })
+        for (const entry of detailRes.data) {
+          if (entry.code === 200) items.push(this.mapProduct(entry.body))
+        }
+      }
+      return { items, total, offset, limit, hasMore: offset + limit < total }
     }
 
-    // Batch fetch item details (max 20 per call)
+    const ML_STATUSES = ['active', 'paused', 'closed'] as const
+    const statusesToQuery = statusFilter
+      ? [statusFilter as (typeof ML_STATUSES)[number]]
+      : [...ML_STATUSES]
+
+    // Get totals for each status to compute virtual offset across statuses
+    const countRes = await Promise.all(
+      statusesToQuery.map((s) =>
+        client
+          .get(`/users/${sellerId}/items/search`, { params: { status: s, limit: 1, offset: 0 } })
+          .then((r) => ({ status: s, total: r.data.paging.total as number })),
+      ),
+    )
+    const totals = Object.fromEntries(countRes.map((c) => [c.status, c.total])) as Record<string, number>
+    const globalTotal = statusesToQuery.reduce((sum, s) => sum + (totals[s] || 0), 0)
+
+    // Walk statuses in order, skip past `offset`, collect up to `limit` IDs
+    let remaining = offset
+    const idsWithStatus: Array<{ id: string; status: string }> = []
+
+    for (const s of statusesToQuery) {
+      if (idsWithStatus.length >= limit) break
+      const statusTotal = totals[s] || 0
+      if (remaining >= statusTotal) { remaining -= statusTotal; continue }
+
+      const need = limit - idsWithStatus.length
+      const res = await client.get(`/users/${sellerId}/items/search`, {
+        params: { status: s, offset: remaining, limit: need },
+      })
+      for (const id of res.data.results as string[]) idsWithStatus.push({ id, status: s })
+      remaining = 0
+    }
+
+    if (!idsWithStatus.length) {
+      return { items: [], total: globalTotal, offset, limit, hasMore: offset + limit < globalTotal }
+    }
+
+    const statusById = new Map(idsWithStatus.map(({ id, status }) => [id, status]))
+    const ids = idsWithStatus.map((x) => x.id)
     const items: MarketplaceProduct[] = []
-    const chunks = this.chunkArray(ids, 20)
-    for (const chunk of chunks) {
+    for (const chunk of this.chunkArray(ids, 20)) {
       const detailRes = await client.get('/items', { params: { ids: chunk.join(',') } })
       for (const entry of detailRes.data) {
         if (entry.code === 200) {
-          items.push(this.mapProduct(entry.body))
+          items.push(this.mapProduct(entry.body, statusById.get(entry.body.id)))
         }
       }
     }
 
-    return { items, total, offset, limit, hasMore: offset + limit < total }
+    return { items, total: globalTotal, offset, limit, hasMore: offset + limit < globalTotal }
   }
 
   async findBySku(credentials: DriverCredentials, sku: string): Promise<MarketplaceProduct[]> {
@@ -159,6 +210,33 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     }
   }
 
+  // Builds the ML attributes array from formData.
+  // Merges static fields (brand, gtin, model) with dynamic mlAttributes/attributes from the category search.
+  private buildAttributes(fd: Record<string, any>, productAttrs?: any[]): Record<string, unknown>[] {
+    // If explicit attributes array provided (from product-level), use as base
+    if (Array.isArray(productAttrs) && productAttrs.length > 0) {
+      return productAttrs.map((a: any) => {
+        const attr: Record<string, unknown> = { id: a.id }
+        if (a.value_id !== undefined) attr.value_id = a.value_id
+        if (a.value_name !== undefined) attr.value_name = a.value_name
+        if (a.value_struct !== undefined) attr.value_struct = a.value_struct
+        return attr
+      })
+    }
+    const map = new Map<string, string>()
+    // Static known attributes from form fields
+    if (fd.brand)   map.set('BRAND',   String(fd.brand))
+    if (fd.gtin)    map.set('GTIN',    String(fd.gtin))
+    if (fd.model)   map.set('MODEL',   String(fd.model))
+    // Dynamic attributes captured from MLAttributeFields (category-specific)
+    if (Array.isArray(fd.mlAttributes)) {
+      for (const a of fd.mlAttributes) {
+        if (a.id && a.value_name) map.set(String(a.id), String(a.value_name))
+      }
+    }
+    return Array.from(map.entries()).map(([id, value_name]) => ({ id, value_name }))
+  }
+
   async createProduct(
     credentials: DriverCredentials,
     product: SyncProductInput,
@@ -166,26 +244,66 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
   ): Promise<SyncResult> {
     try {
       const client = this.buildClient(credentials.accessToken)
-      const cfg = (config || {}) as Record<string, unknown>
-      const siteId = cfg.siteId as string || 'MLC'
+      const cfg = (config || {}) as Record<string, any>
+      const fd = (product as any).formData as Record<string, any> | undefined ?? {}
+
+      const categoryId = fd.categoryId || (product as any).categoryId || cfg.defaultCategoryId
+      if (!categoryId) throw new Error('Se requiere el ID de categoría (categoryId) para publicar en MercadoLibre')
+
+      const productLevelAttrs = Array.isArray((product as any).attributes) ? (product as any).attributes : undefined
+      const attributes = this.buildAttributes(fd, productLevelAttrs)
+
+      const catalogProductId = fd.catalog_product_id || (product as any).catalog_product_id
+      const familyName = fd.family_name || (product as any).family_name
 
       const payload: Record<string, unknown> = {
-        title: product.title,
-        category_id: product.categoryId || cfg.defaultCategoryId,
-        price: product.price,
-        currency_id: cfg.currency as string || 'CLP',
-        available_quantity: product.stock,
-        buying_mode: 'buy_it_now',
-        listing_type_id: cfg.listingType as string || 'gold_special',
-        condition: cfg.condition as string || 'new',
-        description: { plain_text: product.description || product.title },
-        pictures: product.images?.map((url) => ({ source: url })) || [],
+        category_id:        categoryId,
+        price:              fd.price ?? product.price,
+        currency_id:        cfg.currency || 'CLP',
+        available_quantity: fd.availableQuantity ?? product.stock,
+        buying_mode:        'buy_it_now',
+        listing_type_id:    fd.listingTypeId || fd.listing_type_id || cfg.listingType || 'gold_special',
+        condition:          fd.condition || cfg.condition || 'new',
+        seller_custom_field: product.sku,
+        pictures:           (product.images || []).map((url) => ({ source: url })),
+      }
+
+      // Catalog listing mode (required for brand/large_seller accounts)
+      if (catalogProductId) {
+        payload.catalog_product_id = catalogProductId
+        if (familyName) payload.family_name = familyName
+      } else {
+        payload.title = fd.title || product.title
+        if (familyName) payload.family_name = familyName
+      }
+
+      if (attributes.length) payload.attributes = attributes
+
+      // Warranty as a sale term (ML-native field for seller warranty text)
+      if (fd.warranty) {
+        payload.sale_terms = [{ id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' }, { id: 'WARRANTY_TIME', value_name: fd.warranty }]
       }
 
       const res = await client.post('/items', payload)
-      return { success: true, externalId: res.data.id, rawResponse: res.data }
+      const itemId: string = res.data.id
+
+      // ML requires a separate request to set the description
+      const descText: string = fd.description || product.description || product.title || ''
+      if (descText) {
+        await client.post(`/items/${itemId}/description`, { plain_text: descText }).catch(() => {})
+      }
+
+      return { success: true, externalId: itemId, rawResponse: res.data }
     } catch (err: any) {
-      return { success: false, error: err?.response?.data?.message || err.message }
+      const data = err?.response?.data
+      const causes = Array.isArray(data?.cause)
+        ? data.cause.filter((c: any) => c.type !== 'warning').map((c: any) => `${c.code}: ${c.message}`).join(' | ')
+        : ''
+      return {
+        success: false,
+        error: causes || data?.message || data?.error || err.message,
+        rawResponse: data,
+      }
     }
   }
 
@@ -197,15 +315,51 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
   ): Promise<SyncResult> {
     try {
       const client = this.buildClient(credentials.accessToken)
+      const fd = (product as any).formData as Record<string, any> | undefined ?? {}
+
       const payload: Record<string, unknown> = {}
-      if (product.title) payload.title = product.title
-      if (product.price !== undefined) payload.price = product.price
-      if (product.stock !== undefined) payload.available_quantity = product.stock
+      const title = fd.title || product.title
+      const price = fd.price ?? product.price
+      const stock = fd.availableQuantity ?? product.stock
+      const condition = fd.condition
+      const listingTypeId = fd.listingTypeId
+
+      if (title !== undefined)       payload.title              = title
+      if (price !== undefined)       payload.price              = price
+      if (stock !== undefined)       payload.available_quantity = stock
+      if (condition !== undefined)   payload.condition          = condition
+      if (listingTypeId !== undefined) payload.listing_type_id  = listingTypeId
+
+      const pictures = product.images || []
+      if (pictures.length) payload.pictures = pictures.map((url) => ({ source: url }))
+
+      const productLevelAttrsUpdate = Array.isArray((product as any).attributes) ? (product as any).attributes : undefined
+      const attributes = this.buildAttributes(fd, productLevelAttrsUpdate)
+      if (attributes.length) payload.attributes = attributes
+
+      if (fd.warranty) {
+        payload.sale_terms = [{ id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' }, { id: 'WARRANTY_TIME', value_name: fd.warranty }]
+      }
 
       await client.put(`/items/${externalId}`, payload)
+
+      // Update description separately
+      const descText: string = fd.description || product.description || ''
+      if (descText) {
+        await client.put(`/items/${externalId}/description`, { plain_text: descText }).catch(() => {})
+      }
+
       return { success: true, externalId }
     } catch (err: any) {
-      return { success: false, error: err?.response?.data?.message || err.message }
+      const data = err?.response?.data
+      const causes = Array.isArray(data?.cause)
+        ? data.cause.filter((c: any) => c.type !== 'warning').map((c: any) => `${c.code}: ${c.message}`).join(' | ')
+        : ''
+      return {
+        success: false,
+        error: causes || data?.message || data?.error || err.message,
+        rawResponse: data,
+      }
     }
   }
 
@@ -276,17 +430,28 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     }
   }
 
-  private mapProduct(data: any): MarketplaceProduct {
+  private mapProduct(data: any, overrideStatus?: string): MarketplaceProduct {
+    // ML's batch /items endpoint can return a different status than /items/search
+    // (e.g. sub_status changes). We trust the status from the search when provided.
+    const rawStatus = overrideStatus || data.status
+
+    // For items with variations, available_quantity at the root is 0.
+    // The real stock is the sum of each variation's available_quantity.
+    const variations: any[] = Array.isArray(data.variations) ? data.variations : []
+    const stock = variations.length > 0
+      ? variations.reduce((sum: number, v: any) => sum + (v.available_quantity ?? 0), 0)
+      : (data.available_quantity ?? 0)
+
     return {
       externalId: data.id,
       externalSku: data.seller_custom_field,
       title: data.title,
       description: data.description?.plain_text,
       price: data.price,
-      stock: data.available_quantity,
+      stock,
       images: data.pictures?.map((p: any) => p.url) || [],
       categoryId: data.category_id,
-      status: this.mapStatus(data.status),
+      status: this.mapStatus(rawStatus),
       url: data.permalink,
       rawData: data,
     }

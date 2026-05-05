@@ -12,3 +12,4 @@ export type {
   ParisVariantInput,
   ParisPriceInput,
 } from './drivers/paris.driver'
+export { LiderDriver } from './drivers/lider.driver'
