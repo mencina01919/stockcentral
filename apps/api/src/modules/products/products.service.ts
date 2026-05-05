@@ -7,17 +7,42 @@ import { getDriver, ParisDriver } from '@stockcentral/integrations'
 export class ProductsService {
   constructor(private prisma: PrismaService) {}
 
+  private async generateSku(tenantId: string, name: string): Promise<string> {
+    const base = name
+      .toUpperCase()
+      .replace(/[^A-Z0-9\s]/g, '')
+      .trim()
+      .split(/\s+/)
+      .slice(0, 3)
+      .map((w) => w.slice(0, 4))
+      .join('-')
+
+    let candidate = base
+    let suffix = 1
+    while (await this.prisma.product.findUnique({ where: { tenantId_sku: { tenantId, sku: candidate } } })) {
+      candidate = `${base}-${suffix++}`
+    }
+    return candidate
+  }
+
+  private computeMargin(basePrice: number, costPrice?: number): number | null {
+    if (!costPrice || costPrice === 0 || basePrice === 0) return null
+    return Math.round(((basePrice - costPrice) / basePrice) * 10000) / 100
+  }
+
   async findAll(tenantId: string, query: ProductQueryDto & { connectionId?: string }) {
-    const { page = 1, limit = 20, search, status, connectionId, sortBy = 'createdAt', sortOrder = 'desc' } = query
+    const { page = 1, limit = 20, search, status, brand, connectionId, sortBy = 'createdAt', sortOrder = 'desc' } = query
     const skip = (page - 1) * limit
 
     const where: any = { tenantId }
     if (status) where.status = status
+    if (brand) where.brand = { contains: brand, mode: 'insensitive' }
     if (connectionId) where.marketplaceMappings = { some: { connectionId } }
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
         { sku: { contains: search, mode: 'insensitive' } },
+        { brand: { contains: search, mode: 'insensitive' } },
         { description: { contains: search, mode: 'insensitive' } },
       ]
     }
@@ -66,27 +91,41 @@ export class ProductsService {
   }
 
   async create(tenantId: string, dto: CreateProductDto) {
+    const sku = dto.sku?.trim() || (await this.generateSku(tenantId, dto.name))
+
     const existing = await this.prisma.product.findUnique({
-      where: { tenantId_sku: { tenantId, sku: dto.sku } },
+      where: { tenantId_sku: { tenantId, sku } },
     })
-    if (existing) throw new ConflictException(`El SKU "${dto.sku}" ya existe`)
+    if (existing) throw new ConflictException(`El SKU "${sku}" ya existe`)
+
+    const { stockOnline, stockWarehouse, stockStore, ...productFields } = dto
+
+    const margin = productFields.targetMargin !== undefined
+      ? productFields.targetMargin
+      : (this.computeMargin(productFields.basePrice, productFields.costPrice) ?? undefined)
 
     const product = await this.prisma.product.create({
-      data: { ...dto, tenantId },
+      data: { ...productFields, sku, tenantId, targetMargin: margin, status: productFields.status ?? 'active' },
     })
 
-    const warehouse = await this.prisma.warehouse.findFirst({
-      where: { tenantId, active: true },
+    const warehouses = await this.prisma.warehouse.findMany({
+      where: { tenantId, active: true, warehouseType: { in: ['online', 'warehouse', 'store'] }, isDefault: true },
     })
 
-    if (warehouse) {
-      await this.prisma.inventory.create({
-        data: {
+    const stockByType: Record<string, number> = {
+      online: stockOnline ?? 0,
+      warehouse: stockWarehouse ?? 0,
+      store: stockStore ?? 0,
+    }
+
+    if (warehouses.length > 0) {
+      await this.prisma.inventory.createMany({
+        data: warehouses.map((w) => ({
           tenantId,
           productId: product.id,
-          warehouseId: warehouse.id,
-          quantity: 0,
-        },
+          warehouseId: w.id,
+          quantity: stockByType[w.warehouseType] ?? 0,
+        })),
       })
     }
 
@@ -94,21 +133,39 @@ export class ProductsService {
   }
 
   async update(tenantId: string, id: string, dto: UpdateProductDto) {
-    const product = await this.findOne(tenantId, id)
+    await this.findOne(tenantId, id)
 
-    const { stock, ...productFields } = dto
+    const { stockOnline, stockWarehouse, stockStore, ...productFields } = dto
 
-    const updated = await this.prisma.product.update({ where: { id }, data: productFields })
+    const margin = productFields.targetMargin !== undefined
+      ? productFields.targetMargin
+      : (productFields.basePrice !== undefined || productFields.costPrice !== undefined)
+        ? undefined
+        : undefined
 
-    if (stock !== undefined) {
-      const inv = await this.prisma.inventory.findFirst({ where: { productId: id, variantId: null } })
+    await this.prisma.product.update({ where: { id }, data: { ...productFields, targetMargin: margin } })
+
+    const stockUpdates: Record<string, number | undefined> = {
+      online: stockOnline,
+      warehouse: stockWarehouse,
+      store: stockStore,
+    }
+
+    for (const [warehouseType, qty] of Object.entries(stockUpdates)) {
+      if (qty === undefined) continue
+      const wh = await this.prisma.warehouse.findFirst({
+        where: { tenantId, warehouseType, isDefault: true, active: true },
+      })
+      if (!wh) continue
+      const inv = await this.prisma.inventory.findFirst({
+        where: { productId: id, warehouseId: wh.id, variantId: null },
+      })
       if (inv) {
-        await this.prisma.inventory.update({ where: { id: inv.id }, data: { quantity: stock } })
+        await this.prisma.inventory.update({ where: { id: inv.id }, data: { quantity: qty } })
       } else {
-        const warehouse = await this.prisma.warehouse.findFirst({ where: { tenantId, active: true } })
-        if (warehouse) {
-          await this.prisma.inventory.create({ data: { tenantId, productId: id, warehouseId: warehouse.id, quantity: stock, reservedQuantity: 0 } })
-        }
+        await this.prisma.inventory.create({
+          data: { tenantId, productId: id, warehouseId: wh.id, quantity: qty, reservedQuantity: 0 },
+        })
       }
     }
 
@@ -125,13 +182,14 @@ export class ProductsService {
   }
 
   async getStats(tenantId: string) {
-    const [total, active, draft, archived] = await Promise.all([
+    const [total, active, outOfStock, comingSoon, unavailable] = await Promise.all([
       this.prisma.product.count({ where: { tenantId } }),
       this.prisma.product.count({ where: { tenantId, status: 'active' } }),
-      this.prisma.product.count({ where: { tenantId, status: 'draft' } }),
-      this.prisma.product.count({ where: { tenantId, status: 'archived' } }),
+      this.prisma.product.count({ where: { tenantId, status: 'out_of_stock' } }),
+      this.prisma.product.count({ where: { tenantId, status: 'coming_soon' } }),
+      this.prisma.product.count({ where: { tenantId, status: 'unavailable' } }),
     ])
-    return { total, active, draft, archived }
+    return { total, active, outOfStock, comingSoon, unavailable }
   }
 
   // ─── Marketplace mappings ──────────────────────────────────────────────────
@@ -242,24 +300,35 @@ export class ProductsService {
     return { matched: 1, status: 'connected', marketplaceProductId: m.externalId, title: m.title }
   }
 
-  // Pulls products live from the marketplace API (not from local DB).
-  // Used by /products/{provider} pages so the user sees what's actually
-  // published in that channel, regardless of mapping status.
-  async fetchMarketplaceProducts(tenantId: string, connectionId: string, offset = 0, limit = 25) {
+  async fetchMarketplaceProducts(
+    tenantId: string,
+    connectionId: string,
+    offset = 0,
+    limit = 25,
+    filters: { status?: string; stock?: string; search?: string; linked?: string } = {},
+  ) {
     const connection = await this.prisma.connection.findFirst({
       where: { id: connectionId, tenantId },
     })
     if (!connection) throw new NotFoundException('Conexión no encontrada')
 
     const driver = getDriver(connection.provider)
+    const cfg = connection.config as Record<string, unknown> | undefined
+    const { status, stock, search, linked } = filters
+
+    // status + search go to the driver (ML supports both natively)
+    const driverCfg: Record<string, unknown> = { ...(cfg as any) }
+    if (status) driverCfg.statusFilter = status
+    if (search) driverCfg.searchQuery = search
+
     const result = await driver.getProducts(
       connection.credentials as Record<string, string>,
-      connection.config as Record<string, unknown> | undefined,
+      driverCfg,
       offset,
       limit,
     )
 
-    // Cross-reference with local mappings so the UI can show "vinculado" badges.
+    // Cross-reference with local mappings for the "vinculado" badge
     const externalIds = result.items.map((p) => p.externalId).filter(Boolean)
     const mappings = externalIds.length
       ? await this.prisma.marketplaceMapping.findMany({
@@ -267,41 +336,44 @@ export class ProductsService {
           include: { product: { select: { id: true, sku: true, name: true } } },
         })
       : []
-    const mappingByExternalId = new Map(
-      mappings.map((m) => [m.marketplaceProductId, m]),
-    )
+    const mappingByExternalId = new Map(mappings.map((m) => [m.marketplaceProductId, m]))
+
+    let items = result.items.map((p) => {
+      const mapping = mappingByExternalId.get(p.externalId)
+      return {
+        externalId: p.externalId,
+        externalSku: p.externalSku,
+        title: p.title,
+        price: p.price,
+        stock: p.stock,
+        status: p.status,
+        images: p.images || [],
+        categoryId: p.categoryId,
+        url: p.url,
+        mapping: mapping
+          ? {
+              masterProductId: mapping.product?.id,
+              masterSku: mapping.product?.sku,
+              masterName: mapping.product?.name,
+              syncStatus: mapping.syncStatus,
+            }
+          : null,
+      }
+    })
+
+    // stock / linked filters applied on the returned page (ML doesn't support these natively)
+    if (stock === 'in_stock')       items = items.filter((p) => p.stock > 0)
+    else if (stock === 'out_of_stock') items = items.filter((p) => !(p.stock > 0))
+    if (linked === 'linked')        items = items.filter((p) => p.mapping !== null)
+    else if (linked === 'unlinked') items = items.filter((p) => p.mapping === null)
 
     return {
-      data: result.items.map((p) => {
-        const mapping = mappingByExternalId.get(p.externalId)
-        return {
-          externalId: p.externalId,
-          externalSku: p.externalSku,
-          title: p.title,
-          price: p.price,
-          stock: p.stock,
-          status: p.status,
-          images: p.images || [],
-          categoryId: p.categoryId,
-          url: p.url,
-          mapping: mapping
-            ? {
-                masterProductId: mapping.product?.id,
-                masterSku: mapping.product?.sku,
-                masterName: mapping.product?.name,
-                syncStatus: mapping.syncStatus,
-              }
-            : null,
-        }
-      }),
-      meta: {
-        total: result.total,
-        offset: result.offset,
-        limit: result.limit,
-        hasMore: result.hasMore,
-      },
+      data: items,
+      meta: { total: result.total, offset: result.offset, limit: result.limit, hasMore: result.hasMore },
     }
   }
+
+  invalidateMpCache(_connectionId: string) { /* kept for API compat */ }
 
   async unlinkMarketplace(tenantId: string, productId: string, connectionId: string) {
     const product = await this.prisma.product.findFirst({ where: { id: productId, tenantId } })
@@ -435,6 +507,25 @@ export class ProductsService {
     }
 
     return result
+  }
+
+  async getMarketplacePricing(tenantId: string, productId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      select: { id: true, basePrice: true, marketplacePricing: true },
+    })
+    if (!product) throw new NotFoundException('Producto no encontrado')
+    return { basePrice: product.basePrice, pricing: product.marketplacePricing ?? {} }
+  }
+
+  async updateMarketplacePricing(tenantId: string, productId: string, data: any) {
+    const product = await this.prisma.product.findFirst({ where: { id: productId, tenantId } })
+    if (!product) throw new NotFoundException('Producto no encontrado')
+    return this.prisma.product.update({
+      where: { id: productId },
+      data: { marketplacePricing: data },
+      select: { id: true, marketplacePricing: true },
+    })
   }
 
   async updateParisData(tenantId: string, productId: string, data: any) {

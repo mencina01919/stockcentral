@@ -1,22 +1,35 @@
 import { IsString, IsNumber, IsOptional, IsArray, IsEnum, Min } from 'class-validator'
-import { ApiProperty } from '@nestjs/swagger'
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 import { Type } from 'class-transformer'
 
+export enum ProductStatus {
+  ACTIVE = 'active',
+  OUT_OF_STOCK = 'out_of_stock',
+  COMING_SOON = 'coming_soon',
+  UNAVAILABLE = 'unavailable',
+}
+
 export class CreateProductDto {
-  @ApiProperty()
+  @ApiPropertyOptional({ description: 'Si se omite, se genera automáticamente' })
+  @IsOptional()
   @IsString()
-  sku: string
+  sku?: string
 
   @ApiProperty()
   @IsString()
   name: string
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  brand?: string
+
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   description?: string
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   shortDescription?: string
@@ -27,45 +40,89 @@ export class CreateProductDto {
   @Type(() => Number)
   basePrice: number
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
   costPrice?: number
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  transferPrice?: number
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  salePrice?: number
+
+  @ApiPropertyOptional({ description: 'Margen deseado en %. Se calcula automáticamente si se omite.' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  targetMargin?: number
+
+  @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
   weight?: number
 
-  @ApiProperty({ required: false, type: [String] })
+  @ApiPropertyOptional({ type: [String] })
   @IsOptional()
   @IsArray()
   tags?: string[]
 
-  @ApiProperty({ required: false, default: 'draft', enum: ['draft', 'active', 'archived'] })
+  @ApiPropertyOptional({ enum: ProductStatus, default: ProductStatus.ACTIVE })
   @IsOptional()
-  @IsString()
-  status?: string
+  @IsEnum(ProductStatus)
+  status?: ProductStatus = ProductStatus.ACTIVE
+
+  @ApiPropertyOptional({ description: 'Stock inicial (bodega online)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  stockOnline?: number
+
+  @ApiPropertyOptional({ description: 'Stock bodega principal' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  stockWarehouse?: number
+
+  @ApiPropertyOptional({ description: 'Stock tienda física' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  stockStore?: number
 }
 
 export class UpdateProductDto {
   @IsOptional() @IsString() name?: string
+  @IsOptional() @IsString() brand?: string
   @IsOptional() @IsString() description?: string
   @IsOptional() @IsString() shortDescription?: string
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) basePrice?: number
-  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) salePrice?: number
-  @IsOptional() @IsString() saleStartDate?: string
-  @IsOptional() @IsString() saleEndDate?: string
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) costPrice?: number
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) transferPrice?: number
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) salePrice?: number
+  @IsOptional() @IsNumber() @Type(() => Number) targetMargin?: number
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) weight?: number
   @IsOptional() @IsArray() tags?: string[]
-  @IsOptional() @IsArray() images?: string[]
-  @IsOptional() @IsString() status?: string
-  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) stock?: number
+  @IsOptional() @IsArray() images?: any[]
+  @IsOptional() @IsEnum(ProductStatus) status?: ProductStatus
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) stockOnline?: number
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) stockWarehouse?: number
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number) stockStore?: number
 }
 
 export class ProductQueryDto {
@@ -73,6 +130,7 @@ export class ProductQueryDto {
   @IsOptional() @Type(() => Number) limit?: number = 20
   @IsOptional() search?: string
   @IsOptional() status?: string
+  @IsOptional() brand?: string
   @IsOptional() connectionId?: string
   @IsOptional() sortBy?: string = 'createdAt'
   @IsOptional() sortOrder?: 'asc' | 'desc' = 'desc'

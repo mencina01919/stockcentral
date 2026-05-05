@@ -115,6 +115,22 @@ export class ProductsController {
     return this.productsService.parisPriceTypes(tenantId)
   }
 
+  @Get(':id/marketplace-pricing')
+  @ApiOperation({ summary: 'Obtener configuración de precios por marketplace' })
+  getMarketplacePricing(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.productsService.getMarketplacePricing(tenantId, id)
+  }
+
+  @Patch(':id/marketplace-pricing')
+  @ApiOperation({ summary: 'Guardar configuración de precios por marketplace' })
+  updateMarketplacePricing(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Body() body: any,
+  ) {
+    return this.productsService.updateMarketplacePricing(tenantId, id, body)
+  }
+
   @Patch(':id/paris-data')
   @ApiOperation({ summary: 'Guardar configuración Paris en el producto maestro' })
   updateParisData(
@@ -131,19 +147,34 @@ export class ProductsController {
     return this.productsService.publishToParis(tenantId, id)
   }
 
-  @Get('marketplace/:connectionId')
+  @Post('marketplace/:connectionId/refresh')
+  @ApiOperation({ summary: 'Invalida el caché de productos del marketplace y fuerza recarga' })
+  refreshMarketplaceCache(
+    @TenantId() tenantId: string,
+    @Param('connectionId') connectionId: string,
+  ) {
+    this.productsService.invalidateMpCache(connectionId)
+    return { ok: true }
+  }
+
+@Get('marketplace/:connectionId')
   @ApiOperation({ summary: 'Listar productos publicados en un marketplace (vía API del proveedor)' })
   marketplaceProducts(
     @TenantId() tenantId: string,
     @Param('connectionId') connectionId: string,
     @Query('offset') offset?: string,
     @Query('limit') limit?: string,
+    @Query('status') status?: string,
+    @Query('stock') stock?: string,
+    @Query('search') search?: string,
+    @Query('linked') linked?: string,
   ) {
     return this.productsService.fetchMarketplaceProducts(
       tenantId,
       connectionId,
       offset ? parseInt(offset, 10) : 0,
       limit ? parseInt(limit, 10) : 25,
+      { status, stock, search, linked },
     )
   }
 
