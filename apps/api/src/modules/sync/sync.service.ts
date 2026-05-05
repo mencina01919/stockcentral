@@ -162,8 +162,18 @@ export class SyncService {
     return { synced, errors, total: products.length }
   }
 
+  // Marketplaces are sales channels, not catalog sources.
+  // Inbound product sync only applies to e-commerce integrations (Shopify, WooCommerce, etc.).
+  private static readonly CATALOG_SOURCE_PROVIDERS = new Set(['shopify', 'woocommerce', 'jumpseller', 'prestashop'])
+
   async syncProductsInbound(tenantId: string, connectionId: string) {
     const connection = await this.getConnection(tenantId, connectionId)
+
+    if (!SyncService.CATALOG_SOURCE_PROVIDERS.has(connection.provider)) {
+      this.logger.log(`Skipping inbound product sync for marketplace provider: ${connection.provider}`)
+      return { upserted: 0, errors: 0, skipped: true }
+    }
+
     const driver = getDriver(connection.provider)
     const credentials = connection.credentials as Record<string, string>
     const config = connection.config as Record<string, unknown> | undefined

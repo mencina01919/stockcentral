@@ -81,7 +81,13 @@ export class ConnectionsService {
 
     const redirectUri = this.getRedirectUri(provider, config.redirectUri)
 
-    const tokens = await driver.exchangeCode(code, { ...config, redirectUri })
+    let tokens: Awaited<ReturnType<typeof driver.exchangeCode>>
+    try {
+      tokens = await driver.exchangeCode(code, { ...config, redirectUri })
+    } catch (err: any) {
+      const mlMsg = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Error desconocido'
+      throw new BadRequestException(`Error al intercambiar código con ${provider}: ${mlMsg}`)
+    }
 
     const credentials: Record<string, string> = { accessToken: tokens.accessToken }
     if (tokens.refreshToken) credentials.refreshToken = tokens.refreshToken
@@ -211,7 +217,7 @@ export class ConnectionsService {
   }
 
   private getConnectionType(provider: string): string {
-    const marketplaces = ['mercadolibre', 'falabella', 'walmart', 'ripley', 'paris']
+    const marketplaces = ['mercadolibre', 'falabella', 'walmart', 'ripley', 'paris', 'lider']
     if (marketplaces.includes(provider)) return 'marketplace'
     return 'ecommerce'
   }

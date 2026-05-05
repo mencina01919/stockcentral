@@ -65,13 +65,12 @@ export class AuthService {
       },
     })
 
-    await this.prisma.warehouse.create({
-      data: {
-        tenantId: tenant.id,
-        name: 'Bodega Principal',
-        type: 'physical',
-        active: true,
-      },
+    await this.prisma.warehouse.createMany({
+      data: [
+        { tenantId: tenant.id, name: 'Stock Online', type: 'physical', warehouseType: 'online', isDefault: true, active: true },
+        { tenantId: tenant.id, name: 'Bodega Principal', type: 'physical', warehouseType: 'warehouse', isDefault: true, active: true },
+        { tenantId: tenant.id, name: 'Tienda', type: 'physical', warehouseType: 'store', isDefault: true, active: true },
+      ],
     })
 
     const user = await this.prisma.user.create({

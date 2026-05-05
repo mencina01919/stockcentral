@@ -71,13 +71,13 @@ export class ConnectionsController {
   async exchangeCode(
     @TenantId() tenantId: string,
     @Param('provider') provider: string,
-    @Body() body: { code: string; clientId: string; clientSecret: string },
+    @Body() body: { code: string; clientId: string; clientSecret: string; redirectUri?: string },
   ) {
     const connection = await this.connectionsService.exchangeOAuthCode(
       provider,
       body.code,
       tenantId,
-      { clientId: body.clientId, clientSecret: body.clientSecret },
+      { clientId: body.clientId, clientSecret: body.clientSecret, redirectUri: body.redirectUri || '' },
     )
     return { success: true, connection: { id: connection.id, name: connection.name, provider: connection.provider, status: connection.status } }
   }

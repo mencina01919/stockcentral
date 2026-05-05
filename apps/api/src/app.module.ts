@@ -15,6 +15,10 @@ import { ConnectionsModule } from './modules/connections/connections.module'
 import { DashboardModule } from './modules/dashboard/dashboard.module'
 import { SyncModule } from './modules/sync/sync.module'
 import { WebhooksModule } from './modules/webhooks/webhooks.module'
+import { WarehousesModule } from './modules/warehouses/warehouses.module'
+import { MediaModule } from './modules/media/media.module'
+import { PublicationsModule } from './modules/publications/publications.module'
+import { StockSyncModule } from './modules/stock-sync/stock-sync.module'
 
 @Module({
   imports: [
@@ -44,6 +48,10 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module'
     DashboardModule,
     SyncModule,
     WebhooksModule,
+    WarehousesModule,
+    MediaModule,
+    PublicationsModule,
+    StockSyncModule,
   ],
 })
 export class AppModule {}
