@@ -593,6 +593,7 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [authUrl, setAuthUrl] = useState('')
+  const [redirectUri, setRedirectUri] = useState('')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -608,6 +609,7 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
         clientSecret: clientSecret.trim(),
       })
       setAuthUrl(res.data.url)
+      setRedirectUri(res.data.redirectUri || '')
       setMlStep('authorize')
     } catch (err: any) {
       toast.error(err?.response?.data?.message || 'Error al generar URL de autorización')
@@ -625,6 +627,7 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
         code: rawCode,
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
+        redirectUri,
       })
       toast.success('Mercado Libre conectado correctamente')
       onSuccess()
@@ -636,13 +639,25 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
   }
 
   const extractCodeFromUrl = (val: string) => {
+    const trimmed = val.trim()
     try {
-      const u = new URL(val)
+      const u = new URL(trimmed)
+      const error = u.searchParams.get('error')
+      if (error) {
+        const desc = u.searchParams.get('error_description') || error
+        toast.error(`Mercado Libre rechazó la autorización: ${desc}`)
+        return
+      }
       const c = u.searchParams.get('code')
-      if (c) { setCode(c); toast.success('Código extraído de la URL') }
-      else setCode(val)
+      if (c) {
+        setCode(c)
+        toast.success('Código extraído correctamente')
+      } else {
+        setCode(trimmed)
+      }
     } catch {
-      setCode(val)
+      // Not a URL — treat as raw code
+      setCode(trimmed)
     }
   }
 
@@ -655,6 +670,15 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
             {mlStep === 'credentials' ? '1' : '✓'}
           </span>
           <p className="text-sm font-semibold text-gray-800">Credenciales de tu app en ML</p>
+        </div>
+        <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700 space-y-1">
+          <p className="font-semibold">Redirect URI que debes registrar en tu app de ML:</p>
+          <p className="font-mono break-all select-all bg-white border border-blue-200 rounded px-2 py-1">
+            {process.env.NEXT_PUBLIC_API_URL
+              ? `${process.env.NEXT_PUBLIC_API_URL}/connections/oauth/mercadolibre/callback`
+              : 'http://localhost:3001/api/v1/connections/oauth/mercadolibre/callback'}
+          </p>
+          <p>Ve a <strong>developers.mercadolibre.cl</strong> → Tu app → Editar → Redirect URI y agrega esta URL.</p>
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">App ID <span className="text-gray-400 font-normal">(Client ID)</span></label>
@@ -700,9 +724,15 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
           <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-xs text-amber-700 space-y-1">
             <p>1. Haz clic en el botón de abajo para abrir ML en una nueva pestaña.</p>
             <p>2. Inicia sesión con tu cuenta de vendedor y acepta los permisos.</p>
-            <p>3. ML redirigirá a una página que no existe — <strong>eso es normal</strong>. Copia toda la URL de esa página.</p>
+            <p>3. ML redirigirá a la URL registrada — copia toda esa URL.</p>
             <p>4. Pega la URL (o solo el código) en el paso siguiente.</p>
           </div>
+          {redirectUri && (
+            <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+              <span className="font-medium">Redirect URI usada:</span>{' '}
+              <span className="font-mono break-all">{redirectUri}</span>
+            </div>
+          )}
           <a href={authUrl} target="_blank" rel="noopener noreferrer"
             className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-yellow-400 hover:bg-yellow-500 text-yellow-900 rounded-lg text-sm font-semibold transition-colors">
             <ExternalLink className="w-4 h-4" />
@@ -730,7 +760,7 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
               value={code}
               onChange={(e) => extractCodeFromUrl(e.target.value)}
               rows={3}
-              placeholder={"https://stockcentral.app/api/v1/connections/oauth/mercadolibre/callback?code=TG-XXXXX...\n\nO solo el código: TG-68371890234..."}
+              placeholder={`${redirectUri || 'http://localhost:3001/api/v1/connections/oauth/mercadolibre/callback'}?code=TG-XXXXX...\n\nO solo el código: TG-68371890234...`}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
             />
             <p className="text-xs text-gray-400 mt-1">Pega la URL completa — StockCentral extrae el código automáticamente. El código expira en 10 minutos.</p>

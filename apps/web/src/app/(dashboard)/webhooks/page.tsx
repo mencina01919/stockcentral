@@ -103,7 +103,7 @@ export default function WebhooksPage() {
                 key={webhook.id}
                 webhook={webhook}
                 onDelete={() => deleteMutation.mutate(webhook.id)}
-                onToggle={(active) => toggleMutation.mutate({ id: webhook.id, active })}
+                onToggle={(active: boolean) => toggleMutation.mutate({ id: webhook.id, active })}
                 onRegenerateSecret={() => regenerateMutation.mutate(webhook.id)}
                 onViewDeliveries={() => openDeliveries(webhook)}
                 queryClient={queryClient}

@@ -5,10 +5,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Search, Loader2, Package, Edit, Trash2, RefreshCw, X, Image as ImageIcon, ExternalLink } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, PRODUCT_STATUS_LABELS } from '@/lib/utils'
 import { toast } from 'sonner'
 
-type ProductStatus = 'all' | 'active' | 'draft' | 'archived'
+type ProductStatus = 'all' | 'active' | 'out_of_stock' | 'coming_soon' | 'unavailable'
 
 export default function ProductsPage() {
   const queryClient = useQueryClient()
@@ -41,8 +41,9 @@ export default function ProductsPage() {
   const statusTabs = [
     { key: 'all', label: 'Todos' },
     { key: 'active', label: 'Activos' },
-    { key: 'draft', label: 'Borradores' },
-    { key: 'archived', label: 'Archivados' },
+    { key: 'out_of_stock', label: 'Agotados' },
+    { key: 'coming_soon', label: 'Próximamente' },
+    { key: 'unavailable', label: 'No disponibles' },
   ]
 
   return (
@@ -132,8 +133,14 @@ export default function ProductsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4 text-sm font-medium text-gray-800 whitespace-nowrap">
-                          {formatCurrency(Number(product.basePrice))}
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <p className="text-sm font-medium text-gray-800">{formatCurrency(Number(product.basePrice))}</p>
+                          {product.costPrice && (
+                            <p className="text-xs text-gray-400">Costo: {formatCurrency(Number(product.costPrice))}</p>
+                          )}
+                          {product.targetMargin != null && (
+                            <p className="text-xs text-sky-600">Margen: {Number(product.targetMargin).toFixed(1)}%</p>
+                          )}
                         </td>
                         <td className="px-6 py-4">
                           <span className={`text-sm font-medium ${totalStock === 0 ? 'text-red-500' : totalStock < 5 ? 'text-amber-500' : 'text-gray-700'}`}>
@@ -146,13 +153,10 @@ export default function ProductsPage() {
                           </span>
                         </td>
                         <td className="px-6 py-4">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            product.status === 'active' ? 'bg-green-100 text-green-700' :
-                            product.status === 'draft' ? 'bg-yellow-100 text-yellow-700' :
-                            'bg-gray-100 text-gray-500'
-                          }`}>
-                            {product.status === 'active' ? 'Activo' : product.status === 'draft' ? 'Borrador' : 'Archivado'}
-                          </span>
+                          {(() => {
+                            const s = PRODUCT_STATUS_LABELS[product.status] || { label: product.status, color: 'bg-gray-100 text-gray-500' }
+                            return <span className={`px-2 py-1 rounded-full text-xs font-medium ${s.color}`}>{s.label}</span>
+                          })()}
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-1">
@@ -216,16 +220,25 @@ export default function ProductsPage() {
 }
 
 function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClose: () => void; onSuccess: () => void }) {
-  const totalStock = product.inventory?.reduce((sum: number, inv: any) => sum + inv.quantity, 0) || 0
+  const getStockByType = (type: string) => {
+    const inv = product.inventory?.find((i: any) => i.warehouse?.warehouseType === type)
+    return String(inv?.quantity ?? 0)
+  }
   const [form, setForm] = useState({
     name: product.name || '',
+    brand: product.brand || '',
     description: product.description || '',
     basePrice: String(product.basePrice || ''),
+    costPrice: String(product.costPrice || ''),
+    transferPrice: String(product.transferPrice || ''),
     salePrice: String(product.salePrice || ''),
+    targetMargin: String(product.targetMargin || ''),
     saleStartDate: product.saleStartDate || '',
     saleEndDate: product.saleEndDate || '',
-    stock: String(totalStock),
-    status: product.status || 'draft',
+    stockOnline: getStockByType('online'),
+    stockWarehouse: getStockByType('warehouse'),
+    stockStore: getStockByType('store'),
+    status: product.status || 'active',
     images: ((product.images as string[] | null) || []).join('\n'),
   })
   const [saving, setSaving] = useState(false)
@@ -237,12 +250,18 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
       const imageList = form.images.split('\n').map((s) => s.trim()).filter(Boolean)
       await api.patch(`/products/${product.id}`, {
         name: form.name,
+        brand: form.brand || undefined,
         description: form.description || undefined,
         basePrice: Number(form.basePrice),
+        costPrice: form.costPrice ? Number(form.costPrice) : undefined,
+        transferPrice: form.transferPrice ? Number(form.transferPrice) : undefined,
         salePrice: form.salePrice ? Number(form.salePrice) : undefined,
+        targetMargin: form.targetMargin ? Number(form.targetMargin) : undefined,
         saleStartDate: form.saleStartDate || undefined,
         saleEndDate: form.saleEndDate || undefined,
-        stock: Number(form.stock),
+        stockOnline: Number(form.stockOnline),
+        stockWarehouse: Number(form.stockWarehouse),
+        stockStore: Number(form.stockStore),
         status: form.status,
         images: imageList,
       })
@@ -318,16 +337,26 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
         <div className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-5">
 
-          {/* Nombre */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del producto</label>
-            <input
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="Ej: Monitor MSI MAG 271QP QD-OLED 27'' 240Hz"
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-            />
-            <p className="text-xs text-gray-400 mt-1">Nombre visible en StockCentral y en Falabella. Sé descriptivo: marca, modelo, características clave.</p>
+          {/* Nombre y marca */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del producto</label>
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Ej: Monitor MSI MAG 271QP QD-OLED 27'' 240Hz"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Marca</label>
+              <input
+                value={form.brand}
+                onChange={(e) => setForm({ ...form, brand: e.target.value })}
+                placeholder="Ej: MSI, Samsung, Apple"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+            </div>
           </div>
 
           {/* Descripción */}
@@ -348,30 +377,38 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Precios</p>
             <div className="grid grid-cols-2 gap-4">
               <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio costo (CLP)</label>
+                <input type="number" value={form.costPrice} onChange={(e) => setForm({ ...form, costPrice: e.target.value })} min="0"
+                  placeholder="Ej: 250000"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio transferencia (CLP)</label>
+                <input type="number" value={form.transferPrice} onChange={(e) => setForm({ ...form, transferPrice: e.target.value })} min="0"
+                  placeholder="Ej: 300000"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Precio base (CLP)</label>
-                <input
-                  type="number"
-                  value={form.basePrice}
-                  onChange={(e) => setForm({ ...form, basePrice: e.target.value })}
-                  min="0"
+                <input type="number" value={form.basePrice} onChange={(e) => setForm({ ...form, basePrice: e.target.value })} min="0"
                   placeholder="Ej: 599990"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                />
-                <p className="text-xs text-gray-400 mt-1">Precio normal sin descuento. Se muestra tachado cuando hay oferta activa.</p>
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Precio oferta (CLP) <span className="text-gray-400 font-normal">opcional</span>
+                  Margen objetivo (%) <span className="text-gray-400 font-normal">— calculado automáticamente</span>
                 </label>
-                <input
-                  type="number"
-                  value={form.salePrice}
-                  onChange={(e) => setForm({ ...form, salePrice: e.target.value })}
-                  min="0"
-                  placeholder="Ej: 499990 — dejar vacío si no hay oferta"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                />
-                <p className="text-xs text-gray-400 mt-1">Precio con descuento. Debe ser menor al precio base. Requiere fechas de vigencia.</p>
+                <input type="number" value={form.targetMargin} onChange={(e) => setForm({ ...form, targetMargin: e.target.value })}
+                  placeholder={form.costPrice && form.basePrice
+                    ? `Auto: ${((1 - Number(form.costPrice) / Number(form.basePrice)) * 100).toFixed(1)}%`
+                    : 'Ej: 40'}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio oferta (CLP) <span className="text-gray-400 font-normal">opcional</span></label>
+                <input type="number" value={form.salePrice} onChange={(e) => setForm({ ...form, salePrice: e.target.value })} min="0"
+                  placeholder="Dejar vacío si no hay oferta"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
               </div>
             </div>
 
@@ -404,32 +441,30 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
           {/* Stock y Estado */}
           <div>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Inventario y estado</p>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Stock disponible (unidades)</label>
-                <input
-                  type="number"
-                  value={form.stock}
-                  onChange={(e) => setForm({ ...form, stock: e.target.value })}
-                  min="0"
-                  placeholder="Ej: 10"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                />
-                <p className="text-xs text-gray-400 mt-1">Unidades disponibles en bodega. Se actualiza en Falabella al sincronizar. Si llegas a 0, el producto se pausa automáticamente.</p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Estado en StockCentral</label>
-                <select
-                  value={form.status}
-                  onChange={(e) => setForm({ ...form, status: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                >
-                  <option value="draft">Borrador — visible solo internamente</option>
-                  <option value="active">Activo — se sincroniza con marketplaces</option>
-                  <option value="archived">Archivado — desactivado sin eliminarse</option>
-                </select>
-                <p className="text-xs text-gray-400 mt-1">Solo los productos <strong>Activos</strong> se sincronizan automáticamente con Falabella.</p>
-              </div>
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: 'Stock Online', key: 'stockOnline', hint: 'Ecommerce propio' },
+                { label: 'Stock Bodega', key: 'stockWarehouse', hint: 'Bodega principal' },
+                { label: 'Stock Tienda', key: 'stockStore', hint: 'Tienda física' },
+              ].map(({ label, key, hint }) => (
+                <div key={key}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+                  <input type="number" value={(form as any)[key]}
+                    onChange={(e) => setForm({ ...form, [key]: e.target.value })} min="0"
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+                  <p className="text-xs text-gray-400 mt-1">{hint}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Estado del producto</label>
+              <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}
+                className="w-full max-w-xs px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+                <option value="active">Activo</option>
+                <option value="out_of_stock">Agotado</option>
+                <option value="coming_soon">Próximamente</option>
+                <option value="unavailable">No disponible</option>
+              </select>
             </div>
           </div>
 
@@ -478,6 +513,10 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
           <aside className="lg:col-span-1 space-y-5">
             <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-5">
               <MarketplaceSyncBlock productId={product.id} sku={product.sku} />
+            </div>
+
+            <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-5">
+              <MarketplacePricingBlock product={product} />
             </div>
 
             <div className="bg-white border border-gray-100 rounded-xl shadow-sm p-5">
@@ -605,6 +644,173 @@ function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: stri
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+// ─── Calculadora de precios por marketplace ───────────────────────────────────
+
+const MARKETPLACE_DEFAULTS: Record<string, { label: string; commission: number; shipping: number; color: string }> = {
+  lider:         { label: 'Lider',          commission: 12, shipping: 3500,  color: 'bg-blue-600' },
+  mercadolibre:  { label: 'MercadoLibre',   commission: 13, shipping: 2990,  color: 'bg-yellow-400' },
+  paris:         { label: 'Paris',          commission: 15, shipping: 3500,  color: 'bg-red-700' },
+  falabella:     { label: 'Falabella',      commission: 15, shipping: 3500,  color: 'bg-green-700' },
+  shopify:       { label: 'Shopify',        commission: 2,  shipping: 0,     color: 'bg-green-600' },
+  woocommerce:   { label: 'WooCommerce',    commission: 0,  shipping: 0,     color: 'bg-purple-600' },
+  jumpseller:    { label: 'Jumpseller',     commission: 2,  shipping: 0,     color: 'bg-orange-500' },
+}
+
+function calcPrice(cost: number, commission: number, shipping: number, margin: number): number {
+  if (commission + margin >= 100) return 0
+  return Math.ceil((cost + shipping) / (1 - (commission + margin) / 100) / 10) * 10
+}
+
+function MarketplacePricingBlock({ product }: { product: any }) {
+  const queryClient = useQueryClient()
+  const basePrice = Number(product.basePrice)
+
+  const { data: savedPricing } = useQuery<any>({
+    queryKey: ['marketplace-pricing', product.id],
+    queryFn: () => api.get(`/products/${product.id}/marketplace-pricing`).then(r => r.data),
+  })
+
+  const { data: connections = [] } = useQuery<any[]>({
+    queryKey: ['connections-marketplace'],
+    queryFn: () => api.get('/connections').then(r =>
+      r.data.filter((c: any) => c.status === 'connected')
+    ),
+  })
+
+  const [pricing, setPricing] = useState<Record<string, { commission: number; shipping: number; margin: number; enabled: boolean }>>({})
+  const [saving, setSaving] = useState(false)
+
+  // Inicializar con datos guardados o defaults
+  useEffect(() => {
+    if (!savedPricing || !connections.length) return
+    const saved = savedPricing.pricing || {}
+    const init: typeof pricing = {}
+    for (const conn of connections) {
+      const def = MARKETPLACE_DEFAULTS[conn.provider] || { commission: 12, shipping: 3500 }
+      const s = saved[conn.provider] || {}
+      init[conn.provider] = {
+        commission: s.commission ?? def.commission,
+        shipping:   s.shipping   ?? def.shipping,
+        margin:     s.margin     ?? 10,
+        enabled:    s.enabled    ?? true,
+      }
+    }
+    setPricing(init)
+  }, [savedPricing, connections])
+
+  const set = (provider: string, key: string, val: number | boolean) =>
+    setPricing(p => ({ ...p, [provider]: { ...p[provider], [key]: val } }))
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      // Calcular y guardar el precio calculado por marketplace
+      const payload: Record<string, any> = {}
+      for (const conn of connections) {
+        const p = pricing[conn.provider]
+        if (!p || !p.enabled) continue
+        const calculated = calcPrice(basePrice, p.commission, p.shipping, p.margin)
+        payload[conn.provider] = { ...p, calculatedPrice: calculated }
+      }
+      await api.patch(`/products/${product.id}/marketplace-pricing`, payload)
+      queryClient.invalidateQueries({ queryKey: ['marketplace-pricing', product.id] })
+      toast.success('Precios por marketplace guardados')
+    } catch {
+      toast.error('Error al guardar precios')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!connections.length) return null
+
+  return (
+    <div>
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+        Calculadora de precios por marketplace
+      </p>
+      <p className="text-xs text-gray-400 mb-3">
+        Precio base: <span className="font-semibold text-gray-700">{formatCurrency(basePrice)}</span> (con IVA incluido)
+      </p>
+      <div className="space-y-3">
+        {connections.map((conn: any) => {
+          const def = MARKETPLACE_DEFAULTS[conn.provider]
+          const p = pricing[conn.provider]
+          if (!p) return null
+          const calculated = calcPrice(basePrice, p.commission, p.shipping, p.margin)
+          const gain = calculated - basePrice - p.shipping
+          const gainPct = basePrice > 0 ? ((gain / basePrice) * 100).toFixed(1) : '0'
+
+          return (
+            <div key={conn.provider} className={`border rounded-xl overflow-hidden ${p.enabled ? 'border-gray-200' : 'border-gray-100 opacity-50'}`}>
+              <div className="flex items-center justify-between px-3 py-2 bg-gray-50">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${def?.color || 'bg-gray-400'}`} />
+                  <span className="text-sm font-medium text-gray-800">{def?.label || conn.provider}</span>
+                </div>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={p.enabled} onChange={e => set(conn.provider, 'enabled', e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-sky-600 focus:ring-sky-500" />
+                  <span className="text-xs text-gray-500">Activo</span>
+                </label>
+              </div>
+
+              {p.enabled && (
+                <div className="px-3 py-3 space-y-2">
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Comisión %</label>
+                      <input type="number" min="0" max="50" step="0.5"
+                        value={p.commission}
+                        onChange={e => set(conn.provider, 'commission', Number(e.target.value))}
+                        className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 text-center" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Despacho $</label>
+                      <input type="number" min="0" step="100"
+                        value={p.shipping}
+                        onChange={e => set(conn.provider, 'shipping', Number(e.target.value))}
+                        className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 text-center" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Margen %</label>
+                      <input type="number" min="0" max="80" step="1"
+                        value={p.margin}
+                        onChange={e => set(conn.provider, 'margin', Number(e.target.value))}
+                        className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 text-center" />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1 border-t border-gray-100">
+                    <div>
+                      <p className="text-xs text-gray-400">Precio sugerido</p>
+                      <p className="text-base font-bold text-sky-700">{formatCurrency(calculated)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-gray-400">Ganancia estimada</p>
+                      <p className={`text-sm font-semibold ${gain > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                        {formatCurrency(gain)} ({gainPct}%)
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <button
+        onClick={save}
+        disabled={saving}
+        className="mt-3 w-full px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+      >
+        {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+        Guardar precios
+      </button>
     </div>
   )
 }
@@ -1215,14 +1421,35 @@ function ParisOptionPicker({
 }
 
 function ProductFormModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
-  const [form, setForm] = useState({ sku: '', name: '', basePrice: '', description: '', status: 'draft' })
+  const [form, setForm] = useState({
+    sku: '', name: '', brand: '', basePrice: '', costPrice: '', transferPrice: '',
+    salePrice: '', description: '', status: 'active',
+    stockOnline: '0', stockWarehouse: '0', stockStore: '0',
+  })
   const [loading, setLoading] = useState(false)
+
+  const autoMargin = form.costPrice && form.basePrice
+    ? ((1 - Number(form.costPrice) / Number(form.basePrice)) * 100).toFixed(1)
+    : null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     try {
-      await api.post('/products', { ...form, basePrice: Number(form.basePrice) })
+      await api.post('/products', {
+        sku: form.sku || undefined,
+        name: form.name,
+        brand: form.brand || undefined,
+        description: form.description || undefined,
+        basePrice: Number(form.basePrice),
+        costPrice: form.costPrice ? Number(form.costPrice) : undefined,
+        transferPrice: form.transferPrice ? Number(form.transferPrice) : undefined,
+        salePrice: form.salePrice ? Number(form.salePrice) : undefined,
+        status: form.status,
+        stockOnline: Number(form.stockOnline),
+        stockWarehouse: Number(form.stockWarehouse),
+        stockStore: Number(form.stockStore),
+      })
       toast.success('Producto creado correctamente')
       onSuccess()
     } catch (err: any) {
@@ -1232,39 +1459,104 @@ function ProductFormModal({ onClose, onSuccess }: { onClose: () => void; onSucce
     }
   }
 
+  const f = (key: keyof typeof form) => ({
+    value: form[key],
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+      setForm(prev => ({ ...prev, [key]: e.target.value })),
+  })
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-lg shadow-2xl">
+      <div className="bg-white rounded-xl w-full max-w-2xl shadow-2xl max-h-[90vh] flex flex-col">
         <div className="p-6 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900">Nuevo producto</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
         </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-5 overflow-y-auto">
+          {/* Identificación */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">SKU *</label>
-              <input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} required className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nombre *</label>
+              <input {...f('name')} required placeholder="Ej: Zapatilla Nike Air Max 270"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Precio base *</label>
-              <input type="number" value={form.basePrice} onChange={(e) => setForm({ ...form, basePrice: e.target.value })} required min="0" className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">Marca</label>
+              <input {...f('brand')} placeholder="Ej: Nike"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                SKU <span className="text-gray-400 font-normal text-xs">(auto si se deja vacío)</span>
+              </label>
+              <input {...f('sku')} placeholder="Ej: NIK-AM270-BLK"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-sky-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
+              <select {...f('status')} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+                <option value="active">Activo</option>
+                <option value="out_of_stock">Agotado</option>
+                <option value="coming_soon">Próximamente</option>
+                <option value="unavailable">No disponible</option>
+              </select>
             </div>
           </div>
+
+          {/* Precios */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre *</label>
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Precios</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio costo (CLP)</label>
+                <input type="number" {...f('costPrice')} min="0" placeholder="Ej: 25000"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio transferencia (CLP)</label>
+                <input type="number" {...f('transferPrice')} min="0" placeholder="Ej: 30000"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio base (CLP) *</label>
+                <input type="number" {...f('basePrice')} required min="0" placeholder="Ej: 59990"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+                {autoMargin && (
+                  <p className="text-xs text-sky-600 mt-1">Margen estimado: {autoMargin}%</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Precio oferta (CLP)</label>
+                <input type="number" {...f('salePrice')} min="0" placeholder="Opcional"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+              </div>
+            </div>
           </div>
+
+          {/* Stock inicial */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Stock inicial</p>
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: 'Online', key: 'stockOnline' as const },
+                { label: 'Bodega', key: 'stockWarehouse' as const },
+                { label: 'Tienda', key: 'stockStore' as const },
+              ].map(({ label, key }) => (
+                <div key={key}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+                  <input type="number" {...f(key)} min="0"
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Descripción</label>
-            <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={3} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none" />
+            <textarea {...f('description')} rows={3} placeholder="Descripción del producto"
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none" />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Estado</label>
-            <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
-              <option value="draft">Borrador</option>
-              <option value="active">Activo</option>
-            </select>
-          </div>
+
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">Cancelar</button>
             <button type="submit" disabled={loading} className="flex-1 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
