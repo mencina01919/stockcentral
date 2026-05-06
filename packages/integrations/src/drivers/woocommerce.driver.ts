@@ -9,10 +9,19 @@ import {
   SyncProductInput,
   SyncResult,
   PaginatedResult,
+  CatalogCapabilities,
 } from '../types'
 
 export class WooCommerceDriver implements IMarketplaceDriver {
   readonly provider = 'woocommerce'
+  readonly catalogCapabilities: CatalogCapabilities = {
+    canBeCatalogSource: true,
+    supportsPagination: true,
+    providesStock: true,
+    providesPrices: true,
+    providesImages: true,
+    supportsSingleProductFetch: true,
+  }
 
   private buildClient(credentials: DriverCredentials): AxiosInstance {
     const { siteUrl, consumerKey, consumerSecret } = credentials

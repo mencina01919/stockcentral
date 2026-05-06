@@ -10,10 +10,19 @@ import {
   SyncResult,
   OAuthTokens,
   PaginatedResult,
+  CatalogCapabilities,
 } from '../types'
 
 export class ShopifyDriver implements IMarketplaceDriver {
   readonly provider = 'shopify'
+  readonly catalogCapabilities: CatalogCapabilities = {
+    canBeCatalogSource: true,
+    supportsPagination: true,
+    providesStock: true,
+    providesPrices: true,
+    providesImages: true,
+    supportsSingleProductFetch: true,
+  }
 
   private buildClient(credentials: DriverCredentials): AxiosInstance {
     const { shopDomain, accessToken, apiKey, apiSecret } = credentials

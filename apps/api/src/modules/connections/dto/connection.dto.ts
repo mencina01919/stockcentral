@@ -7,7 +7,7 @@ export class CreateConnectionDto {
   type?: string
 
   @ApiProperty({
-    enum: ['shopify', 'woocommerce', 'jumpseller', 'prestashop', 'mercadolibre', 'falabella', 'walmart', 'ripley', 'paris', 'custom'],
+    enum: ['shopify', 'woocommerce', 'jumpseller', 'eylstore', 'prestashop', 'mercadolibre', 'falabella', 'walmart', 'ripley', 'paris', 'lider', 'custom'],
   })
   @IsString()
   provider: string

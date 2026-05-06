@@ -48,4 +48,16 @@ export class SyncController {
   getQueueStats() {
     return this.syncService.getQueueStats()
   }
+
+  @Get('audit/mappings')
+  @ApiOperation({ summary: 'Auditar mappings sospechosos sin modificar nada' })
+  auditMappings(@TenantId() tenantId: string) {
+    return this.syncService.auditMappings(tenantId)
+  }
+
+  @Post('audit/cleanup')
+  @ApiOperation({ summary: 'Borrar mappings sospechosos detectados por la auditoría' })
+  cleanupBogusMappings(@TenantId() tenantId: string) {
+    return this.syncService.cleanupBogusMappings(tenantId)
+  }
 }

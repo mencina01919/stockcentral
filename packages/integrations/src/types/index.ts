@@ -124,8 +124,33 @@ export type WebhookEvent =
   | 'products.updated'
   | 'inventory.updated'
 
+// What a driver can do as a master-catalog source. Read by the catalog
+// service to decide which UI options to expose and which sync flows to run.
+export interface CatalogCapabilities {
+  // Can be selected as the master catalog source (must implement getProducts).
+  canBeCatalogSource: boolean
+  // The product list is paginated; the service will iterate all pages on import.
+  supportsPagination: boolean
+  // The driver returns a meaningful stock value per product.
+  providesStock: boolean
+  // The driver returns price information.
+  providesPrices: boolean
+  // The driver returns product images.
+  providesImages: boolean
+  // The driver exposes a single-product endpoint for refresh-by-id.
+  supportsSingleProductFetch: boolean
+}
+
 export interface IMarketplaceDriver {
   provider: string
+
+  // When false, the scheduled outbound product sync skips this provider.
+  // Drivers whose upstream API only exposes read endpoints should set this to false.
+  // Defaults to true (the cron treats undefined as "supports writes").
+  supportsWriteSync?: boolean
+
+  // Optional. If absent, the driver is treated as NOT a catalog source.
+  catalogCapabilities?: CatalogCapabilities
 
   testConnection(credentials: DriverCredentials, config?: DriverConfig): Promise<ConnectionTestResult>
 

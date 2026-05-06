@@ -79,6 +79,11 @@ export class CreateProductDto {
   @IsArray()
   tags?: string[]
 
+  @ApiPropertyOptional({ type: [String], description: 'URLs de imágenes del producto' })
+  @IsOptional()
+  @IsArray()
+  images?: string[]
+
   @ApiPropertyOptional({ enum: ProductStatus, default: ProductStatus.ACTIVE })
   @IsOptional()
   @IsEnum(ProductStatus)

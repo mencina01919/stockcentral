@@ -66,6 +66,25 @@ export class ProductsController {
     return this.productsService.detectMarketplace(tenantId, id, connectionId)
   }
 
+  @Post(':id/marketplaces/:connectionId/link')
+  @ApiOperation({ summary: 'Vincular manualmente un producto del maestro a una publicación específica del marketplace' })
+  linkMarketplace(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Param('connectionId') connectionId: string,
+    @Body() body: { externalId: string; marketplaceSku?: string; price?: number; title?: string },
+  ) {
+    return this.productsService.linkMarketplace(
+      tenantId,
+      id,
+      connectionId,
+      body.externalId,
+      body.marketplaceSku,
+      body.price,
+      body.title,
+    )
+  }
+
   @Delete(':id/marketplaces/:connectionId')
   @ApiOperation({ summary: 'Desvincular el producto del marketplace (no elimina la publicación)' })
   unlinkMarketplace(
@@ -143,8 +162,14 @@ export class ProductsController {
 
   @Post(':id/paris/publish')
   @ApiOperation({ summary: 'Publicar el producto en Paris' })
-  publishToParis(@TenantId() tenantId: string, @Param('id') id: string) {
-    return this.productsService.publishToParis(tenantId, id)
+  publishToParis(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Body() body?: any,
+  ) {
+    // body may contain { familyId, categoryId, productAttributes, variants, prices, sellerSku }
+    // If empty, falls back to product.parisData stored from a previous publish
+    return this.productsService.publishToParis(tenantId, id, body)
   }
 
   @Post('marketplace/:connectionId/refresh')
@@ -176,6 +201,16 @@ export class ProductsController {
       limit ? parseInt(limit, 10) : 25,
       { status, stock, search, linked },
     )
+  }
+
+  @Get('marketplace/:connectionId/:externalId')
+  @ApiOperation({ summary: 'Detalle completo de un producto del marketplace (incluye rawData)' })
+  marketplaceProductDetail(
+    @TenantId() tenantId: string,
+    @Param('connectionId') connectionId: string,
+    @Param('externalId') externalId: string,
+  ) {
+    return this.productsService.fetchMarketplaceProductDetail(tenantId, connectionId, externalId)
   }
 
   @Delete(':id')

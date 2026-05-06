@@ -4,6 +4,8 @@ import { PublicationsService } from './publications.service'
 import { LiderSpecService } from './lider-spec.service'
 import { MLMetadataService } from './ml-metadata.service'
 import { FalabellaMetadataService } from './falabella-metadata.service'
+import { AiAutofillService } from './ai-autofill.service'
+import { ProductsService } from '../products/products.service'
 import { PublishProductDto, ValidatePublishDto } from './dto/publication.dto'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
 
@@ -16,7 +18,47 @@ export class PublicationsController {
     private liderSpecService: LiderSpecService,
     private mlMetadata: MLMetadataService,
     private fbMetadata: FalabellaMetadataService,
+    private aiAutofill: AiAutofillService,
+    private productsService: ProductsService,
   ) {}
+
+  // ── AI auto-fill ──────────────────────────────────────────────────────────
+
+  @Post('ai/autofill-ml')
+  @ApiOperation({ summary: 'Auto-completar campos de publicación ML con IA (Claude Haiku)' })
+  autofillML(
+    @TenantId() tenantId: string,
+    @Body() body: { productId: string; categoryId: string },
+  ) {
+    return this.aiAutofill.autofillML(tenantId, body.productId, body.categoryId)
+  }
+
+  @Post('ai/autofill-lider')
+  @ApiOperation({ summary: 'Auto-completar campos de publicación Lider con IA' })
+  autofillLider(
+    @TenantId() tenantId: string,
+    @Body() body: { productId: string; productType: string },
+  ) {
+    return this.aiAutofill.autofillLider(tenantId, body.productId, body.productType)
+  }
+
+  @Post('ai/autofill-paris')
+  @ApiOperation({ summary: 'Auto-completar campos de publicación Paris con IA' })
+  autofillParis(
+    @TenantId() tenantId: string,
+    @Body() body: { productId: string; familyId: string; categoryId?: string },
+  ) {
+    return this.aiAutofill.autofillParis(tenantId, body.productId, body.familyId, body.categoryId || '')
+  }
+
+  @Post('ai/autofill-falabella')
+  @ApiOperation({ summary: 'Auto-completar campos de publicación Falabella con IA' })
+  autofillFalabella(
+    @TenantId() tenantId: string,
+    @Body() body: { productId: string; categoryId: string },
+  ) {
+    return this.aiAutofill.autofillFalabella(tenantId, body.productId, body.categoryId)
+  }
 
   // ── MercadoLibre dynamic metadata ─────────────────────────────────────────
 
@@ -84,6 +126,53 @@ export class PublicationsController {
   @ApiOperation({ summary: 'Forzar refresh de caches Falabella (categorías y marcas)' })
   refreshFalabellaCache(@TenantId() tenantId: string) {
     return this.fbMetadata.refreshCaches(tenantId)
+  }
+
+  // ── Paris dynamic metadata ────────────────────────────────────────────────
+
+  @Get('paris/families')
+  @ApiOperation({ summary: 'Listar/buscar familias en Paris' })
+  getParisFamilies(@TenantId() tenantId: string) {
+    return this.productsService.parisFamilies(tenantId)
+  }
+
+  @Get('paris/families/:familyId/categories')
+  @ApiOperation({ summary: 'Categorías de una familia en Paris' })
+  getParisCategories(
+    @TenantId() tenantId: string,
+    @Param('familyId') familyId: string,
+  ) {
+    return this.productsService.parisCategories(tenantId, familyId)
+  }
+
+  @Get('paris/families/:familyId/attributes')
+  @ApiOperation({ summary: 'Atributos de producto o variante para una familia Paris' })
+  getParisFamilyAttributes(
+    @TenantId() tenantId: string,
+    @Param('familyId') familyId: string,
+    @Query('kind') kind?: string,
+  ) {
+    return this.productsService.parisAttributes(
+      tenantId,
+      familyId,
+      kind === 'variant' ? 'variant' : 'product',
+    )
+  }
+
+  @Get('paris/attributes/:attributeId/options')
+  @ApiOperation({ summary: 'Opciones de un atributo Paris (con búsqueda)' })
+  getParisAttributeOptions(
+    @TenantId() tenantId: string,
+    @Param('attributeId') attributeId: string,
+    @Query('q') q?: string,
+  ) {
+    return this.productsService.parisAttributeOptions(tenantId, attributeId, q)
+  }
+
+  @Get('paris/price-types')
+  @ApiOperation({ summary: 'Tipos de precio disponibles en Paris' })
+  getParisPriceTypes(@TenantId() tenantId: string) {
+    return this.productsService.parisPriceTypes(tenantId)
   }
 
   // ── Generic marketplace form schemas ──────────────────────────────────────

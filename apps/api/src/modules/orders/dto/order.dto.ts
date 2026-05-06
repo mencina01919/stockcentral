@@ -41,11 +41,26 @@ export class UpdateOrderStatusDto {
   reason?: string
 }
 
+export const INTERNAL_ORDER_STATUSES = ['new', 'in_preparation', 'ready_to_ship', 'cancelled_internal'] as const
+export type InternalOrderStatus = (typeof INTERNAL_ORDER_STATUSES)[number]
+
+export class UpdateOrderInternalStatusDto {
+  @ApiProperty({ enum: INTERNAL_ORDER_STATUSES })
+  @IsString()
+  internalStatus: InternalOrderStatus
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  reason?: string
+}
+
 export class OrderQueryDto {
   @IsOptional() @Type(() => Number) page?: number = 1
   @IsOptional() @Type(() => Number) limit?: number = 20
   @IsOptional() search?: string
   @IsOptional() status?: string
+  @IsOptional() internalStatus?: string
   @IsOptional() source?: string
   @IsOptional() sourceChannel?: string
   @IsOptional() sortBy?: string = 'createdAt'

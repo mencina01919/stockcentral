@@ -58,6 +58,13 @@ export class ProductsService {
           inventory: {
             include: { warehouse: { select: { name: true } } },
           },
+          marketplaceMappings: {
+            select: {
+              connectionId: true,
+              marketplaceProductId: true,
+              syncStatus: true,
+            },
+          },
           _count: { select: { marketplaceMappings: true } },
         },
       }),
@@ -173,12 +180,34 @@ export class ProductsService {
   }
 
   async remove(tenantId: string, id: string) {
-    await this.findOne(tenantId, id)
-    await this.prisma.product.update({
-      where: { id },
-      data: { status: 'archived' },
-    })
-    return { message: 'Producto archivado correctamente' }
+    const product = await this.findOne(tenantId, id)
+
+    // Block delete if the product is still published in some marketplace.
+    // The user must unlink (or unpublish) before removing — prevents leaving
+    // dangling listings without a master product.
+    const activeMappings = (product as any).marketplaceMappings?.filter(
+      (m: any) => m.marketplaceProductId,
+    ) ?? []
+    if (activeMappings.length) {
+      const linkedMarketplaces = activeMappings.map((m: any) => ({
+        connectionId: m.connectionId,
+        provider: m.connection?.provider,
+        connectionName: m.connection?.name,
+        marketplaceProductId: m.marketplaceProductId,
+      }))
+      const providers = [...new Set(linkedMarketplaces.map((m: any) => m.provider))].join(', ')
+      throw new BadRequestException({
+        message: `El producto está vinculado a: ${providers}. Desvincula antes de eliminar.`,
+        code: 'PRODUCT_HAS_LINKED_MARKETPLACES',
+        linkedMarketplaces,
+      })
+    }
+
+    // Hard delete. Inventory, ProductVariant, StockMovement and MarketplaceMapping
+    // cascade automatically. OrderItem.productId has no FK so historical sales
+    // keep their denormalized sku/name and survive the deletion.
+    await this.prisma.product.delete({ where: { id } })
+    return { message: 'Producto eliminado' }
   }
 
   async getStats(tenantId: string) {
@@ -300,6 +329,78 @@ export class ProductsService {
     return { matched: 1, status: 'connected', marketplaceProductId: m.externalId, title: m.title }
   }
 
+  // Vincula manualmente un producto del maestro a una publicación específica
+  // del marketplace (cuando el SKU del seller no coincide o hay duplicados).
+  async linkMarketplace(
+    tenantId: string,
+    productId: string,
+    connectionId: string,
+    externalId: string,
+    marketplaceSku?: string,
+    price?: number,
+    title?: string,
+  ) {
+    if (!externalId) throw new BadRequestException('externalId es obligatorio')
+
+    const product = await this.prisma.product.findFirst({ where: { id: productId, tenantId } })
+    if (!product) throw new NotFoundException('Producto no encontrado')
+    const connection = await this.prisma.connection.findFirst({ where: { id: connectionId, tenantId } })
+    if (!connection) throw new NotFoundException('Conexión no encontrada')
+
+    // Si el caller no manda price/title/sku, los traemos del marketplace para guardarlos
+    let resolvedSku = marketplaceSku
+    let resolvedPrice = price
+    let resolvedTitle = title
+    if (!resolvedSku || resolvedPrice === undefined) {
+      try {
+        const driver = getDriver(connection.provider)
+        if (driver.getProduct) {
+          const m = await driver.getProduct(
+            connection.credentials as Record<string, string>,
+            externalId,
+            connection.config as Record<string, unknown> | undefined,
+          )
+          if (m) {
+            resolvedSku = resolvedSku ?? m.externalSku ?? product.sku
+            resolvedPrice = resolvedPrice ?? m.price
+            resolvedTitle = resolvedTitle ?? m.title
+          }
+        }
+      } catch {
+        // si no se puede consultar el marketplace, igual creamos el mapping con los datos del maestro
+      }
+    }
+
+    const mapping = await this.prisma.marketplaceMapping.upsert({
+      where: { productId_connectionId: { productId, connectionId } },
+      update: {
+        marketplaceProductId: externalId,
+        marketplaceSku: resolvedSku ?? product.sku,
+        marketplacePrice: resolvedPrice ?? Number(product.basePrice),
+        syncStatus: 'connected',
+        errorMessage: null,
+        lastSyncAt: new Date(),
+      },
+      create: {
+        productId,
+        connectionId,
+        marketplaceProductId: externalId,
+        marketplaceSku: resolvedSku ?? product.sku,
+        marketplacePrice: resolvedPrice ?? Number(product.basePrice),
+        syncStatus: 'connected',
+        lastSyncAt: new Date(),
+      },
+    })
+
+    return {
+      matched: 1,
+      status: 'connected',
+      marketplaceProductId: externalId,
+      title: resolvedTitle,
+      mapping,
+    }
+  }
+
   async fetchMarketplaceProducts(
     tenantId: string,
     connectionId: string,
@@ -370,6 +471,36 @@ export class ProductsService {
     return {
       data: items,
       meta: { total: result.total, offset: result.offset, limit: result.limit, hasMore: result.hasMore },
+    }
+  }
+
+  async fetchMarketplaceProductDetail(tenantId: string, connectionId: string, externalId: string) {
+    const connection = await this.prisma.connection.findFirst({ where: { id: connectionId, tenantId } })
+    if (!connection) throw new NotFoundException('Conexión no encontrada')
+
+    const driver = getDriver(connection.provider)
+    const product = await driver.getProduct(
+      connection.credentials as Record<string, string>,
+      externalId,
+      connection.config as Record<string, unknown> | undefined,
+    )
+    if (!product) throw new NotFoundException('Producto no encontrado en el marketplace')
+
+    const mapping = await this.prisma.marketplaceMapping.findFirst({
+      where: { connectionId, marketplaceProductId: product.externalId },
+      include: { product: { select: { id: true, sku: true, name: true } } },
+    })
+
+    return {
+      ...product,
+      mapping: mapping
+        ? {
+            masterProductId: mapping.product?.id,
+            masterSku: mapping.product?.sku,
+            masterName: mapping.product?.name,
+            syncStatus: mapping.syncStatus,
+          }
+        : null,
     }
   }
 
@@ -445,13 +576,19 @@ export class ProductsService {
     )
   }
 
-  async publishToParis(tenantId: string, productId: string) {
+  async publishToParis(tenantId: string, productId: string, override?: any) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, tenantId },
+      include: {
+        inventory: { select: { quantity: true, reservedQuantity: true } },
+      },
     })
     if (!product) throw new NotFoundException('Producto no encontrado')
 
-    const data = (product.parisData as any) || {}
+    // Form payload comes from the UI on publish. We persist it to parisData so
+    // future updates / re-pricing can re-use the same configuration without
+    // re-asking the user for everything.
+    const data = override || (product.parisData as any) || {}
     if (!data.familyId || !data.categoryId) {
       throw new BadRequestException(
         'Falta configurar Paris: familia y categoría son obligatorias',
@@ -462,9 +599,28 @@ export class ProductsService {
     const sellerSku = data.sellerSku || product.sku
     const images = Array.isArray(product.images) ? (product.images as string[]) : []
 
-    const prices = data.priceTypeId
-      ? [{ priceTypeId: data.priceTypeId, value: Number(product.basePrice) }]
-      : undefined
+    // Prices: support either a single { priceTypeId, value } or an array.
+    // Each item maps to one row uploaded via POST /v2/prices/product/{productId}.
+    let prices: Array<{ priceTypeId: string; value: number; startDate?: string; endDate?: string }> | undefined
+    if (Array.isArray(data.prices) && data.prices.length > 0) {
+      prices = data.prices
+        .filter((p: any) => p?.priceTypeId && p?.value)
+        .map((p: any) => ({
+          priceTypeId: p.priceTypeId,
+          value: Number(p.value),
+          startDate: p.startDate,
+          endDate: p.endDate,
+        }))
+    } else if (data.priceTypeId) {
+      prices = [{ priceTypeId: data.priceTypeId, value: Number(product.basePrice) }]
+    }
+
+    // Initial stock: sum of (quantity - reserved) across all warehouses for the product.
+    // Negative values are floored to 0.
+    const totalStock = (product.inventory || []).reduce((sum, inv) => {
+      const available = (inv.quantity || 0) - (inv.reservedQuantity || 0)
+      return sum + Math.max(0, available)
+    }, 0)
 
     const result = await this.parisDriver().publish(
       conn.credentials as Record<string, string>,
@@ -479,11 +635,21 @@ export class ProductsService {
           : undefined,
         images,
         prices,
-      },
+        // initialStock is read by the driver and pushed via POST /v2/stock per variant
+        initialStock: totalStock,
+      } as any,
       conn.config as Record<string, unknown> | undefined,
     )
 
     if (result.success && result.externalId) {
+      // Persist parisData so future re-publishes / price updates don't need the form
+      if (override) {
+        await this.prisma.product.update({
+          where: { id: productId },
+          data: { parisData: data },
+        })
+      }
+
       await this.prisma.marketplaceMapping.upsert({
         where: { productId_connectionId: { productId, connectionId: conn.id } },
         update: {

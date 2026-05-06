@@ -60,7 +60,11 @@ export class PublicationsService {
     const credentials = connection.credentials as Record<string, any>
     const config = (connection.config ?? {}) as Record<string, any>
 
-    const totalStock = product.inventory.reduce((sum, inv) => sum + inv.quantity, 0)
+    // Stock que se publica al marketplace = bodegas online + tienda.
+    // (Bodega tipo "warehouse" es solo control interno y no se vende online).
+    const totalStock = product.inventory
+      .filter((inv: any) => ['online', 'store'].includes(inv.warehouse?.warehouseType))
+      .reduce((sum, inv) => sum + inv.quantity, 0)
 
     // Merge image sources: explicit imageUrls > formData.images > product.images
     const formImages: string[] = Array.isArray(dto.formData.images)
@@ -84,6 +88,27 @@ export class PublicationsService {
       ? Number(calculatedPrice)
       : Number(restFormData.price ?? product.basePrice)
 
+    // Inject the calculated price into provider-specific form fields so drivers
+    // that read from formData pick it up automatically
+    const formDataWithPrice: Record<string, any> = { ...restFormData, price: finalPrice }
+    if (connection.provider === 'falabella') {
+      formDataWithPrice.PriceFalabella = finalPrice
+      // If user did not set a marketplace-specific stock, mirror local stock too
+      if (!formDataWithPrice.QuantityFalabella) {
+        formDataWithPrice.QuantityFalabella = totalStock
+      }
+    }
+    if (connection.provider === 'paris') {
+      // Paris uses an array of {priceTypeId, value} — only override the "Precio" entry value
+      // (preserves dates/extra prices the user may have set).
+      const PRECIO_TYPE = '6503baaf-16d0-4590-a4d6-494719593a12' // tipo "Precio" (lista)
+      const existingPrices = Array.isArray(formDataWithPrice.parisPrices) ? formDataWithPrice.parisPrices : []
+      const hasPrecio = existingPrices.some((p: any) => p?.priceTypeId === PRECIO_TYPE)
+      formDataWithPrice.parisPrices = hasPrecio
+        ? existingPrices.map((p: any) => p?.priceTypeId === PRECIO_TYPE ? { ...p, value: finalPrice } : p)
+        : [...existingPrices, { priceTypeId: PRECIO_TYPE, value: finalPrice }]
+    }
+
     const syncInput = {
       sku: product.sku,
       title: restFormData.title ?? restFormData.name ?? restFormData.Name ?? product.name,
@@ -91,9 +116,9 @@ export class PublicationsService {
       stock: restFormData.availableQuantity ?? restFormData.Stock ?? restFormData.Quantity ?? totalStock,
       images,
       categoryId: restFormData.categoryId ?? restFormData.PrimaryCategory,
-      ...restFormData,
+      ...formDataWithPrice,
       // Drivers that need the original formData (Falabella, ML attributes) read from here
-      formData: restFormData,
+      formData: formDataWithPrice,
       price: finalPrice,
     }
 

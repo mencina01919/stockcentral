@@ -1,6 +1,12 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../prisma/prisma.service'
-import { CreateOrderDto, UpdateOrderStatusDto, OrderQueryDto } from './dto/order.dto'
+import {
+  CreateOrderDto,
+  UpdateOrderStatusDto,
+  UpdateOrderInternalStatusDto,
+  OrderQueryDto,
+  INTERNAL_ORDER_STATUSES,
+} from './dto/order.dto'
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
   pending: ['confirmed', 'cancelled'],
@@ -11,16 +17,26 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   cancelled: [],
 }
 
+// Internal-only fulfillment flow. Operators move orders through these states
+// independently of any marketplace status.
+const VALID_INTERNAL_TRANSITIONS: Record<string, string[]> = {
+  new:                ['in_preparation', 'cancelled_internal'],
+  in_preparation:     ['ready_to_ship', 'cancelled_internal'],
+  ready_to_ship:      ['cancelled_internal'],
+  cancelled_internal: [],
+}
+
 @Injectable()
 export class OrdersService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(tenantId: string, query: OrderQueryDto) {
-    const { page = 1, limit = 20, search, status, source, sourceChannel, sortBy = 'createdAt', sortOrder = 'desc' } = query
+    const { page = 1, limit = 20, search, status, internalStatus, source, sourceChannel, sortBy = 'createdAt', sortOrder = 'desc' } = query
     const skip = (page - 1) * limit
     const where: any = { tenantId }
 
     if (status) where.status = status
+    if (internalStatus) where.internalStatus = internalStatus
     if (source) where.source = source
     if (sourceChannel) where.sourceChannel = sourceChannel
     if (search) {
@@ -106,6 +122,41 @@ export class OrdersService {
 
   async cancel(tenantId: string, id: string, reason?: string) {
     return this.updateStatus(tenantId, id, { status: 'cancelled', reason })
+  }
+
+  async updateInternalStatus(tenantId: string, id: string, dto: UpdateOrderInternalStatusDto) {
+    const order = await this.findOne(tenantId, id)
+
+    if (!INTERNAL_ORDER_STATUSES.includes(dto.internalStatus as any)) {
+      throw new BadRequestException(`Estado interno inválido: "${dto.internalStatus}"`)
+    }
+
+    const allowed = VALID_INTERNAL_TRANSITIONS[order.internalStatus] || []
+    if (!allowed.includes(dto.internalStatus)) {
+      throw new BadRequestException(
+        `No se puede cambiar el estado interno de "${order.internalStatus}" a "${dto.internalStatus}"`,
+      )
+    }
+
+    return this.prisma.order.update({
+      where: { id },
+      data: { internalStatus: dto.internalStatus },
+    })
+  }
+
+  async advanceInternal(tenantId: string, id: string) {
+    const order = await this.findOne(tenantId, id)
+    const nextMap: Record<string, string> = {
+      new: 'in_preparation',
+      in_preparation: 'ready_to_ship',
+    }
+    const next = nextMap[order.internalStatus]
+    if (!next) {
+      throw new BadRequestException(
+        `No se puede avanzar el estado interno desde "${order.internalStatus}"`,
+      )
+    }
+    return this.updateInternalStatus(tenantId, id, { internalStatus: next as any })
   }
 
   async advance(tenantId: string, id: string) {

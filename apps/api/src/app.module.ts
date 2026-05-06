@@ -19,6 +19,7 @@ import { WarehousesModule } from './modules/warehouses/warehouses.module'
 import { MediaModule } from './modules/media/media.module'
 import { PublicationsModule } from './modules/publications/publications.module'
 import { StockSyncModule } from './modules/stock-sync/stock-sync.module'
+import { CatalogSourceModule } from './modules/catalog-source/catalog-source.module'
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { StockSyncModule } from './modules/stock-sync/stock-sync.module'
     MediaModule,
     PublicationsModule,
     StockSyncModule,
+    CatalogSourceModule,
   ],
 })
 export class AppModule {}

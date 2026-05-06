@@ -74,11 +74,16 @@ export class MLMetadataService {
       ['BRAND', 'GTIN', 'MODEL', 'COLOR', 'LINE'].includes(a.id),
     )
 
+    // SELLER_PACKAGE_* aren't flagged required in ML metadata, but in practice ML
+    // requires them to enable Mercado Envíos and proper shipping calculation.
+    // We force them as required in our UI so users always provide accurate package data.
+    const SELLER_PKG_IDS = new Set(['SELLER_PACKAGE_HEIGHT', 'SELLER_PACKAGE_WIDTH', 'SELLER_PACKAGE_LENGTH', 'SELLER_PACKAGE_WEIGHT'])
+
     const mapAttr = (a: MLAttribute) => ({
       id: a.id,
       name: a.name,
       value_type: a.value_type,
-      required: !!(a.tags?.required || a.tags?.catalog_required),
+      required: !!(a.tags?.required || a.tags?.catalog_required) || SELLER_PKG_IDS.has(a.id),
       values: a.values || [],
       allowed_units: a.allowed_units || [],
       hint: a.hint,

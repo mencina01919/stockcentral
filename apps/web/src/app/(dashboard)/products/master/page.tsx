@@ -1,17 +1,21 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Search, Loader2, Package, Edit, Trash2, RefreshCw, X, Image as ImageIcon, ExternalLink } from 'lucide-react'
+import { Plus, Search, Loader2, Package, Edit, Trash2, RefreshCw, X, Image as ImageIcon, ExternalLink, Database, Check } from 'lucide-react'
+import Link from 'next/link'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
-import { formatCurrency, PRODUCT_STATUS_LABELS } from '@/lib/utils'
+import { ProviderLogo } from '@/components/provider-logo'
+import { formatCurrency, PRODUCT_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
 import { toast } from 'sonner'
 
 type ProductStatus = 'all' | 'active' | 'out_of_stock' | 'coming_soon' | 'unavailable'
 
 export default function ProductsPage() {
   const queryClient = useQueryClient()
+  const router = useRouter()
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<ProductStatus>('all')
   const [page, setPage] = useState(1)
@@ -27,13 +31,68 @@ export default function ProductsPage() {
     placeholderData: (prev) => prev,
   })
 
+  // Marketplace channels for the columns (connected only, EYLSTORE excluded
+  // because it's the catalog source, not a sales channel).
+  const { data: channels = [] } = useQuery<any[]>({
+    queryKey: ['products-master-channels'],
+    queryFn: () =>
+      api.get('/connections').then((r) =>
+        r.data.filter(
+          (c: any) =>
+            c.type === 'marketplace' &&
+            c.status === 'connected' &&
+            c.provider !== 'eylstore',
+        ),
+      ),
+    staleTime: 60_000,
+  })
+
   const archiveMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/products/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] })
-      toast.success('Producto archivado')
+      toast.success('Producto eliminado')
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.data?.message || 'No se pudo eliminar el producto')
     },
   })
+
+  // Delete flow that handles the linked-marketplaces case: if the API rejects
+  // because the product still has active marketplace mappings, ask the user to
+  // unlink them all and retry the delete in a single action.
+  const handleDelete = async (product: any) => {
+    if (!confirm(`¿Eliminar "${product.name}"? Esta acción no se puede deshacer.`)) return
+    try {
+      await api.delete(`/products/${product.id}`)
+      toast.success('Producto eliminado')
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+    } catch (err: any) {
+      const data = err?.response?.data
+      if (data?.code === 'PRODUCT_HAS_LINKED_MARKETPLACES' && Array.isArray(data?.linkedMarketplaces)) {
+        const list = data.linkedMarketplaces.map((m: any) => `• ${m.provider} (${m.marketplaceProductId})`).join('\n')
+        const ok = confirm(
+          `Este producto está vinculado a:\n${list}\n\n¿Desvincular de todos y eliminar el producto?\n\nNota: el listado seguirá publicado en cada marketplace.`,
+        )
+        if (!ok) return
+        try {
+          // Unlink all marketplaces in parallel, then retry delete.
+          await Promise.all(
+            data.linkedMarketplaces.map((m: any) =>
+              api.delete(`/products/${product.id}/marketplaces/${m.connectionId}`),
+            ),
+          )
+          await api.delete(`/products/${product.id}`)
+          toast.success('Producto desvinculado y eliminado')
+          queryClient.invalidateQueries({ queryKey: ['products'] })
+        } catch (err2: any) {
+          toast.error(err2?.response?.data?.message || 'No se pudo eliminar tras desvincular')
+        }
+        return
+      }
+      toast.error(data?.message || 'No se pudo eliminar el producto')
+    }
+  }
 
   const products = data?.data || []
   const meta = data?.meta
@@ -62,13 +121,23 @@ export default function ProductsPage() {
                 className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
               />
             </div>
-            <button
-              onClick={() => setShowForm(true)}
-              className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              Nuevo producto
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/products/master/source"
+                className="flex items-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                title="Configurar fuente del catálogo"
+              >
+                <Database className="w-4 h-4" />
+                Fuente
+              </Link>
+              <button
+                onClick={() => setShowForm(true)}
+                className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                Nuevo producto
+              </button>
+            </div>
           </div>
 
           <div className="px-4 border-b border-gray-100 flex gap-1">
@@ -98,11 +167,30 @@ export default function ProductsPage() {
               <p className="text-gray-400 text-sm mt-1">Crea tu primer producto para comenzar</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-auto max-h-[calc(100vh-280px)]">
               <table className="w-full">
-                <thead className="bg-gray-50">
+                <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
                   <tr>
-                    {['SKU', 'Producto', 'Precio', 'Stock', 'Canales', 'Estado', 'Acciones'].map((h) => (
+                    {['SKU', 'Producto', 'Precio', 'Stock'].map((h) => (
+                      <th key={h} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                    {channels.map((ch: any) => (
+                      <th
+                        key={ch.id}
+                        className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
+                        title={`${PROVIDER_LABELS[ch.provider] || ch.provider} — ${ch.name}`}
+                      >
+                        <div className="flex flex-col items-center gap-1">
+                          <ProviderLogo provider={ch.provider} size="sm" variant="plain" />
+                          <span className="text-[10px] normal-case font-normal text-gray-400 max-w-[80px] truncate">
+                            {PROVIDER_LABELS[ch.provider] || ch.provider}
+                          </span>
+                        </div>
+                      </th>
+                    ))}
+                    {['Estado', 'Acciones'].map((h) => (
                       <th key={h} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
                         {h}
                       </th>
@@ -147,11 +235,42 @@ export default function ProductsPage() {
                             {totalStock} uds
                           </span>
                         </td>
-                        <td className="px-6 py-4">
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${product._count?.marketplaceMappings > 0 ? 'bg-sky-100 text-sky-700' : 'bg-gray-100 text-gray-500'}`}>
-                            {product._count?.marketplaceMappings || 0} canales
-                          </span>
-                        </td>
+                        {channels.map((ch: any) => {
+                          const mapping = product.marketplaceMappings?.find(
+                            (m: any) => m.connectionId === ch.id,
+                          )
+                          const isPublished = !!mapping?.marketplaceProductId
+                          const hasError = mapping?.syncStatus === 'error'
+                          return (
+                            <td key={ch.id} className="px-3 py-4 text-center">
+                              <button
+                                onClick={() =>
+                                  router.push(
+                                    `/publications?productId=${product.id}&connectionId=${ch.id}`,
+                                  )
+                                }
+                                title={
+                                  isPublished
+                                    ? `Publicado en ${PROVIDER_LABELS[ch.provider] || ch.provider} — click para gestionar`
+                                    : `No publicado en ${PROVIDER_LABELS[ch.provider] || ch.provider} — click para publicar`
+                                }
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-full transition-colors hover:bg-gray-100"
+                              >
+                                {isPublished ? (
+                                  <span
+                                    className={`w-5 h-5 rounded-full flex items-center justify-center ${
+                                      hasError ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'
+                                    }`}
+                                  >
+                                    <Check className="w-3 h-3" strokeWidth={3} />
+                                  </span>
+                                ) : (
+                                  <span className="w-5 h-5 rounded-full border-2 border-dashed border-gray-200" />
+                                )}
+                              </button>
+                            </td>
+                          )
+                        })}
                         <td className="px-6 py-4">
                           {(() => {
                             const s = PRODUCT_STATUS_LABELS[product.status] || { label: product.status, color: 'bg-gray-100 text-gray-500' }
@@ -168,8 +287,8 @@ export default function ProductsPage() {
                               <Edit className="w-4 h-4" />
                             </button>
                             <button
-                              onClick={() => archiveMutation.mutate(product.id)}
-                              title="Archivar"
+                              onClick={() => handleDelete(product)}
+                              title="Eliminar"
                               className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -529,9 +648,187 @@ function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClo
   )
 }
 
+// Modal: lista publicaciones del marketplace con búsqueda para vincular manualmente
+function MarketplaceProductPicker({
+  productId, connectionId, providerLabel, onClose, onLinked,
+}: {
+  productId: string
+  connectionId: string
+  providerLabel: string
+  onClose: () => void
+  onLinked: () => void
+}) {
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [linking, setLinking] = useState<string | null>(null)
+  const limit = 25
+
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedSearch(search); setPage(1) }, 400)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['mp-picker', connectionId, page, debouncedSearch],
+    queryFn: () => api.get(`/products/marketplace/${connectionId}`, {
+      params: {
+        offset: (page - 1) * limit,
+        limit,
+        ...(debouncedSearch ? { search: debouncedSearch } : {}),
+      },
+    }).then(r => r.data),
+  })
+
+  const items: any[] = data?.data || []
+  const meta = data?.meta
+
+  const link = async (externalId: string, marketplaceSku: string, price: number, title: string) => {
+    setLinking(externalId)
+    try {
+      await api.post(`/products/${productId}/marketplaces/${connectionId}/link`, {
+        externalId, marketplaceSku, price, title,
+      })
+      toast.success(`Vinculado: ${title || externalId}`)
+      onLinked()
+      onClose()
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Error al vincular')
+    } finally {
+      setLinking(null)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Buscar publicación en {providerLabel}</p>
+            <p className="text-xs text-gray-500 mt-0.5">Selecciona la publicación que corresponde a este producto del maestro.</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100">
+            <X className="w-4 h-4 text-gray-500" />
+          </button>
+        </div>
+
+        {/* Buscador */}
+        <div className="px-5 py-3 border-b border-gray-100">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              autoFocus
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar por nombre, SKU o ID de publicación…"
+              className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+          </div>
+          {meta && (
+            <p className="text-xs text-gray-400 mt-2">
+              {items.length} resultados de {meta.total} {debouncedSearch ? 'coincidentes' : 'totales'}
+            </p>
+          )}
+        </div>
+
+        {/* Lista */}
+        <div className="flex-1 overflow-y-auto">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="w-6 h-6 animate-spin text-sky-500" />
+            </div>
+          ) : error ? (
+            <div className="text-center py-12 text-sm text-amber-700">
+              No se pudieron cargar publicaciones desde {providerLabel}
+            </div>
+          ) : items.length === 0 ? (
+            <div className="text-center py-12">
+              <Package className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm text-gray-500">
+                {debouncedSearch
+                  ? `Sin resultados para "${debouncedSearch}"`
+                  : 'No hay publicaciones en este marketplace'}
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {items.map(p => {
+                const isLinked = !!p.mapping
+                const isLinking = linking === p.externalId
+                return (
+                  <div key={p.externalId} className="px-5 py-3 flex items-center gap-3 hover:bg-gray-50">
+                    {p.images?.[0] && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={p.images[0]} alt="" className="w-12 h-12 object-cover rounded border border-gray-200 flex-shrink-0" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{p.title || '(sin título)'}</p>
+                      <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
+                        <span className="font-mono bg-gray-100 px-1.5 py-0.5 rounded">{p.externalId}</span>
+                        {p.externalSku && (
+                          <span className="font-mono">SKU: {p.externalSku}</span>
+                        )}
+                        {p.price && (
+                          <span className="font-medium text-gray-700">{formatCurrency(Number(p.price))}</span>
+                        )}
+                        <span className={
+                          p.status === 'active' ? 'text-green-600' :
+                          p.status === 'paused' ? 'text-amber-600' :
+                          p.status === 'closed' ? 'text-gray-400' : ''
+                        }>· {p.status}</span>
+                      </div>
+                      {isLinked && (
+                        <p className="text-xs text-amber-700 mt-0.5">Ya vinculado a otro producto del maestro</p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => link(p.externalId, p.externalSku || '', Number(p.price || 0), p.title || '')}
+                      disabled={isLinking}
+                      className="px-3 py-1.5 text-xs bg-sky-600 hover:bg-sky-700 text-white rounded-md font-medium transition-colors flex items-center gap-1 disabled:opacity-50"
+                    >
+                      {isLinking ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                      {isLinked ? 'Re-vincular' : 'Vincular'}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Paginación */}
+        {meta && meta.total > limit && (
+          <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
+            <p className="text-xs text-gray-500">Página {page}</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage(p => p - 1)}
+                disabled={page === 1}
+                className="px-3 py-1 text-xs border border-gray-200 rounded-md disabled:opacity-40 hover:bg-gray-50"
+              >
+                Anterior
+              </button>
+              <button
+                onClick={() => setPage(p => p + 1)}
+                disabled={!meta.hasMore}
+                className="px-3 py-1 text-xs border border-gray-200 rounded-md disabled:opacity-40 hover:bg-gray-50"
+              >
+                Siguiente
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: string }) {
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState<string | null>(null)
+  const [picker, setPicker] = useState<{ connectionId: string; providerLabel: string } | null>(null)
 
   const { data: status, isLoading } = useQuery<any[]>({
     queryKey: ['product-marketplaces', productId],
@@ -626,10 +923,20 @@ function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: stri
               <button
                 onClick={() => detect(s.connectionId)}
                 disabled={busy === s.connectionId}
+                title="Buscar coincidencia exacta del SKU"
                 className="px-3 py-1.5 text-xs border border-sky-200 text-sky-700 hover:bg-sky-50 rounded-md font-medium transition-colors flex items-center gap-1 disabled:opacity-50"
               >
                 {busy === s.connectionId ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
                 Detectar SKU
+              </button>
+              <button
+                onClick={() => setPicker({ connectionId: s.connectionId, providerLabel: s.connectionName || s.provider })}
+                disabled={busy === s.connectionId}
+                title="Buscar manualmente entre las publicaciones del marketplace"
+                className="px-3 py-1.5 text-xs border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-md font-medium transition-colors flex items-center gap-1 disabled:opacity-50"
+              >
+                <Search className="w-3 h-3" />
+                Buscar
               </button>
               {s.linked && (
                 <button
@@ -644,6 +951,16 @@ function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: stri
           </div>
         ))}
       </div>
+
+      {picker && (
+        <MarketplaceProductPicker
+          productId={productId}
+          connectionId={picker.connectionId}
+          providerLabel={picker.providerLabel}
+          onClose={() => setPicker(null)}
+          onLinked={() => queryClient.invalidateQueries({ queryKey: ['product-marketplaces', productId] })}
+        />
+      )}
     </div>
   )
 }
@@ -667,7 +984,8 @@ function calcPrice(cost: number, commission: number, shipping: number, margin: n
 
 function MarketplacePricingBlock({ product }: { product: any }) {
   const queryClient = useQueryClient()
-  const basePrice = Number(product.basePrice)
+  const cost = Number(product.costPrice ?? 0)
+  const basePrice = Number(product.basePrice ?? 0)
 
   const { data: savedPricing } = useQuery<any>({
     queryKey: ['marketplace-pricing', product.id],
@@ -708,12 +1026,12 @@ function MarketplacePricingBlock({ product }: { product: any }) {
   const save = async () => {
     setSaving(true)
     try {
-      // Calcular y guardar el precio calculado por marketplace
+      // Calcular y guardar el precio calculado por marketplace (basado en costo)
       const payload: Record<string, any> = {}
       for (const conn of connections) {
         const p = pricing[conn.provider]
         if (!p || !p.enabled) continue
-        const calculated = calcPrice(basePrice, p.commission, p.shipping, p.margin)
+        const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
         payload[conn.provider] = { ...p, calculatedPrice: calculated }
       }
       await api.patch(`/products/${product.id}/marketplace-pricing`, payload)
@@ -728,22 +1046,40 @@ function MarketplacePricingBlock({ product }: { product: any }) {
 
   if (!connections.length) return null
 
+  // Sin costo no se puede calcular nada útil
+  if (!cost) {
+    return (
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+          Calculadora de precios por marketplace
+        </p>
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+          <p className="font-medium">Falta el precio de costo</p>
+          <p className="text-xs mt-1 text-amber-700">
+            Para calcular precios por marketplace, primero ingresa el costo del producto en la sección de precios.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
         Calculadora de precios por marketplace
       </p>
       <p className="text-xs text-gray-400 mb-3">
-        Precio base: <span className="font-semibold text-gray-700">{formatCurrency(basePrice)}</span> (con IVA incluido)
+        Costo base: <span className="font-semibold text-gray-700">{formatCurrency(cost)}</span>
+        {basePrice > 0 && <span className="ml-3">· Precio venta directa: <span className="font-semibold text-gray-700">{formatCurrency(basePrice)}</span></span>}
       </p>
       <div className="space-y-3">
         {connections.map((conn: any) => {
           const def = MARKETPLACE_DEFAULTS[conn.provider]
           const p = pricing[conn.provider]
           if (!p) return null
-          const calculated = calcPrice(basePrice, p.commission, p.shipping, p.margin)
-          const gain = calculated - basePrice - p.shipping
-          const gainPct = basePrice > 0 ? ((gain / basePrice) * 100).toFixed(1) : '0'
+          const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
+          const gain = calculated - cost - p.shipping
+          const gainPct = cost > 0 ? ((gain / cost) * 100).toFixed(1) : '0'
 
           return (
             <div key={conn.provider} className={`border rounded-xl overflow-hidden ${p.enabled ? 'border-gray-200' : 'border-gray-100 opacity-50'}`}>

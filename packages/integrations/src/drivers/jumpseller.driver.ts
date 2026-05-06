@@ -10,6 +10,7 @@ import {
   SyncResult,
   OAuthTokens,
   PaginatedResult,
+  CatalogCapabilities,
 } from '../types'
 
 const JS_API = 'https://api.jumpseller.com/v1'
@@ -17,6 +18,14 @@ const JS_AUTH = 'https://www.jumpseller.com/api/oauth'
 
 export class JumpsellerDriver implements IMarketplaceDriver {
   readonly provider = 'jumpseller'
+  readonly catalogCapabilities: CatalogCapabilities = {
+    canBeCatalogSource: true,
+    supportsPagination: true,
+    providesStock: true,
+    providesPrices: true,
+    providesImages: true,
+    supportsSingleProductFetch: true,
+  }
 
   private buildClient(credentials: DriverCredentials): AxiosInstance {
     return axios.create({

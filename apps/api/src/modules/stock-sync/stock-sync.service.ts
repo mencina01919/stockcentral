@@ -35,7 +35,7 @@ export class StockSyncService {
       this.prisma.product.findMany({
         where: { tenantId, status: { not: 'unavailable' } },
         include: {
-          inventory: { where: { warehouse: { warehouseType: 'online' } } },
+          inventory: { where: { warehouse: { warehouseType: { in: ['online', 'store'] } } } },
         },
       }),
       this.prisma.marketplaceMapping.findMany({
@@ -116,7 +116,7 @@ export class StockSyncService {
     const [product, connection] = await Promise.all([
       this.prisma.product.findFirst({
         where: { id: productId, tenantId },
-        include: { inventory: { where: { warehouse: { warehouseType: 'online' } } } },
+        include: { inventory: { where: { warehouse: { warehouseType: { in: ['online', 'store'] } } } } },
       }),
       this.prisma.connection.findFirst({ where: { id: connectionId, tenantId } }),
     ])
@@ -167,7 +167,7 @@ export class StockSyncService {
       where: { connectionId, syncStatus: 'connected', marketplaceProductId: { not: null } },
       include: {
         product: {
-          include: { inventory: { where: { warehouse: { warehouseType: 'online' } } } },
+          include: { inventory: { where: { warehouse: { warehouseType: { in: ['online', 'store'] } } } } },
         },
       },
     })

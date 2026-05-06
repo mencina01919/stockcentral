@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, Send, CheckCircle2, XCircle, AlertCircle, X, Plus, Package, ArrowRight, ImagePlus, Trash2, Search,
@@ -9,6 +10,7 @@ import {
 import { toast } from 'sonner'
 import api from '@/lib/api'
 import { cn, PROVIDER_LABELS, formatCurrency } from '@/lib/utils'
+import { ProviderLogo } from '@/components/provider-logo'
 
 // ─── ML Category Search ───────────────────────────────────────────────────────
 
@@ -117,22 +119,35 @@ function MLAttrInput({ attr, formData, setValue }: { attr: MLAttr; formData: Rec
   const key = `ml_attr_${attr.id}`
   const current = formData[key]
 
-  // Enum: send value_id
+  // Enum: combobox — datalist permite elegir de la lista o escribir un valor custom
+  // (los attrs ML con values son "sugerencias", no enums cerrados — value_type='string')
   if (attr.values && attr.values.length > 0) {
+    const listId = `ml-${attr.id}-list`
+    const inputValue = current?.value_name ?? ''
     return (
-      <select
-        value={current?.value_id ?? ''}
-        onChange={e => {
-          const v = attr.values.find(x => x.id === e.target.value)
-          setValue(key, v ? { id: attr.id, value_id: v.id, value_name: v.name } : null)
-        }}
-        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-      >
-        <option value="">Seleccionar...</option>
-        {attr.values.map(v => (
-          <option key={v.id} value={v.id}>{v.name}</option>
-        ))}
-      </select>
+      <>
+        <input
+          type="text"
+          list={listId}
+          value={inputValue}
+          onChange={e => {
+            const text = e.target.value
+            if (text === '') { setValue(key, null); return }
+            // Si el texto coincide exactamente con un value, mandamos value_id; si no, solo value_name (custom)
+            const match = attr.values.find(v => v.name.toLowerCase() === text.toLowerCase())
+            setValue(key, match
+              ? { id: attr.id, value_id: match.id, value_name: match.name }
+              : { id: attr.id, value_name: text })
+          }}
+          placeholder={`Buscar o escribir...`}
+          className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+        />
+        <datalist id={listId}>
+          {attr.values.map(v => (
+            <option key={v.id} value={v.name} />
+          ))}
+        </datalist>
+      </>
     )
   }
 
@@ -242,6 +257,417 @@ function MLAttributeFields({
       {renderGroup('Dimensiones del paquete', groups.sellerPackage,
         'Solo enteros. Dimensiones en cm, peso en gramos.')}
       {renderGroup('Atributos recomendados', groups.recommended)}
+    </div>
+  )
+}
+
+// ─── Paris: Family Search ─────────────────────────────────────────────────────
+
+interface ParisFamily { id: string; name: string }
+
+function ParisFamilySearch({ value, onChange }: { value: string; onChange: (id: string, name: string) => void }) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const [selected, setSelected] = useState<ParisFamily | null>(null)
+
+  const { data: all, isLoading } = useQuery<{ results?: ParisFamily[] } | ParisFamily[]>({
+    queryKey: ['paris-families'],
+    queryFn: () => api.get('/publications/paris/families').then(r => r.data),
+    staleTime: 10 * 60_000,
+  })
+
+  // Normalize
+  const families: ParisFamily[] = Array.isArray(all)
+    ? all
+    : (all?.results || [])
+
+  useEffect(() => {
+    if (value && !selected) {
+      const found = families.find(f => f.id === value)
+      if (found) setSelected(found)
+      else setSelected({ id: value, name: value })
+    }
+  }, [value, families, selected])
+
+  const filtered = query.length < 2
+    ? families.slice(0, 30)
+    : families.filter(f => (f.name || '').toLowerCase().includes(query.toLowerCase())).slice(0, 50)
+
+  return (
+    <div className="relative">
+      {selected ? (
+        <div className="flex items-center gap-2 mt-1 px-3 py-2 border border-sky-300 bg-sky-50 rounded-xl text-sm">
+          <span className="font-mono text-xs text-sky-700 bg-sky-100 px-1.5 py-0.5 rounded">{selected.id.slice(0, 8)}…</span>
+          <span className="text-gray-800 flex-1">{selected.name}</span>
+          <button type="button" onClick={() => { setSelected(null); onChange('', '') }} className="text-gray-400 hover:text-red-500">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      ) : (
+        <div className="relative mt-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="text"
+            value={query}
+            onChange={e => { setQuery(e.target.value); setOpen(true) }}
+            onFocus={() => setOpen(true)}
+            placeholder="Buscar familia (Computación, Vestuario, Hogar...)"
+            className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+          />
+          {isLoading && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-sky-500" />}
+        </div>
+      )}
+      {open && !selected && filtered.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden max-h-72 overflow-y-auto">
+          {filtered.map(f => (
+            <button key={f.id} type="button" onClick={() => { setSelected(f); setOpen(false); onChange(f.id, f.name) }}
+              className="w-full text-left px-3 py-2 hover:bg-sky-50 transition-colors border-b border-gray-50 last:border-0">
+              <span className="text-sm text-gray-800">{f.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Paris: Category Select (depends on familyId) ─────────────────────────────
+
+interface ParisCategory { id: string; name: string; level?: number }
+
+function ParisCategorySelect({ familyId, value, onChange }: { familyId: string; value: string; onChange: (id: string, name: string) => void }) {
+  const { data, isLoading } = useQuery<{ results?: ParisCategory[] } | ParisCategory[]>({
+    queryKey: ['paris-categories', familyId],
+    queryFn: () => api.get(`/publications/paris/families/${familyId}/categories`).then(r => r.data),
+    enabled: !!familyId,
+    staleTime: 10 * 60_000,
+  })
+
+  const cats: ParisCategory[] = Array.isArray(data) ? data : (data?.results || [])
+
+  if (!familyId) return (
+    <p className="mt-1 text-sm text-gray-400 italic">Selecciona primero una familia</p>
+  )
+  if (isLoading) return (
+    <div className="mt-1 flex items-center gap-2 text-sm text-gray-400">
+      <Loader2 className="w-4 h-4 animate-spin text-sky-500" /> Cargando categorías…
+    </div>
+  )
+  if (!cats.length) return (
+    <p className="mt-1 text-sm text-gray-400 italic">No hay categorías para esta familia</p>
+  )
+
+  return (
+    <select
+      value={value || ''}
+      onChange={e => {
+        const cat = cats.find(c => c.id === e.target.value)
+        onChange(e.target.value, cat?.name || '')
+      }}
+      className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+    >
+      <option value="">Seleccionar categoría…</option>
+      {cats.map(c => (
+        <option key={c.id} value={c.id}>{c.name}</option>
+      ))}
+    </select>
+  )
+}
+
+// ─── Paris: Dynamic Attribute Fields ──────────────────────────────────────────
+
+interface ParisAttr {
+  id: string
+  name: string
+  type?: 'PRODUCT' | 'VARIANT'
+  attributeOptions?: { id: string; name: string }[]
+  familyAttributes?: { attributeValidation?: { isRequired?: boolean; length?: number } }[]
+}
+
+function ParisAttrInput({ attr, prefix, formData, setValue }: {
+  attr: ParisAttr
+  prefix: 'pattr' | 'vattr'
+  formData: Record<string, any>
+  setValue: (k: string, v: any) => void
+}) {
+  const key = `paris_${prefix}_${attr.id}`
+  const current = formData[key]
+  const maxLen = attr.familyAttributes?.[0]?.attributeValidation?.length
+
+  // Has predefined options (LIST attribute) → select with search for many options
+  if ((attr.attributeOptions || []).length > 0) {
+    const opts = attr.attributeOptions!
+    // For very large option lists (Marca = thousands), show a searchable input
+    if (opts.length > 30) {
+      return (
+        <ParisSearchableOptions
+          attributeId={attr.id}
+          inlineOptions={opts}
+          value={current}
+          onChange={v => setValue(key, v ? { id: attr.id, value: v.id, valueName: v.name } : null)}
+        />
+      )
+    }
+    return (
+      <select
+        value={current?.value ?? ''}
+        onChange={e => {
+          const opt = opts.find(o => o.id === e.target.value)
+          setValue(key, opt ? { id: attr.id, value: opt.id, valueName: opt.name } : null)
+        }}
+        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+      >
+        <option value="">Seleccionar…</option>
+        {opts.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+      </select>
+    )
+  }
+
+  // Free text (length defines max chars)
+  return (
+    <input
+      type="text"
+      maxLength={maxLen || undefined}
+      value={current?.value ?? ''}
+      onChange={e => setValue(key, e.target.value === '' ? null : { id: attr.id, value: e.target.value })}
+      placeholder={attr.name}
+      className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+    />
+  )
+}
+
+// Searchable options for attributes with many options (Marca, etc.)
+function ParisSearchableOptions({ attributeId, inlineOptions, value, onChange }: {
+  attributeId: string
+  inlineOptions: { id: string; name: string }[]
+  value: any
+  onChange: (v: { id: string; name: string } | null) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const debRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [serverResults, setServerResults] = useState<{ id: string; name: string }[]>([])
+
+  // Local filter first; if user types more than 2 chars and we have lots of options, query server
+  useEffect(() => {
+    if (debRef.current) clearTimeout(debRef.current)
+    if (query.length < 2) { setServerResults([]); return }
+    debRef.current = setTimeout(async () => {
+      try {
+        const r = await api.get(`/publications/paris/attributes/${attributeId}/options?q=${encodeURIComponent(query)}`)
+        const list = Array.isArray(r.data) ? r.data : (r.data?.results || [])
+        setServerResults(list.slice(0, 200))
+      } catch { setServerResults([]) }
+    }, 300)
+    return () => { if (debRef.current) clearTimeout(debRef.current) }
+  }, [query, attributeId])
+
+  const localResults = query.length < 2
+    ? inlineOptions.slice(0, 100)
+    : inlineOptions.filter(o => (o.name || '').toLowerCase().includes(query.toLowerCase())).slice(0, 200)
+
+  const results = serverResults.length > 0 ? serverResults : localResults
+
+  if (value?.valueName) {
+    return (
+      <div className="flex items-center gap-2 mt-1 px-3 py-2 border border-sky-300 bg-sky-50 rounded-xl text-sm">
+        <span className="text-gray-800 flex-1">{value.valueName}</span>
+        <button type="button" onClick={() => onChange(null)} className="text-gray-400 hover:text-red-500">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative">
+      <div className="relative mt-1">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          type="text"
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder="Buscar opción…"
+          className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+        />
+      </div>
+      {open && results.length > 0 && (
+        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden max-h-96 overflow-y-auto">
+          {results.map(o => (
+            <button key={o.id} type="button" onClick={() => { onChange(o); setOpen(false); setQuery('') }}
+              className="w-full text-left px-3 py-2 hover:bg-sky-50 transition-colors border-b border-gray-50 last:border-0 text-sm">
+              {o.name}
+            </button>
+          ))}
+          {query.length < 2 && (
+            <p className="px-3 py-2 text-xs text-gray-400 italic border-t border-gray-100 sticky bottom-0 bg-white">
+              Hay miles de opciones — escribe al menos 2 letras para buscar
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ParisAttributeFields({ familyId, formData, setValue }: {
+  familyId: string
+  formData: Record<string, any>
+  setValue: (k: string, v: any) => void
+}) {
+  const { data: pAttrs, isLoading: pLoading } = useQuery<{ results?: ParisAttr[] } | ParisAttr[]>({
+    queryKey: ['paris-attrs-product', familyId],
+    queryFn: () => api.get(`/publications/paris/families/${familyId}/attributes?kind=product`).then(r => r.data),
+    enabled: !!familyId,
+    staleTime: 10 * 60_000,
+  })
+  const { data: vAttrs, isLoading: vLoading } = useQuery<{ results?: ParisAttr[] } | ParisAttr[]>({
+    queryKey: ['paris-attrs-variant', familyId],
+    queryFn: () => api.get(`/publications/paris/families/${familyId}/attributes?kind=variant`).then(r => r.data),
+    enabled: !!familyId,
+    staleTime: 10 * 60_000,
+  })
+
+  if (!familyId) return null
+  if (pLoading || vLoading) return (
+    <div className="flex items-center gap-2 py-3 text-sm text-gray-400">
+      <Loader2 className="w-4 h-4 animate-spin text-sky-500" />
+      Cargando atributos de Paris para esta familia…
+    </div>
+  )
+
+  const productList: ParisAttr[] = Array.isArray(pAttrs) ? pAttrs : (pAttrs?.results || [])
+  const variantList: ParisAttr[] = Array.isArray(vAttrs) ? vAttrs : (vAttrs?.results || [])
+
+  const isRequired = (a: ParisAttr) => !!a.familyAttributes?.[0]?.attributeValidation?.isRequired
+
+  // Sort: required first, then alphabetic
+  const sortFn = (a: ParisAttr, b: ParisAttr) => {
+    const ra = isRequired(a) ? 0 : 1
+    const rb = isRequired(b) ? 0 : 1
+    if (ra !== rb) return ra - rb
+    return (a.name || '').localeCompare(b.name || '')
+  }
+
+  const sortedProduct = [...productList].sort(sortFn)
+  const sortedVariant = [...variantList].sort(sortFn)
+
+  const renderAttrGroup = (title: string, list: ParisAttr[], prefix: 'pattr' | 'vattr') => {
+    if (!list.length) return null
+    return (
+      <div>
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{title}</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {list.map(a => (
+            <div key={a.id}>
+              <label className="text-sm font-medium text-gray-700">
+                {a.name} {isRequired(a) && <span className="text-red-500">*</span>}
+              </label>
+              <ParisAttrInput attr={a} prefix={prefix} formData={formData} setValue={setValue} />
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {renderAttrGroup('Atributos del producto', sortedProduct, 'pattr')}
+      {renderAttrGroup('Atributos de la variante', sortedVariant, 'vattr')}
+    </div>
+  )
+}
+
+// ─── Paris: Prices Editor ─────────────────────────────────────────────────────
+
+interface ParisPriceType { id: string; name: string }
+
+function ParisPricesEditor({ formData, setValue }: {
+  formData: Record<string, any>
+  setValue: (k: string, v: any) => void
+}) {
+  const { data: pt } = useQuery<{ results?: ParisPriceType[] } | ParisPriceType[]>({
+    queryKey: ['paris-price-types'],
+    queryFn: () => api.get('/publications/paris/price-types').then(r => r.data),
+    staleTime: 60 * 60_000,
+  })
+  const types: ParisPriceType[] = Array.isArray(pt) ? pt : (pt?.results || [])
+
+  const prices: any[] = Array.isArray(formData.parisPrices) ? formData.parisPrices : []
+
+  const setPrice = (idx: number, partial: Record<string, any>) => {
+    const next = [...prices]
+    next[idx] = { ...next[idx], ...partial }
+    setValue('parisPrices', next)
+  }
+  const addPrice = () => setValue('parisPrices', [...prices, { priceTypeId: '', value: '' }])
+  const removePrice = (idx: number) => {
+    const next = prices.filter((_, i) => i !== idx)
+    setValue('parisPrices', next)
+  }
+
+  return (
+    <div>
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Precios</p>
+      <div className="space-y-3">
+        {prices.map((p, idx) => {
+          const isOffer = (types.find(t => t.id === p.priceTypeId)?.name || '').toLowerCase().includes('oferta')
+          return (
+            <div key={idx} className="grid grid-cols-12 gap-2 items-end">
+              <div className="col-span-4">
+                <label className="text-xs text-gray-500">Tipo</label>
+                <select
+                  value={p.priceTypeId || ''}
+                  onChange={e => setPrice(idx, { priceTypeId: e.target.value })}
+                  className="mt-1 w-full px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  <option value="">Seleccionar…</option>
+                  {types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <div className="col-span-3">
+                <label className="text-xs text-gray-500">Valor (CLP)</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={p.value || ''}
+                  onChange={e => setPrice(idx, { value: e.target.value })}
+                  className="mt-1 w-full px-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
+              {isOffer && (
+                <>
+                  <div className="col-span-2">
+                    <label className="text-xs text-gray-500">Desde</label>
+                    <input type="date" value={p.startDate || ''} onChange={e => setPrice(idx, { startDate: e.target.value })}
+                      className="mt-1 w-full px-2 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500" />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-xs text-gray-500">Hasta</label>
+                    <input type="date" value={p.endDate || ''} onChange={e => setPrice(idx, { endDate: e.target.value })}
+                      className="mt-1 w-full px-2 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500" />
+                  </div>
+                </>
+              )}
+              <div className={isOffer ? 'col-span-1' : 'col-span-5 text-right'}>
+                <button type="button" onClick={() => removePrice(idx)} className="text-gray-400 hover:text-red-500 p-2">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )
+        })}
+        <button type="button" onClick={addPrice} className="text-sm text-sky-600 hover:text-sky-700 inline-flex items-center gap-1">
+          <Plus className="w-4 h-4" /> Agregar precio
+        </button>
+        {prices.length === 0 && (
+          <p className="text-xs text-gray-400 italic">
+            Agrega al menos un precio (tipo "Precio") para que el producto se publique con valor.
+          </p>
+        )}
+      </div>
     </div>
   )
 }
@@ -775,7 +1201,7 @@ interface FBAttrGroups {
 }
 
 function FalabellaAttrInput({ attr, value, onChange }: { attr: FBAttribute; value: any; onChange: (v: any) => void }) {
-  // Dropdown / multipleselect: use options
+  // Dropdown / multipleselect: use option ids as the stored value (that's what Falabella expects in the feed)
   if (attr.options && attr.options.length > 0) {
     if (attr.inputType === 'multipleselect') {
       const selected: string[] = Array.isArray(value) ? value : []
@@ -787,7 +1213,7 @@ function FalabellaAttrInput({ attr, value, onChange }: { attr: FBAttribute; valu
         <div className="mt-1 max-h-32 overflow-y-auto border border-gray-200 rounded-xl p-2 space-y-1">
           {attr.options.map(o => (
             <label key={o.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
-              <input type="checkbox" checked={selected.includes(o.name)} onChange={() => toggle(o.name)}
+              <input type="checkbox" checked={selected.includes(o.id)} onChange={() => toggle(o.id)}
                 className="w-3.5 h-3.5 rounded border-gray-300 text-sky-600" />
               <span>{o.name}</span>
             </label>
@@ -799,7 +1225,7 @@ function FalabellaAttrInput({ attr, value, onChange }: { attr: FBAttribute; valu
       <select value={value ?? ''} onChange={e => onChange(e.target.value)}
         className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="">Seleccionar...</option>
-        {attr.options.map(o => <option key={o.id} value={o.name}>{o.name}</option>)}
+        {attr.options.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
       </select>
     )
   }
@@ -1136,6 +1562,41 @@ function FieldRenderer({
     )
   }
 
+  // Paris family selector
+  if (field.key === 'familyId' && provider === 'paris') {
+    return (
+      <ParisFamilySearch
+        value={value ?? ''}
+        onChange={(id, _name) => {
+          // When family changes, reset categoryId and clear all dynamic attrs
+          if (setFormData) {
+            setFormData(prev => {
+              const next: Record<string, any> = { ...prev, familyId: id, categoryId: '' }
+              for (const k of Object.keys(next)) {
+                if (k.startsWith('paris_pattr_') || k.startsWith('paris_vattr_')) delete next[k]
+              }
+              return next
+            })
+          } else {
+            onChange(id)
+          }
+        }}
+      />
+    )
+  }
+
+  // Paris category selector (depends on familyId)
+  if (field.key === 'categoryId' && provider === 'paris') {
+    const familyId = formData?.familyId || ''
+    return (
+      <ParisCategorySelect
+        familyId={familyId}
+        value={value ?? ''}
+        onChange={(id, _name) => onChange(id)}
+      />
+    )
+  }
+
   if (field.type === 'images') {
     return (
       <ImageInput
@@ -1201,14 +1662,315 @@ function FieldRenderer({
 
 // ─── FormFields ──────────────────────────────────────────────────────────────
 
+// ─── Missing required fields checker (genérico para los 4 marketplaces) ──────
+
+function MissingRequiredCheck({
+  provider, fields, formData,
+}: {
+  provider: 'mercadolibre' | 'lider' | 'paris' | 'falabella'
+  fields: any[]
+  formData: Record<string, any>
+}) {
+  const [open, setOpen] = useState(false)
+
+  const isEmpty = (v: any) => {
+    if (v === undefined || v === null) return true
+    if (typeof v === 'string') return v.trim() === ''
+    if (Array.isArray(v)) return v.length === 0
+    if (typeof v === 'object') return false   // ML attr objects, etc.
+    return false
+  }
+
+  // Cargar atributos dinámicos según provider para detectar requeridos
+  const mlCategoryId = formData.categoryId
+  const fbCategoryId = formData.PrimaryCategory
+  const parisFamilyId = formData.familyId
+
+  const { data: mlAttrs } = useQuery<any>({
+    queryKey: ['ml-cat-attrs', mlCategoryId],
+    queryFn: () => api.get(`/publications/ml/categories/${mlCategoryId}/attributes`).then(r => r.data),
+    enabled: provider === 'mercadolibre' && !!mlCategoryId && open,
+  })
+
+  const { data: fbAttrs } = useQuery<any>({
+    queryKey: ['fb-cat-attrs', fbCategoryId],
+    queryFn: () => api.get(`/publications/falabella/categories/${fbCategoryId}/attributes`).then(r => r.data),
+    enabled: provider === 'falabella' && !!fbCategoryId && open,
+  })
+
+  const { data: parisProductAttrs } = useQuery<any>({
+    queryKey: ['paris-attrs-product', parisFamilyId],
+    queryFn: () => api.get(`/publications/paris/families/${parisFamilyId}/attributes?kind=product`).then(r => r.data),
+    enabled: provider === 'paris' && !!parisFamilyId && open,
+  })
+  const { data: parisVariantAttrs } = useQuery<any>({
+    queryKey: ['paris-attrs-variant', parisFamilyId],
+    queryFn: () => api.get(`/publications/paris/families/${parisFamilyId}/attributes?kind=variant`).then(r => r.data),
+    enabled: provider === 'paris' && !!parisFamilyId && open,
+  })
+
+  // Lista de {label, key, source} con los campos requeridos faltantes
+  const missing: Array<{ label: string; key: string; group: string }> = []
+
+  // 1) Campos del schema base (válido para los 4 providers)
+  for (const f of fields || []) {
+    if (!f.required) continue
+    if (isEmpty(formData[f.key])) {
+      missing.push({ label: f.label, key: f.key, group: 'Anclajes' })
+    }
+  }
+
+  // 2) Atributos dinámicos según provider
+  if (provider === 'mercadolibre' && mlAttrs) {
+    const all = [...(mlAttrs.required || []), ...(mlAttrs.sellerPackage || [])]
+    for (const a of all) {
+      if (!a.required) continue
+      const v = formData[`ml_attr_${a.id}`]
+      if (isEmpty(v)) missing.push({ label: a.name, key: a.id, group: 'Atributos ML' })
+    }
+  }
+
+  if (provider === 'falabella' && fbAttrs?.attributes) {
+    const ANCHORS = new Set(['PrimaryCategory', 'SellerSku', 'images'])
+    for (const a of fbAttrs.attributes) {
+      if (!a.isMandatory) continue
+      const key = ANCHORS.has(a.feedName) ? a.feedName : `fb_attr_${a.feedName}`
+      if (isEmpty(formData[key])) missing.push({ label: a.label, key: a.feedName, group: 'Atributos Falabella' })
+    }
+  }
+
+  if (provider === 'paris') {
+    const productList = (parisProductAttrs?.results || parisProductAttrs || [])
+    const variantList = (parisVariantAttrs?.results || parisVariantAttrs || [])
+    for (const a of productList) {
+      const req = a.familyAttributes?.[0]?.attributeValidation?.isRequired
+      if (!req) continue
+      const v = formData[`paris_pattr_${a.id}`]
+      if (isEmpty(v)) missing.push({ label: a.name, key: a.id, group: 'Atributos producto Paris' })
+    }
+    for (const a of variantList) {
+      const req = a.familyAttributes?.[0]?.attributeValidation?.isRequired
+      if (!req) continue
+      const v = formData[`paris_vattr_${a.id}`]
+      if (isEmpty(v)) missing.push({ label: a.name, key: a.id, group: 'Atributos variante Paris' })
+    }
+  }
+
+  // Lider: ya está cubierto por el schema base — los fields ya tienen `required: true`
+
+  // Group by section
+  const byGroup: Record<string, typeof missing> = {}
+  for (const m of missing) {
+    if (!byGroup[m.group]) byGroup[m.group] = []
+    byGroup[m.group].push(m)
+  }
+
+  const total = missing.length
+
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-xl">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-amber-100/40 transition-colors rounded-xl"
+      >
+        <div className="flex items-center gap-2">
+          <AlertCircle className={`w-4 h-4 ${total > 0 ? 'text-amber-600' : 'text-green-600'}`} />
+          <span className="text-sm font-medium text-amber-900">
+            {total === 0
+              ? 'Todos los campos obligatorios están completos'
+              : `Faltan ${total} ${total === 1 ? 'campo obligatorio' : 'campos obligatorios'}`}
+          </span>
+        </div>
+        <span className="text-xs text-amber-700">{open ? 'Ocultar' : 'Ver detalle'}</span>
+      </button>
+      {open && total > 0 && (
+        <div className="px-4 pb-3 space-y-2">
+          {Object.entries(byGroup).map(([groupName, items]) => (
+            <div key={groupName}>
+              <p className="text-xs font-semibold text-amber-800 uppercase tracking-wider mt-1 mb-1">{groupName}</p>
+              <ul className="text-sm text-amber-900 space-y-0.5 list-disc pl-5">
+                {items.map(m => (
+                  <li key={m.group + ':' + m.key}>{m.label}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── AI Autofill button (genérico para los 4 marketplaces) ────────────────────
+
+function AutofillButton({
+  provider, productId, formData, setFormData,
+}: {
+  provider: 'mercadolibre' | 'lider' | 'paris' | 'falabella'
+  productId?: string
+  formData: Record<string, any>
+  setFormData?: (fn: (prev: Record<string, any>) => Record<string, any>) => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const [meta, setMeta] = useState<any>(null)
+
+  const isEmpty = (v: any) => v === undefined || v === null || v === ''
+
+  // Cada marketplace tiene su propia gate (cuándo está habilitado el botón) y su mapping
+  const gate = (() => {
+    if (provider === 'mercadolibre') return !!formData.categoryId
+    if (provider === 'lider')        return !!formData.productType
+    if (provider === 'paris')        return !!formData.familyId
+    if (provider === 'falabella')    return !!formData.PrimaryCategory
+    return false
+  })()
+
+  const run = async () => {
+    if (!productId || !setFormData || !gate) return
+    setLoading(true)
+    setMeta(null)
+    try {
+      let path = '', payload: any = { productId }, applyResult: (data: any) => void = () => {}
+
+      if (provider === 'mercadolibre') {
+        path = '/publications/ai/autofill-ml'
+        payload.categoryId = formData.categoryId
+        applyResult = (data) => {
+          setFormData!(prev => {
+            const next: Record<string, any> = { ...prev }
+            if (data.title && isEmpty(next.title)) next.title = data.title
+            if (data.description && isEmpty(next.description)) next.description = data.description
+            for (const [attrId, val] of Object.entries(data.attributes || {})) {
+              const key = `ml_attr_${attrId}`
+              if (isEmpty(next[key])) next[key] = val
+            }
+            return next
+          })
+        }
+      } else if (provider === 'lider') {
+        path = '/publications/ai/autofill-lider'
+        payload.productType = formData.productType
+        applyResult = (data) => {
+          setFormData!(prev => {
+            const next: Record<string, any> = { ...prev }
+            for (const [k, v] of Object.entries(data.fields || {})) {
+              if (isEmpty(next[k])) next[k] = v
+            }
+            return next
+          })
+        }
+      } else if (provider === 'paris') {
+        path = '/publications/ai/autofill-paris'
+        payload.familyId = formData.familyId
+        if (formData.categoryId) payload.categoryId = formData.categoryId
+        applyResult = (data) => {
+          setFormData!(prev => {
+            const next: Record<string, any> = { ...prev }
+            if (data.name && isEmpty(next.name)) next.name = data.name
+            if (data.sellerSku && isEmpty(next.sellerSku)) next.sellerSku = data.sellerSku
+            for (const [id, v] of Object.entries(data.productAttributes || {})) {
+              const key = `paris_pattr_${id}`
+              if (isEmpty(next[key])) next[key] = v
+            }
+            for (const [id, v] of Object.entries(data.variantAttributes || {})) {
+              const key = `paris_vattr_${id}`
+              if (isEmpty(next[key])) next[key] = v
+            }
+            return next
+          })
+        }
+      } else if (provider === 'falabella') {
+        path = '/publications/ai/autofill-falabella'
+        payload.categoryId = formData.PrimaryCategory
+        applyResult = (data) => {
+          setFormData!(prev => {
+            const next: Record<string, any> = { ...prev }
+            // Falabella attributes are stored under fb_attr_<feedName> in formData,
+            // EXCEPT a few "anchor" fields (PrimaryCategory, SellerSku, images) which use the bare key.
+            const ANCHORS = new Set(['PrimaryCategory', 'SellerSku', 'images'])
+            for (const [feedName, v] of Object.entries(data.attributes || {})) {
+              const key = ANCHORS.has(feedName) ? feedName : `fb_attr_${feedName}`
+              if (isEmpty(next[key])) next[key] = v
+            }
+            return next
+          })
+        }
+      }
+
+      const r = await api.post(path, payload)
+      applyResult(r.data)
+      setMeta(r.data?.meta)
+
+      // Build a friendly message describing what was filled
+      const m = r.data?.meta || {}
+      const filled =
+        m.attrsFilled ??
+        m.fieldsFilled ??
+        ((m.productAttrsFilled ?? 0) + (m.variantAttrsFilled ?? 0))
+      const total =
+        m.attrsTotal ??
+        m.fieldsTotal ??
+        ((m.productAttrsTotal ?? 0) + (m.variantAttrsTotal ?? 0))
+      if (filled === 0) {
+        toast.warning(`La IA no pudo completar campos (0/${total}). Revisa que la categoría sea correcta.`)
+      } else {
+        toast.success(`Auto-completado: ${filled}/${total} campos (campos editados se respetaron)`)
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || err?.message || 'Error al auto-completar')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (!productId) return null
+
+  const gateHint = (() => {
+    if (provider === 'mercadolibre') return 'Selecciona primero una categoría ML'
+    if (provider === 'lider')        return 'Selecciona primero una categoría Lider'
+    if (provider === 'paris')        return 'Selecciona primero una familia Paris'
+    if (provider === 'falabella')    return 'Selecciona primero una categoría Falabella'
+    return ''
+  })()
+
+  return (
+    <div className="bg-gradient-to-r from-violet-50 to-sky-50 border border-violet-200 rounded-xl p-3 flex items-center justify-between gap-3">
+      <div className="flex-1">
+        <p className="text-sm font-medium text-violet-900">✨ Auto-completar con IA</p>
+        <p className="text-xs text-violet-700 mt-0.5">
+          {gate
+            ? 'Rellena los campos usando los datos del catálogo maestro. Respeta los campos que ya editaste.'
+            : gateHint}
+        </p>
+        {meta && (
+          <p className="text-[11px] text-violet-600 mt-1 font-mono">
+            in {meta.inputTokens} / out {meta.outputTokens} tokens · {meta.model}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={run}
+        disabled={loading || !gate}
+        className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-40 inline-flex items-center gap-2 whitespace-nowrap"
+      >
+        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : '✨'}
+        {loading ? 'Generando…' : 'Auto-completar'}
+      </button>
+    </div>
+  )
+}
+
 function FormFields({
-  fields, formData, setValue, provider, setFormData,
+  fields, formData, setValue, provider, setFormData, productId,
 }: {
   fields: any[]
   formData: Record<string, any>
   setValue: (k: string, v: any) => void
   provider?: string
   setFormData?: (fn: (prev: Record<string, any>) => Record<string, any>) => void
+  productId?: string
 }) {
   const groups: Record<string, any[]> = {}
   for (const field of fields) {
@@ -1227,6 +1989,7 @@ function FormFields({
               const isWide = field.type === 'textarea' || field.type === 'images'
                 || (field.key === 'categoryId' && provider === 'mercadolibre')
                 || (field.key === 'PrimaryCategory' && provider === 'falabella')
+                || ((field.key === 'familyId' || field.key === 'categoryId') && provider === 'paris')
               return (
                 <div key={field.key} className={isWide ? 'md:col-span-2' : ''}>
                   <label className="text-sm font-medium text-gray-700">
@@ -1250,6 +2013,31 @@ function FormFields({
         </div>
       ))}
 
+      {/* Botón de auto-completar con IA (ML / Lider / Paris / Falabella) */}
+      {(provider === 'mercadolibre' || provider === 'lider' || provider === 'paris' || provider === 'falabella') && (
+        <AutofillButton
+          provider={provider as any}
+          productId={productId}
+          formData={formData}
+          setFormData={setFormData}
+        />
+      )}
+
+      {/* Validación de campos obligatorios — visible cuando hay categoría/familia seleccionada */}
+      {(provider === 'mercadolibre' || provider === 'lider' || provider === 'paris' || provider === 'falabella') &&
+        (
+          (provider === 'mercadolibre' && formData.categoryId) ||
+          (provider === 'falabella'    && formData.PrimaryCategory) ||
+          (provider === 'paris'        && formData.familyId) ||
+          (provider === 'lider'        && formData.productType)
+        ) && (
+          <MissingRequiredCheck
+            provider={provider as any}
+            fields={fields}
+            formData={formData}
+          />
+        )}
+
       {/* ML: atributos dinámicos según categoría */}
       {provider === 'mercadolibre' && formData.categoryId && (
         <MLAttributeFields
@@ -1267,6 +2055,18 @@ function FormFields({
           setValue={setValue}
         />
       )}
+
+      {/* Paris: atributos dinámicos por familia + editor de precios */}
+      {provider === 'paris' && formData.familyId && (
+        <>
+          <ParisAttributeFields
+            familyId={formData.familyId}
+            formData={formData}
+            setValue={setValue}
+          />
+          <ParisPricesEditor formData={formData} setValue={setValue} />
+        </>
+      )}
     </div>
   )
 }
@@ -1274,12 +2074,17 @@ function FormFields({
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function PublicationsPage() {
+  const searchParams = useSearchParams()
+  const deepLinkProductId = searchParams.get('productId')
+  const deepLinkConnectionId = searchParams.get('connectionId')
+
   const [mode, setMode] = useState<Mode>('from-catalog')
   const [selectedProduct, setSelectedProduct] = useState<any>(null)
   const [selectedConnection, setSelectedConnection] = useState<any>(null)
   const [showForm, setShowForm] = useState(false)
   const [showDetail, setShowDetail] = useState<any>(null)
   const [search, setSearch] = useState('')
+  const [deepLinkApplied, setDeepLinkApplied] = useState(false)
 
   const { data: productsData, isLoading: loadingProducts } = useQuery<any>({
     queryKey: ['products-pub', search],
@@ -1300,6 +2105,25 @@ export default function PublicationsPage() {
   })
 
   const products = productsData?.data || []
+
+  // Deep-link from /products/master: pre-select product + connection and open form.
+  useEffect(() => {
+    if (deepLinkApplied) return
+    if (!deepLinkProductId || !deepLinkConnectionId) return
+    if (!products.length || !connections.length) return
+
+    const product = products.find((p: any) => p.id === deepLinkProductId)
+    const connection = connections.find((c: any) => c.id === deepLinkConnectionId)
+    if (!product || !connection) {
+      setDeepLinkApplied(true)
+      return
+    }
+    setMode('from-catalog')
+    setSelectedProduct(product)
+    setSelectedConnection(connection)
+    setShowForm(true)
+    setDeepLinkApplied(true)
+  }, [deepLinkProductId, deepLinkConnectionId, products, connections, deepLinkApplied])
 
   return (
     <div className="p-6 space-y-6">
@@ -1441,9 +2265,7 @@ export default function PublicationsPage() {
                           <div key={conn.id} className="px-5 py-4">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 bg-gray-100 rounded-lg flex items-center justify-center text-xs font-bold text-gray-500">
-                                  {conn.provider.slice(0, 2).toUpperCase()}
-                                </div>
+                                <ProviderLogo provider={conn.provider} size="sm" className="w-9 h-9" />
                                 <div>
                                   <p className="text-sm font-medium text-gray-900">{conn.name}</p>
                                   <p className="text-xs text-gray-400">{PROVIDER_LABELS[conn.provider] || conn.provider}</p>
@@ -1672,9 +2494,7 @@ function DirectPublishPanel({ connections }: { connections: any[] }) {
                 selectedConnection?.id === conn.id && 'bg-sky-50 border-r-2 border-sky-500'
               )}>
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 bg-gray-100 rounded-lg flex items-center justify-center text-xs font-bold text-gray-500">
-                  {conn.provider.slice(0, 2).toUpperCase()}
-                </div>
+                <ProviderLogo provider={conn.provider} size="sm" className="w-9 h-9" />
                 <div>
                   <p className="text-sm font-medium text-gray-900">{conn.name}</p>
                   <p className="text-xs text-gray-400">{PROVIDER_LABELS[conn.provider] || conn.provider}</p>
@@ -1876,11 +2696,18 @@ function PublishForm({ product, connection, onClose, onSuccess }: any) {
   const [selectedProductType, setSelectedProductType] = useState<string>('')
   const [mlMode, setMlMode] = useState<'catalog' | 'custom'>('catalog')
 
+  // Calculadora de precios por marketplace (configurada en el catálogo maestro).
+  // Si está, se usa como precio sugerido; si no, fallback a salePrice/basePrice.
+  const calculatedPrice = product?.marketplacePricing?.[connection.provider]?.calculatedPrice
+  const initialPrice = Number(calculatedPrice ?? product.salePrice ?? product.basePrice)
+
   const [formData, setFormData] = useState<Record<string, any>>({
     productName: product.name,
     name: product.name,
     title: product.name,
-    price: Number(product.salePrice || product.basePrice),
+    price: initialPrice,
+    PriceFalabella: initialPrice,
+    QuantityFalabella: totalStock,
     sku: product.sku,
     sellerSku: product.sku,
     brand: product.brand || '',
@@ -1974,6 +2801,23 @@ function PublishForm({ product, connection, onClose, onSuccess }: any) {
         <button onClick={onClose}><X className="w-4 h-4 text-gray-400" /></button>
       </div>
       <div className="p-5 space-y-6">
+        {/* Aviso del precio sugerido por la calculadora */}
+        {calculatedPrice && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 flex items-center justify-between text-sm">
+            <span className="text-emerald-800">
+              Precio sugerido (calculadora): <strong>{formatCurrency(Number(calculatedPrice))}</strong>
+            </span>
+            <span className="text-xs text-emerald-700 font-mono">
+              comisión {product?.marketplacePricing?.[connection.provider]?.commission ?? '?'}% · margen {product?.marketplacePricing?.[connection.provider]?.margin ?? '?'}%
+            </span>
+          </div>
+        )}
+        {!calculatedPrice && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-sm text-amber-800">
+            <strong>No hay precio calculado para {PROVIDER_LABELS[connection.provider] || connection.provider}.</strong> Configura los parámetros en la calculadora del catálogo maestro para definir comisión, envío y margen. Mientras tanto, se usa el precio base.
+          </div>
+        )}
+
         {/* ML: selector de modo */}
         {isML && (
           <div className="space-y-3">
@@ -2093,6 +2937,7 @@ function PublishForm({ product, connection, onClose, onSuccess }: any) {
               setValue={setValue}
               provider={connection.provider}
               setFormData={setFormData}
+              productId={product?.id}
             />
 
             {/* ML: Validar antes de publicar */}

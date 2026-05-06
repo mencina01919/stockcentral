@@ -5,10 +5,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus, Plug, Loader2, RefreshCw, Trash2, CheckCircle, XCircle,
   Clock, AlertTriangle, ChevronRight, ExternalLink, Zap, BarChart2, X,
-  ShieldCheck, Globe, Key,
+  ShieldCheck, Globe, Key, Stethoscope,
 } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
+import { ProviderLogo } from '@/components/provider-logo'
 import { formatRelativeDate, CONNECTION_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -50,6 +51,13 @@ const PROVIDER_META: Record<string, {
       { key: 'authToken', label: 'Auth Token', placeholder: 'xxxxxxxxxxxxxxxx', secret: true, hint: 'Jumpseller → Configuración → API' },
     ],
     docs: 'https://jumpseller.com/support/api-authentication/',
+  },
+  eylstore: {
+    label: 'EYLSTORE', type: 'ecommerce', color: 'text-sky-700', bg: 'bg-sky-50',
+    authType: 'apikey',
+    fields: [
+      { key: 'apiKey', label: 'API Key', placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', secret: true, hint: 'Token externo emitido desde EYLSTORE' },
+    ],
   },
   mercadolibre: {
     label: 'Mercado Libre', type: 'marketplace', color: 'text-yellow-600', bg: 'bg-yellow-50',
@@ -115,13 +123,7 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 function ProviderIcon({ provider, size = 'md' }: { provider: string; size?: 'sm' | 'md' }) {
-  const meta = PROVIDER_META[provider]
-  const dim = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-11 h-11 text-sm'
-  return (
-    <div className={`${dim} ${meta?.bg || 'bg-gray-100'} rounded-xl flex items-center justify-center font-bold ${meta?.color || 'text-gray-600'}`}>
-      {(meta?.label || provider)[0]}
-    </div>
-  )
+  return <ProviderLogo provider={provider} size={size} />
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
@@ -164,6 +166,35 @@ export default function ConnectionsPage() {
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Error al eliminar'),
   })
 
+  const [auditing, setAuditing] = useState(false)
+  const runAudit = async () => {
+    setAuditing(true)
+    try {
+      const r = await api.get('/sync/audit/mappings')
+      const { suspiciousFound = 0, erroredWithoutIdFound = 0 } = r.data?.summary || {}
+      const totalBogus = suspiciousFound + erroredWithoutIdFound
+      if (totalBogus === 0) {
+        toast.success('No se detectaron mappings sospechosos. Todo limpio.')
+        return
+      }
+      const ok = confirm(
+        `Auditoría:\n` +
+          `• ${suspiciousFound} mapping(s) sospechosos (externalId == sku local).\n` +
+          `• ${erroredWithoutIdFound} mapping(s) con error sin externalId.\n\n` +
+          `¿Eliminarlos? Es seguro: ningún producto publicado real será afectado.`,
+      )
+      if (!ok) return
+      const cleanup = await api.post('/sync/audit/cleanup')
+      toast.success(`Limpieza OK: ${cleanup.data.deleted} mappings basura eliminados`)
+      queryClient.invalidateQueries({ queryKey: ['connections'] })
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'Error en la auditoría')
+    } finally {
+      setAuditing(false)
+    }
+  }
+
   const ecommerce = connections?.filter((c: any) => c.type === 'ecommerce') || []
   const marketplaces = connections?.filter((c: any) => c.type === 'marketplace') || []
 
@@ -179,13 +210,28 @@ export default function ConnectionsPage() {
             <p className="text-sm text-gray-500">
               {connections?.length || 0} conexión{connections?.length !== 1 ? 'es' : ''} activa{connections?.length !== 1 ? 's' : ''}
             </p>
-            <button
-              onClick={() => setShowModal(true)}
-              className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              Nueva conexión
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={runAudit}
+                disabled={auditing}
+                title="Detecta y limpia mappings basura (productos vinculados de forma corrupta)"
+                className="flex items-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {auditing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Stethoscope className="w-4 h-4" />
+                )}
+                Auditar mappings
+              </button>
+              <button
+                onClick={() => setShowModal(true)}
+                className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                Nueva conexión
+              </button>
+            </div>
           </div>
 
           {isLoading ? (
@@ -291,7 +337,18 @@ function ConnectionCard({
           <div className="flex items-center gap-3">
             <ProviderIcon provider={conn.provider} />
             <div>
-              <h4 className="font-semibold text-gray-900 text-sm leading-tight">{conn.name}</h4>
+              <div className="flex items-center gap-1.5">
+                <h4 className="font-semibold text-gray-900 text-sm leading-tight">{conn.name}</h4>
+                {conn.isCatalogSource && (
+                  <span
+                    title="Fuente del catálogo maestro"
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-sky-50 text-sky-700 text-[10px] font-medium border border-sky-200"
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    Fuente
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-gray-400 mt-0.5">{meta?.label || conn.provider}</p>
             </div>
           </div>

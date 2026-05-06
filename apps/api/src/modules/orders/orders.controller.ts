@@ -1,7 +1,12 @@
 import { Controller, Get, Post, Patch, Body, Param, Query } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { OrdersService } from './orders.service'
-import { CreateOrderDto, UpdateOrderStatusDto, OrderQueryDto } from './dto/order.dto'
+import {
+  CreateOrderDto,
+  UpdateOrderStatusDto,
+  UpdateOrderInternalStatusDto,
+  OrderQueryDto,
+} from './dto/order.dto'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
 
 @ApiTags('Orders')
@@ -54,5 +59,21 @@ export class OrdersController {
   @ApiOperation({ summary: 'Avanzar orden al siguiente estado' })
   advance(@TenantId() tenantId: string, @Param('id') id: string) {
     return this.ordersService.advance(tenantId, id)
+  }
+
+  @Patch(':id/internal-status')
+  @ApiOperation({ summary: 'Cambiar estado interno (flujo de fulfillment, no toca el marketplace)' })
+  updateInternalStatus(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateOrderInternalStatusDto,
+  ) {
+    return this.ordersService.updateInternalStatus(tenantId, id, dto)
+  }
+
+  @Patch(':id/internal-advance')
+  @ApiOperation({ summary: 'Avanzar el estado interno al siguiente paso' })
+  advanceInternal(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.ordersService.advanceInternal(tenantId, id)
   }
 }

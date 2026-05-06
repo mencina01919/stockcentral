@@ -73,10 +73,19 @@ export class SyncService {
   async scheduledProductsOutbound() {
     const connections = await this.prisma.connection.findMany({
       where: { syncEnabled: true, status: 'connected' },
-      select: { id: true, tenantId: true },
+      select: { id: true, tenantId: true, provider: true },
     })
 
     for (const conn of connections) {
+      // Skip providers whose driver explicitly opts out of write sync
+      // (read-only upstream APIs like EYLSTORE).
+      try {
+        const driver = getDriver(conn.provider)
+        if (driver.supportsWriteSync === false) continue
+      } catch {
+        // Unknown provider → skip rather than crash the cron tick.
+        continue
+      }
       await this.enqueueProductsOutbound(conn.tenantId, conn.id)
     }
   }
@@ -95,18 +104,49 @@ export class SyncService {
     const products = await this.prisma.product.findMany({
       where: whereClause,
       include: {
-        inventory: { where: { variantId: null }, take: 1 },
+        // Sync to marketplaces uses online + store stock (no internal warehouses)
+        inventory: {
+          where: { variantId: null, warehouse: { warehouseType: { in: ['online', 'store'] } } },
+        },
         marketplaceMappings: { where: { connectionId } },
       },
     })
 
     let synced = 0
     let errors = 0
+    let suspiciousSkipped = 0
     const startTime = Date.now()
 
+    // Circuit breaker: if too many requests fail, stop the run AND disable
+    // syncEnabled to protect the marketplace account from getting flagged.
+    const ERROR_THRESHOLD = 10
+    let consecutiveErrors = 0
+    let circuitTripped = false
+
     for (const product of products) {
+      if (circuitTripped) break
       const mapping = product.marketplaceMappings[0]
-      const stock = product.inventory[0]?.quantity ?? 0
+      // Skip products that are NOT yet published in this marketplace.
+      // Creating a listing requires explicit user action (form with category,
+      // attributes, etc.). The cron only updates existing publications.
+      if (!mapping?.marketplaceProductId) continue
+
+      // Sanity check: if the mapping's marketplaceProductId equals the master
+      // SKU, it's almost certainly a corrupted mapping from a failed create
+      // (the create errored but the externalId got persisted as the local sku).
+      // Sending updateProduct with that "id" makes the marketplace treat it as
+      // a brand-new create, which spams their backoffice. Skip and flag.
+      if (mapping.marketplaceProductId === product.sku) {
+        await this.updateMappingError(
+          product.id,
+          connectionId,
+          'Mapping sospechoso: marketplaceProductId coincide con el SKU local. Republica manualmente.',
+        )
+        suspiciousSkipped++
+        continue
+      }
+
+      const stock = product.inventory.reduce((s, i) => s + i.quantity, 0)
       const syncInput = {
         sku: product.sku,
         title: product.name,
@@ -117,14 +157,10 @@ export class SyncService {
       }
 
       try {
-        let result
-        if (mapping?.marketplaceProductId) {
-          result = await driver.updateProduct(credentials, mapping.marketplaceProductId, syncInput, config)
-        } else {
-          result = await driver.createProduct(credentials, syncInput, config)
-        }
+        const result = await driver.updateProduct(credentials, mapping.marketplaceProductId, syncInput, config)
 
         if (result.success) {
+          consecutiveErrors = 0
           await this.prisma.marketplaceMapping.upsert({
             where: { productId_connectionId: { productId: product.id, connectionId } },
             update: {
@@ -145,21 +181,37 @@ export class SyncService {
         } else {
           await this.updateMappingError(product.id, connectionId, result.error || 'Unknown error')
           errors++
+          consecutiveErrors++
         }
       } catch (err: any) {
         await this.updateMappingError(product.id, connectionId, err.message)
         errors++
+        consecutiveErrors++
+      }
+
+      if (consecutiveErrors >= ERROR_THRESHOLD) {
+        circuitTripped = true
+        this.logger.error(
+          `Circuit breaker tripped for connection ${connectionId} (${connection.provider}) after ${consecutiveErrors} consecutive errors. Auto-disabling syncEnabled.`,
+        )
+        await this.prisma.connection.update({
+          where: { id: connectionId },
+          data: {
+            syncEnabled: false,
+            lastError: `Auto-desactivado: ${consecutiveErrors} errores consecutivos en sync. Revisa la conexión y reactivar manualmente.`,
+          },
+        })
       }
     }
 
     const duration = Date.now() - startTime
-    await this.logSync(tenantId, connectionId, 'outbound', 'sync_products', 'product', null, synced > 0 ? 'success' : 'error', duration, { synced, errors, total: products.length })
+    await this.logSync(tenantId, connectionId, 'outbound', 'sync_products', 'product', null, synced > 0 ? 'success' : 'error', duration, { synced, errors, suspiciousSkipped, circuitTripped, total: products.length })
     await this.prisma.connection.update({
       where: { id: connectionId },
-      data: { lastSync: new Date(), status: 'connected' },
+      data: { lastSync: new Date(), status: circuitTripped ? 'error' : 'connected' },
     })
 
-    return { synced, errors, total: products.length }
+    return { synced, errors, suspiciousSkipped, circuitTripped, total: products.length }
   }
 
   // Marketplaces are sales channels, not catalog sources.
@@ -788,5 +840,94 @@ export class SyncService {
     if (unique.every((s) => s === 'cancelled')) return 'cancelled'
     if (unique.includes('pending')) return 'pending'
     return unique[0]
+  }
+
+  // ── Audit: detect bogus marketplace mappings ──────────────────────────────
+  // A "suspicious" mapping is one whose marketplaceProductId equals the master
+  // SKU — that's the corruption pattern we saw with Lider, where a failed
+  // create persisted the local sku as if it were a real marketplace ID.
+  // Catalog source providers (eylstore/shopify/etc.) are excluded because
+  // for them the marketplaceProductId == sku is legitimate.
+  async auditMappings(tenantId: string) {
+    const connections = await this.prisma.connection.findMany({
+      where: { tenantId },
+      select: { id: true, name: true, provider: true, isCatalogSource: true },
+    })
+    const liveMarketIds = connections
+      .filter((c) => !c.isCatalogSource)
+      .map((c) => c.id)
+
+    const mappings = await this.prisma.marketplaceMapping.findMany({
+      where: { connectionId: { in: liveMarketIds } },
+      include: {
+        product: { select: { sku: true, name: true } },
+        connection: { select: { provider: true, name: true } },
+      },
+    })
+
+    const suspicious = mappings.filter(
+      (m) => m.marketplaceProductId && m.marketplaceProductId === m.product.sku,
+    )
+    const erroredWithoutId = mappings.filter(
+      (m) => m.syncStatus === 'error' && !m.marketplaceProductId,
+    )
+
+    return {
+      summary: {
+        totalAuditedMappings: mappings.length,
+        suspiciousFound: suspicious.length,
+        erroredWithoutIdFound: erroredWithoutId.length,
+      },
+      suspicious: suspicious.map((m) => ({
+        mappingId: m.id,
+        productSku: m.product.sku,
+        productName: m.product.name,
+        provider: m.connection.provider,
+        connectionName: m.connection.name,
+        marketplaceProductId: m.marketplaceProductId,
+        syncStatus: m.syncStatus,
+        errorMessage: m.errorMessage,
+      })),
+      erroredWithoutId: erroredWithoutId.map((m) => ({
+        mappingId: m.id,
+        productSku: m.product.sku,
+        productName: m.product.name,
+        provider: m.connection.provider,
+        connectionName: m.connection.name,
+        errorMessage: m.errorMessage,
+      })),
+    }
+  }
+
+  // Delete the bogus mappings detected by auditMappings.
+  async cleanupBogusMappings(tenantId: string) {
+    const connections = await this.prisma.connection.findMany({
+      where: { tenantId, isCatalogSource: false },
+      select: { id: true },
+    })
+    const liveMarketIds = connections.map((c) => c.id)
+
+    // Find suspicious by reading + matching (Prisma cannot compare two columns
+    // in a single query without raw SQL — and we want to keep the operation
+    // readable).
+    const all = await this.prisma.marketplaceMapping.findMany({
+      where: { connectionId: { in: liveMarketIds } },
+      include: { product: { select: { sku: true } } },
+    })
+    const suspiciousIds = all
+      .filter((m) => m.marketplaceProductId && m.marketplaceProductId === m.product.sku)
+      .map((m) => m.id)
+    const erroredEmptyIds = all
+      .filter((m) => m.syncStatus === 'error' && !m.marketplaceProductId)
+      .map((m) => m.id)
+
+    const toDelete = [...new Set([...suspiciousIds, ...erroredEmptyIds])]
+    if (!toDelete.length) return { deleted: 0 }
+
+    const result = await this.prisma.marketplaceMapping.deleteMany({
+      where: { id: { in: toDelete } },
+    })
+    this.logger.log(`Cleaned up ${result.count} bogus mappings for tenant ${tenantId}`)
+    return { deleted: result.count }
   }
 }

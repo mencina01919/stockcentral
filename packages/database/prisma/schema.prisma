@@ -324,6 +324,10 @@ model Order {
   paymentStatus String @default("pending")
   shipmentStatus String @default("pending")
 
+  // Internal-only fulfillment flow. Independent of marketplace status.
+  // Values: new | in_preparation | ready_to_ship | cancelled_internal
+  internalStatus String @default("new")
+
   notes    String?
   metadata Json?
 
@@ -338,6 +342,7 @@ model Order {
   @@index([tenantId])
   @@index([saleId])
   @@index([status])
+  @@index([internalStatus])
   @@index([sourceChannel])
   @@index([createdAt])
   @@index([tenantId, packId])
@@ -378,6 +383,16 @@ model Connection {
   lastError   String?
   syncEnabled Boolean   @default(true)
 
+  // Catalog source: when true, this connection feeds the master catalog.
+  // Enforced as max 1 per tenant via a partial unique index in the migration.
+  isCatalogSource Boolean @default(false)
+  // Catalog sync options (only relevant when isCatalogSource = true).
+  // Shape: { autoSyncStock?: boolean, autoSyncPrices?: boolean, autoSyncImages?: boolean }
+  catalogConfig   Json?
+  // Outcome of the last import/sync run for this source. Surfaced in the UI.
+  lastCatalogSyncAt   DateTime?
+  lastCatalogSyncStats Json?
+
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   marketplaceMappings MarketplaceMapping[]
   syncLogs            SyncLog[]
@@ -388,6 +403,7 @@ model Connection {
   @@unique([tenantId, provider])
   @@index([tenantId])
   @@index([type])
+  @@index([tenantId, isCatalogSource])
 }
 
 model MarketplaceMapping {

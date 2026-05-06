@@ -163,10 +163,19 @@ export class FalabellaDriver implements IMarketplaceDriver {
     limit = 50,
   ): Promise<PaginatedResult<MarketplaceProduct>> {
     const client = this.buildClient(credentials, config)
+    // Map our generic status filter to Falabella's `Filter` query param.
+    // Falabella supports: all | live | inactive | deleted | image-missing | pending | rejected | sold-out
+    const statusFilter = (config as any)?.statusFilter as string | undefined
+    const filterMap: Record<string, string> = {
+      active: 'live',
+      paused: 'inactive',
+      closed: 'deleted',
+    }
+    const filter = statusFilter ? (filterMap[statusFilter] ?? 'all') : 'all'
     const params = this.buildParams(credentials, 'GetProducts', {
       Offset: String(offset),
       Limit: String(limit),
-      Filter: 'all',
+      Filter: filter,
     })
 
     const res = await client.get('', { params })

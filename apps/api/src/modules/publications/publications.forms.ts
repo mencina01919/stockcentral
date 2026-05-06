@@ -52,28 +52,21 @@ export const MARKETPLACE_FORMS: Record<string, MarketplaceFormSchema> = {
 
   // ─── Paris / Cencosud ────────────────────────────────────────────────────
   // API: Octopia REST API (usado por Cencosud para Paris y Jumbo)
-  // Imágenes: sellerPictureUrls[] obligatorio mínimo 1
-  // Stock: se gestiona vía Offers API separado (no en creación de producto)
+  // Paris (Cencosud Marketplace) — el formulario es 100% dinámico:
+  //   - Familia → define las categorías y atributos disponibles
+  //   - Categoría → obligatoria al publicar
+  //   - Atributos producto y variante → vienen de /v2/attributes/{kind}/family/{familyId}
+  //   - Precios → tipos vienen de /v2/price-types (Precio, Precio oferta, etc.)
+  // Aquí solo declaramos los anclajes mínimos que disparan el render dinámico.
   paris: {
     provider: 'paris',
     label: 'Paris (Cencosud)',
     fields: [
-      // Información básica
-      { key: 'title',              label: 'Nombre del producto',        type: 'text',    required: true,  placeholder: 'Máx. 132 caracteres', group: 'Información básica' },
-      { key: 'brand',              label: 'Marca',                      type: 'text',    required: true,  placeholder: 'Samsung', group: 'Información básica' },
-      { key: 'sellerSku',          label: 'SKU del vendedor',           type: 'text',    required: true,  hint: 'Tu referencia interna. 1-50 caracteres, único.', group: 'Información básica' },
-      { key: 'gtin',               label: 'GTIN / EAN',                 type: 'text',    required: true,  placeholder: '7891234567890', hint: 'Código de barras EAN de 8-13 dígitos', group: 'Información básica' },
-      { key: 'categoryCode',       label: 'Código de categoría',        type: 'text',    required: true,  placeholder: 'ABC123', hint: 'Código de 6 caracteres nivel 3. Proporcionado por Paris al homologar.', group: 'Información básica' },
-      { key: 'description',        label: 'Descripción',                type: 'textarea',required: true,  hint: 'Máx. 2000 caracteres, sin HTML', group: 'Información básica' },
-      { key: 'richDescription',    label: 'Descripción enriquecida',    type: 'textarea',required: false, hint: 'Máx. 5000 caracteres, HTML limitado permitido', group: 'Información básica' },
-      // Precio y stock (stock vía Offers API, se acepta aquí como referencia)
-      { key: 'price',              label: 'Precio normal (CLP)',        type: 'number',  required: true,  group: 'Precio y stock' },
-      { key: 'offerPrice',         label: 'Precio oferta (CLP)',        type: 'number',  required: false, group: 'Precio y stock' },
-      { key: 'offerStart',         label: 'Inicio oferta (YYYY-MM-DD)', type: 'text',    required: false, group: 'Precio y stock' },
-      { key: 'offerEnd',           label: 'Fin oferta (YYYY-MM-DD)',    type: 'text',    required: false, group: 'Precio y stock' },
-      { key: 'availableQuantity',  label: 'Stock disponible',           type: 'number',  required: true,  hint: 'Cantidad a publicar en Paris', group: 'Precio y stock' },
-      // Imágenes (mínimo 1, máximo 6)
-      { key: 'images',             label: 'Imágenes del producto',      type: 'images',  required: true,  hint: 'Mínimo 1 imagen requerida, máximo 6. Recomendado 800×800px JPG.', group: 'Imágenes' },
+      { key: 'name',       label: 'Nombre del producto', type: 'text', required: true, hint: 'Máx. 132 caracteres', group: 'Información básica' },
+      { key: 'sellerSku',  label: 'SKU del vendedor',    type: 'text', required: true, hint: 'Tu referencia interna. 1-50 caracteres, única.', group: 'Información básica' },
+      { key: 'familyId',   label: 'Familia',             type: 'text', required: true, hint: 'Define las categorías y atributos del producto', group: 'Información básica' },
+      { key: 'categoryId', label: 'Categoría',           type: 'text', required: true, hint: 'Selecciona después de elegir la familia', group: 'Información básica' },
+      { key: 'images',     label: 'Imágenes del producto', type: 'images', required: true, hint: 'Mínimo 1 imagen. Recomendado 800×800px JPG.', group: 'Imágenes' },
     ],
   },
 

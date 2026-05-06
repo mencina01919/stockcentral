@@ -216,7 +216,7 @@ export class ParisDriver implements IMarketplaceDriver {
     q?: string,
   ) {
     const client = await this.buildClient(credentials, config)
-    const params: Record<string, unknown> = { limit: 50, offset: 0 }
+    const params: Record<string, unknown> = { limit: 200, offset: 0 }
     if (q) params.q = q
     const res = await client.get(`/v2/attributes-options/attribute/${attributeId}`, { params })
     return res.data
@@ -229,16 +229,79 @@ export class ParisDriver implements IMarketplaceDriver {
   }
 
   async createProduct(
-    _credentials: DriverCredentials,
-    _product: SyncProductInput,
-    _config?: DriverConfig,
+    credentials: DriverCredentials,
+    product: SyncProductInput,
+    config?: DriverConfig,
   ): Promise<SyncResult> {
-    // Use publish() instead — createProduct is the generic interface signature
-    // and Paris requires the richer ParisPublishInput shape.
-    return {
-      success: false,
-      error: 'Use el método publish específico de Paris con familia, categoría y atributos.',
+    // Bridge from the generic SyncProductInput (used by the unified /publications endpoint)
+    // to Paris-specific publish(). The UI builds these fields into formData.
+    const fd: Record<string, any> = (product as any).formData ?? (product as any)
+    if (!fd.familyId || !fd.categoryId) {
+      return {
+        success: false,
+        error: 'Faltan campos obligatorios para Paris: familyId y categoryId',
+      }
     }
+
+    // Map dynamic attribute keys (paris_attr_<id> = { id, value }) into productAttributes / variantAttributes
+    const productAttributes: ParisAttributeValue[] = []
+    const variantAttributes: ParisAttributeValue[] = []
+    for (const [key, val] of Object.entries(fd)) {
+      if (val == null || val === '') continue
+      if (key.startsWith('paris_pattr_')) {
+        const a = val as any
+        if (a?.id && (a.value ?? a.value_id) !== undefined) {
+          productAttributes.push({ id: a.id, value: a.value ?? a.value_id })
+        }
+      } else if (key.startsWith('paris_vattr_')) {
+        const a = val as any
+        if (a?.id && (a.value ?? a.value_id) !== undefined) {
+          variantAttributes.push({ id: a.id, value: a.value ?? a.value_id })
+        }
+      }
+    }
+
+    // Prices array from formData: [{ priceTypeId, value, startDate?, endDate? }]
+    let prices: ParisPriceInput[] | undefined
+    if (Array.isArray(fd.parisPrices)) {
+      prices = fd.parisPrices
+        .filter((p: any) => p?.priceTypeId && p?.value)
+        .map((p: any) => ({
+          priceTypeId: p.priceTypeId,
+          value: Number(p.value),
+          startDate: p.startDate || undefined,
+          endDate: p.endDate || undefined,
+        }))
+    } else if (typeof product.price === 'number') {
+      // Fallback: a single "Precio" entry using the first price-type configured
+      // The caller can provide fd.parisDefaultPriceTypeId to specify which type
+      if (fd.parisDefaultPriceTypeId) {
+        prices = [{ priceTypeId: fd.parisDefaultPriceTypeId, value: product.price }]
+      }
+    }
+
+    return this.publish(
+      credentials,
+      {
+        name: fd.name || product.title,
+        sellerSku: fd.sellerSku || product.sku,
+        familyId: fd.familyId,
+        categoryId: fd.categoryId,
+        productAttributes,
+        variants: variantAttributes.length
+          ? [{
+              sellerSku: fd.sellerSku || product.sku,
+              attributes: variantAttributes,
+              medias: (product.images || []).map((url, i) => ({ position: i + 1, src: url })),
+            }]
+          : undefined,
+        images: product.images || [],
+        prices,
+        // Pass initial stock through publish — driver pushes to /v2/stock per variant
+        ...(typeof product.stock === 'number' ? { initialStock: product.stock } : {}),
+      } as any,
+      config,
+    )
   }
 
   async publish(
@@ -249,11 +312,16 @@ export class ParisDriver implements IMarketplaceDriver {
     try {
       const client = await this.buildClient(credentials, config)
 
-      // Paris API field names per validation errors:
-      //   - product.sellerSku is fine
-      //   - variants[].skuSeller (NOT sellerSku) — yes, the API is asymmetric
-      //   - variants[].attributes must contain >=1 variant attribute object
-      //   - prices[].type (string) and prices[].storePrice (string)
+      // Paris API shape (verified against official Redoc):
+      //   POST /v2/products → { product: {name, sellerSku, familyId, category, attributes[]},
+      //                          variants: [{ skuSeller, medias[], attributes[] }],
+      //                          prices?: [{ ... }] }
+      //   variants[].skuSeller (NOT sellerSku — API is asymmetric)
+      //   attributes shape: [{ id, value }] where value is the optionId for LIST attributes
+      //
+      // Prices and stock are pushed separately AFTER creation:
+      //   POST /v2/prices/product/{sellerSku}  body { prices: [{ priceType, value, ... }] }
+      //   POST /v2/stock  body { skus: [{ sku: <variantMarketplaceSku>, quantity }] }
       const variantAttributes = (input.variants?.[0]?.attributes || []).map((a) => ({
         id: a.id,
         value: String(a.value),
@@ -294,20 +362,47 @@ export class ParisDriver implements IMarketplaceDriver {
         })),
       }
 
-      // NOTE: precios NO se envían en el POST de creación. Paris exige cargarlos
-      // por separado (POST /v2/prices/product/{sku}), pero el shape exacto
-      // (storePrice, store.code, etc.) varía entre la API REST pública y el
-      // SDK oficial — el SDK usa { store: { code: 'default' }, price: { code:
-      // 'clp-list-prices' } } pero la API REST acepta otro formato distinto.
-      // Bloqueado hasta tener acceso al SDK oficial o ambiente staging.
-      // Por ahora el producto se crea sin precio y se carga manualmente desde
-      // el Seller Center.
-
       const res = await client.post('/v2/products', payload)
+      const productId: string = res.data?.id
+      const createdVariants: any[] = res.data?.variants || []
+
+      const warnings: string[] = []
+      const cfg = (config || {}) as Record<string, any>
+      const storeId: string | undefined = cfg.storeId
+
+      // Push prices keyed by the marketplace product ID (NOT sellerSku)
+      if (input.prices && input.prices.length > 0 && productId) {
+        if (!storeId) {
+          warnings.push('precios: falta storeId en config de la conexión Paris')
+        } else {
+          try {
+            await this.uploadPrices(client, productId, storeId, input.prices)
+          } catch (err: any) {
+            warnings.push(`precios: ${err?.response?.data?.message || err.message}`)
+          }
+        }
+      }
+
+      // Push initial stock to each variant's marketplace SKU
+      if (typeof (input as any).initialStock === 'number') {
+        const stock = (input as any).initialStock as number
+        const variantSkus = createdVariants
+          .map((v) => v?.sku)
+          .filter((s) => typeof s === 'string')
+        if (variantSkus.length) {
+          try {
+            await this.pushStockBulk(client, variantSkus.map((sku) => ({ sku, quantity: stock })))
+          } catch (err: any) {
+            warnings.push(`stock: ${err?.response?.data?.message || err.message}`)
+          }
+        }
+      }
+
       return {
         success: true,
-        externalId: res.data?.id,
+        externalId: productId,
         rawResponse: res.data,
+        ...(warnings.length ? { warnings: warnings.join('; ') } : {}),
       }
     } catch (err: any) {
       return {
@@ -316,6 +411,61 @@ export class ParisDriver implements IMarketplaceDriver {
         rawResponse: err?.response?.data,
       }
     }
+  }
+
+  // POST /v2/prices/product/{productId} — body { prices: [{ type, storePrice, value, showFrom?, showTo? }] }
+  // - productId is the marketplace ID returned from POST /v2/products (e.g. "MK7BHYGPTU")
+  // - storePrice is the seller-specific store UUID (kept in connection config)
+  // - type is the priceType UUID from /v2/price-types
+  async uploadPrices(
+    client: AxiosInstance,
+    productId: string,
+    storeId: string,
+    prices: ParisPriceInput[],
+  ): Promise<void> {
+    const body = {
+      prices: prices.map((p) => {
+        const item: Record<string, unknown> = {
+          type: p.priceTypeId,
+          storePrice: storeId,
+          value: p.value,
+        }
+        if (p.startDate) item.showFrom = p.startDate
+        if (p.endDate)   item.showTo   = p.endDate
+        return item
+      }),
+    }
+    await client.post(`/v2/prices/product/${encodeURIComponent(productId)}`, body)
+  }
+
+  // Public helper: upload prices to an existing product. Used by ProductsService
+  // for re-pricing or syncing without re-creating the product.
+  async setPrices(
+    credentials: DriverCredentials,
+    productId: string,
+    storeId: string,
+    prices: ParisPriceInput[],
+    config?: DriverConfig,
+  ): Promise<SyncResult> {
+    try {
+      const client = await this.buildClient(credentials, config)
+      await this.uploadPrices(client, productId, storeId, prices)
+      return { success: true, externalId: productId }
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.response?.data?.message || err?.response?.data || err.message,
+        rawResponse: err?.response?.data,
+      }
+    }
+  }
+
+  // POST /v2/stock — bulk update by marketplace variant SKU
+  private async pushStockBulk(
+    client: AxiosInstance,
+    skus: Array<{ sku: string; quantity: number }>,
+  ): Promise<void> {
+    await client.post('/v2/stock', { skus })
   }
 
   async updateProduct(
@@ -344,8 +494,8 @@ export class ParisDriver implements IMarketplaceDriver {
 
   // ─── Stock ──────────────────────────────────────────────────────────────────
 
-  // POST /v1/stock — body { sellerSku, stock } per docs (Stock area uses a separate API).
-  // Endpoint accepts a per-SKU update by seller SKU.
+  // POST /v2/stock — body { skus: [{ sku, quantity }] }. The `sku` here is the
+  // marketplace variant sku (e.g. MK7BHYGPTU-3), not the seller's product sku.
   async updateStock(
     credentials: DriverCredentials,
     externalId: string,
@@ -354,7 +504,7 @@ export class ParisDriver implements IMarketplaceDriver {
   ): Promise<SyncResult> {
     try {
       const client = await this.buildClient(credentials, config)
-      await client.post('/v1/stock', { sellerSku: externalId, stock })
+      await client.post('/v2/stock', { skus: [{ sku: externalId, quantity: stock }] })
       return { success: true, externalId }
     } catch (err: any) {
       return {
