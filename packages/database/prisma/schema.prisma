@@ -77,6 +77,10 @@ model Product {
   id               String   @id @default(uuid())
   tenantId         String
   sku              String
+  // Código de barras opcional (UPC, EAN-13, EAN-8, ISBN, GTIN-14, etc.)
+  // No tiene unique constraint porque distintos tenants pueden compartir el mismo
+  // GTIN del fabricante.
+  barcode          String?
   name             String
   description      String?
   shortDescription String?
@@ -109,6 +113,7 @@ model Product {
   @@index([tenantId])
   @@index([status])
   @@index([sku])
+  @@index([tenantId, barcode])
 }
 
 model ProductVariant {

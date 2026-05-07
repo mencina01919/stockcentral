@@ -111,8 +111,11 @@ export class ProductsService {
       ? productFields.targetMargin
       : (this.computeMargin(productFields.basePrice, productFields.costPrice) ?? undefined)
 
+    // Normalize barcode: empty string → omit (don't persist '').
+    const barcode = productFields.barcode?.trim() || undefined
+
     const product = await this.prisma.product.create({
-      data: { ...productFields, sku, tenantId, targetMargin: margin, status: productFields.status ?? 'active' },
+      data: { ...productFields, sku, tenantId, targetMargin: margin, status: productFields.status ?? 'active', barcode },
     })
 
     const warehouses = await this.prisma.warehouse.findMany({
@@ -150,7 +153,18 @@ export class ProductsService {
         ? undefined
         : undefined
 
-    await this.prisma.product.update({ where: { id }, data: { ...productFields, targetMargin: margin } })
+    // Empty barcode string from the form means "clear it" → store null.
+    const barcode =
+      productFields.barcode === undefined
+        ? undefined
+        : productFields.barcode.trim() === ''
+        ? null
+        : productFields.barcode.trim()
+
+    await this.prisma.product.update({
+      where: { id },
+      data: { ...productFields, targetMargin: margin, barcode: barcode as any },
+    })
 
     const stockUpdates: Record<string, number | undefined> = {
       online: stockOnline,

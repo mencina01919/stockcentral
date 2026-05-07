@@ -15,6 +15,11 @@ export class CreateProductDto {
   @IsString()
   sku?: string
 
+  @ApiPropertyOptional({ description: 'Código de barras (UPC, EAN, GTIN, ISBN). Opcional.' })
+  @IsOptional()
+  @IsString()
+  barcode?: string
+
   @ApiProperty()
   @IsString()
   name: string
@@ -113,6 +118,7 @@ export class CreateProductDto {
 
 export class UpdateProductDto {
   @IsOptional() @IsString() name?: string
+  @IsOptional() @IsString() barcode?: string
   @IsOptional() @IsString() brand?: string
   @IsOptional() @IsString() description?: string
   @IsOptional() @IsString() shortDescription?: string
