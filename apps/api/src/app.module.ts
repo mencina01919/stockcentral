@@ -20,6 +20,9 @@ import { MediaModule } from './modules/media/media.module'
 import { PublicationsModule } from './modules/publications/publications.module'
 import { StockSyncModule } from './modules/stock-sync/stock-sync.module'
 import { CatalogSourceModule } from './modules/catalog-source/catalog-source.module'
+import { TaxDocumentsModule } from './modules/tax-documents/tax-documents.module'
+import { BillingModule } from './modules/billing/billing.module'
+import { InboundWebhooksModule } from './modules/inbound-webhooks/inbound-webhooks.module'
 
 @Module({
   imports: [
@@ -54,6 +57,9 @@ import { CatalogSourceModule } from './modules/catalog-source/catalog-source.mod
     PublicationsModule,
     StockSyncModule,
     CatalogSourceModule,
+    TaxDocumentsModule,
+    BillingModule,
+    InboundWebhooksModule,
   ],
 })
 export class AppModule {}

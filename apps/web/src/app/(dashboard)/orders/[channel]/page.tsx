@@ -1,15 +1,27 @@
 'use client'
 
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Search, ShoppingCart, Loader2, Eye, Package, MapPin, CreditCard, ExternalLink } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
-import { Panel, Chip, StatusBadge, MonoLabel } from '@/components/sc/ui'
-import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
-import { toast } from 'sonner'
+import { Panel, StatusBadge, MonoLabel } from '@/components/sc/ui'
+import {
+  formatCurrency,
+  formatDate,
+  ORDER_STATUS_LABELS,
+  INTERNAL_ORDER_STATUS_LABELS,
+  PROVIDER_LABELS,
+} from '@/lib/utils'
 
-const STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
+const INTERNAL_STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
+  new: 'warn',
+  in_preparation: 'blue',
+  ready_to_ship: 'ok',
+  cancelled_internal: 'err',
+}
+
+const CHANNEL_STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
   pending: 'warn',
   confirmed: 'blue',
   processing: 'blue',
@@ -24,27 +36,23 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
   const channelLabel =
     channel === 'all' ? 'todos los canales' : PROVIDER_LABELS[channel] || channel
 
-  const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
-  const [status, setStatus] = useState('all')
+  const [internalStatus, setInternalStatus] = useState('all')
   const [page, setPage] = useState(1)
   const [selectedOrder, setSelectedOrder] = useState<any>(null)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['orders', channel, search, status, page],
+    queryKey: ['orders', channel, search, internalStatus, page],
     queryFn: () =>
       api.get('/orders', {
-        params: { search, status: status === 'all' ? undefined : status, source: sourceFilter, page, limit: 20 },
+        params: {
+          search,
+          internalStatus: internalStatus === 'all' ? undefined : internalStatus,
+          source: sourceFilter,
+          page,
+          limit: 20,
+        },
       }).then((r) => r.data),
-  })
-
-  const cancelMutation = useMutation({
-    mutationFn: (id: string) => api.patch(`/orders/${id}/cancel`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] })
-      toast.success('Orden cancelada')
-    },
-    onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al cancelar'),
   })
 
   const orders = data?.data || []
@@ -52,11 +60,10 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
 
   const statusTabs = [
     { key: 'all', label: 'Todas' },
-    { key: 'pending', label: 'Pendientes' },
-    { key: 'confirmed', label: 'Confirmadas' },
-    { key: 'processing', label: 'En proceso' },
-    { key: 'fulfilled', label: 'Despachadas' },
-    { key: 'completed', label: 'Completadas' },
+    { key: 'new', label: 'Nuevas' },
+    { key: 'in_preparation', label: 'En preparación' },
+    { key: 'ready_to_ship', label: 'Listas p/ despacho' },
+    { key: 'cancelled_internal', label: 'Canceladas' },
   ]
 
   return (
@@ -64,7 +71,7 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
       <Header
         breadcrumbs={['CONSOLA', 'ÓRDENES', channel === 'all' ? 'TODAS' : channel.toUpperCase()]}
         title={`Órdenes · ${channel === 'all' ? 'Todos los canales' : channelLabel}`}
-        subtitle={meta ? `${meta.total} órdenes encontradas` : 'Gestión de órdenes omnicanal'}
+        subtitle={meta ? `${meta.total} órdenes · flujo interno de fulfillment` : 'Flujo interno de fulfillment'}
       />
 
       <div className="flex-1 px-7 py-6 overflow-auto">
@@ -90,11 +97,11 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
             style={{ padding: '0 16px', borderBottom: '1px solid var(--sc-line-soft)' }}
           >
             {statusTabs.map((tab) => {
-              const active = status === tab.key
+              const active = internalStatus === tab.key
               return (
                 <button
                   key={tab.key}
-                  onClick={() => { setStatus(tab.key); setPage(1) }}
+                  onClick={() => { setInternalStatus(tab.key); setPage(1) }}
                   style={{
                     padding: '13px 16px',
                     fontSize: 13,
@@ -131,7 +138,7 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
               <table className="w-full" style={{ fontSize: 13 }}>
                 <thead>
                   <tr>
-                    {['#ORDEN', 'CLIENTE', 'CANAL', 'ITEMS', 'TOTAL', 'ESTADO', 'PAGO', 'FECHA', ''].map((h, i) => (
+                    {['#ORDEN', 'CLIENTE', 'CANAL', 'ITEMS', 'TOTAL', 'ESTADO INTERNO', 'CANAL ESTADO', 'FECHA', ''].map((h, i) => (
                       <th
                         key={i}
                         className="sc-mono text-left"
@@ -153,8 +160,9 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                 </thead>
                 <tbody>
                   {orders.map((order: any) => {
-                    const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status }
-                    const tone = STATUS_TONE[order.status] || 'low'
+                    const internal = INTERNAL_ORDER_STATUS_LABELS[order.internalStatus] || { label: order.internalStatus }
+                    const channelStatus = ORDER_STATUS_LABELS[order.status] || { label: order.status }
+                    const internalTone = INTERNAL_STATUS_TONE[order.internalStatus] || 'low'
                     return (
                       <tr key={order.id} className="sc-row">
                         <td
@@ -219,20 +227,28 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          <StatusBadge tone={tone}>{statusInfo.label}</StatusBadge>
+                          <StatusBadge tone={internalTone}>{internal.label}</StatusBadge>
                         </td>
                         <td
                           style={{
                             padding: '13px 16px',
-                            fontSize: 12,
-                            color:
-                              order.paymentStatus === 'paid'
-                                ? 'var(--sc-ok)'
-                                : 'var(--sc-warn)',
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          {order.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente'}
+                          <span
+                            className="sc-mono"
+                            title="Estado reportado por el marketplace (informativo)"
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--sc-text-low)',
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              border: '1px solid var(--sc-line-soft)',
+                              background: '#f7f9fd',
+                            }}
+                          >
+                            {channelStatus.label}
+                          </span>
                         </td>
                         <td
                           className="sc-mono"
@@ -252,33 +268,14 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => setSelectedOrder(order)}
-                              className="sc-btn-ghost"
-                              style={{ padding: 6 }}
-                              aria-label="Ver detalle"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
-                            {['pending', 'confirmed'].includes(order.status) && (
-                              <button
-                                onClick={() => cancelMutation.mutate(order.id)}
-                                style={{
-                                  padding: '5px 10px',
-                                  fontSize: 11,
-                                  color: 'var(--sc-err)',
-                                  borderRadius: 6,
-                                  background: 'transparent',
-                                  border: '1px solid rgba(220,38,38,0.20)',
-                                  cursor: 'pointer',
-                                  transition: 'background .15s',
-                                }}
-                              >
-                                Cancelar
-                              </button>
-                            )}
-                          </div>
+                          <button
+                            onClick={() => setSelectedOrder(order)}
+                            className="sc-btn-ghost"
+                            style={{ padding: 6 }}
+                            aria-label="Ver detalle"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
                         </td>
                       </tr>
                     )
@@ -320,56 +317,21 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
       </div>
 
       {selectedOrder && (
-        <OrderDetailModal
-          order={selectedOrder}
-          onClose={() => setSelectedOrder(null)}
-          onStatusChange={() => {
-            queryClient.invalidateQueries({ queryKey: ['orders'] })
-            setSelectedOrder(null)
-          }}
-        />
+        <OrderDetailModal order={selectedOrder} onClose={() => setSelectedOrder(null)} />
       )}
     </div>
   )
 }
 
 function OrderDetailModal({
-  order, onClose, onStatusChange,
+  order, onClose,
 }: {
   order: any
   onClose: () => void
-  onStatusChange: () => void
 }) {
-  const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status }
-  const tone = STATUS_TONE[order.status] || 'low'
-
-  const advanceMutation = useMutation({
-    mutationFn: () => api.patch(`/orders/${order.id}/advance`),
-    onSuccess: () => {
-      toast.success('Estado actualizado')
-      onStatusChange()
-    },
-    onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al actualizar estado'),
-  })
-
-  const cancelMutation = useMutation({
-    mutationFn: () => api.patch(`/orders/${order.id}/cancel`),
-    onSuccess: () => {
-      toast.success('Orden cancelada')
-      onStatusChange()
-    },
-    onError: (err: any) => toast.error(err?.response?.data?.message || 'No se puede cancelar en este estado'),
-  })
-
-  const canAdvance = !['fulfilled', 'completed', 'cancelled'].includes(order.status)
-  const canCancel = ['pending', 'confirmed'].includes(order.status)
-
-  const nextStatus: Record<string, string> = {
-    pending: 'Confirmar',
-    confirmed: 'Procesar',
-    processing: 'Despachar',
-    fulfilled: 'Completar',
-  }
+  const internal = INTERNAL_ORDER_STATUS_LABELS[order.internalStatus] || { label: order.internalStatus }
+  const channelStatus = ORDER_STATUS_LABELS[order.status] || { label: order.status }
+  const internalTone = INTERNAL_STATUS_TONE[order.internalStatus] || 'low'
 
   return (
     <div
@@ -383,13 +345,27 @@ function OrderDetailModal({
         >
           <div>
             <MonoLabel tone="blue">// ORDER.DETAIL</MonoLabel>
-            <div className="flex items-center gap-3 mt-1">
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
               <h2
                 style={{ fontSize: 18, fontWeight: 600, color: 'var(--sc-text-hi)', letterSpacing: '-0.01em' }}
               >
                 {order.orderNumber}
               </h2>
-              <StatusBadge tone={tone}>{statusInfo.label}</StatusBadge>
+              <StatusBadge tone={internalTone}>{internal.label}</StatusBadge>
+              <span
+                className="sc-mono"
+                title="Estado en el marketplace (informativo)"
+                style={{
+                  fontSize: 10,
+                  color: 'var(--sc-text-low)',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  border: '1px solid var(--sc-line-soft)',
+                  background: '#f7f9fd',
+                }}
+              >
+                CANAL: {channelStatus.label}
+              </span>
             </div>
             <p className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', marginTop: 4 }}>
               {formatDate(order.createdAt)}
@@ -605,7 +581,7 @@ function OrderDetailModal({
             </div>
           )}
 
-          {order.externalId && (
+          {order.externalOrderId && (
             <div className="flex items-center gap-2" style={{ fontSize: 12, color: 'var(--sc-text-low)' }}>
               <ExternalLink className="w-3.5 h-3.5" />
               <span>
@@ -619,47 +595,24 @@ function OrderDetailModal({
                     fontSize: 11,
                   }}
                 >
-                  {order.externalId}
+                  {order.externalOrderId}
                 </code>
               </span>
             </div>
           )}
         </div>
 
-        {(canAdvance || canCancel) && (
-          <div
-            className="flex gap-3 flex-shrink-0"
-            style={{ padding: 20, borderTop: '1px solid var(--sc-line-soft)' }}
+        <div
+          className="flex-shrink-0"
+          style={{ padding: '12px 24px', borderTop: '1px solid var(--sc-line-soft)' }}
+        >
+          <p
+            className="sc-mono"
+            style={{ fontSize: 10.5, color: 'var(--sc-text-faint)', letterSpacing: '0.14em' }}
           >
-            {canCancel && (
-              <button
-                onClick={() => cancelMutation.mutate()}
-                disabled={cancelMutation.isPending}
-                className="sc-btn-ghost"
-                style={{
-                  color: 'var(--sc-err)',
-                  borderColor: 'rgba(220,38,38,0.30)',
-                  padding: '10px 16px',
-                  fontSize: 13,
-                }}
-              >
-                {cancelMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-                Cancelar orden
-              </button>
-            )}
-            {canAdvance && nextStatus[order.status] && (
-              <button
-                onClick={() => advanceMutation.mutate()}
-                disabled={advanceMutation.isPending}
-                className="sc-btn-primary"
-                style={{ flex: 1, justifyContent: 'center', padding: '10px 16px', fontSize: 13 }}
-              >
-                {advanceMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-                {nextStatus[order.status]}
-              </button>
-            )}
-          </div>
-        )}
+            // SOLO LECTURA · LOS ESTADOS SE ACTUALIZAN AUTOMÁTICAMENTE DESDE EL MARKETPLACE
+          </p>
+        </div>
       </Panel>
     </div>
   )

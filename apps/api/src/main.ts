@@ -6,6 +6,9 @@ import { AppModule } from './app.module'
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ['log', 'error', 'warn', 'debug'],
+    // Necesario para verificar firmas HMAC sobre el body crudo en
+    // /webhooks/in/:provider sin que el JSON parser de Nest mute los bytes.
+    rawBody: true,
   })
 
   app.setGlobalPrefix('api/v1')

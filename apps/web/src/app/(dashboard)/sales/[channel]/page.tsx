@@ -5,17 +5,10 @@ import { useQuery } from '@tanstack/react-query'
 import { Search, Receipt, Loader2, Eye, Package, MapPin, CreditCard, Layers, FileText, IdCard } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
-import { Panel, Chip, StatusBadge } from '@/components/sc/ui'
+import { Panel, Chip } from '@/components/sc/ui'
 import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
 
-const STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
-  pending: 'warn',
-  confirmed: 'blue',
-  processing: 'blue',
-  fulfilled: 'cyan',
-  completed: 'ok',
-  cancelled: 'err',
-}
+type FilterKey = 'all' | 'pending_payment' | 'paid' | 'packs' | 'facturas'
 
 export default function SalesPage({ params }: { params: { channel: string } }) {
   const channel = params.channel
@@ -24,36 +17,41 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
     channel === 'all' ? 'todos los canales' : PROVIDER_LABELS[channel] || channel
 
   const [search, setSearch] = useState('')
-  const [status, setStatus] = useState('all')
+  const [filter, setFilter] = useState<FilterKey>('pending_payment')
   const [page, setPage] = useState(1)
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null)
 
+  const buildParams = () => {
+    const p: Record<string, any> = { search, source: sourceFilter, page, limit: 20 }
+    if (filter === 'pending_payment') p.paymentStatus = 'pending'
+    if (filter === 'paid') p.paymentStatus = 'paid'
+    if (filter === 'packs') p.multiOrder = 'true'
+    if (filter === 'facturas') p.invoiceType = 'factura'
+    return p
+  }
+
   const { data, isLoading } = useQuery({
-    queryKey: ['sales', channel, search, status, page],
-    queryFn: () =>
-      api.get('/sales', {
-        params: { search, status: status === 'all' ? undefined : status, source: sourceFilter, page, limit: 20 },
-      }).then((r) => r.data),
+    queryKey: ['sales', channel, search, filter, page],
+    queryFn: () => api.get('/sales', { params: buildParams() }).then((r) => r.data),
   })
 
   const sales = data?.data || []
   const meta = data?.meta
 
-  const statusTabs = [
+  const tabs: { key: FilterKey; label: string }[] = [
+    { key: 'pending_payment', label: 'Por facturar' },
+    { key: 'paid', label: 'Pagadas' },
+    { key: 'facturas', label: 'Solo facturas' },
+    { key: 'packs', label: 'Packs (multi-orden)' },
     { key: 'all', label: 'Todas' },
-    { key: 'pending', label: 'Pendientes' },
-    { key: 'confirmed', label: 'Confirmadas' },
-    { key: 'processing', label: 'En proceso' },
-    { key: 'fulfilled', label: 'Despachadas' },
-    { key: 'completed', label: 'Completadas' },
   ]
 
   return (
     <div className="flex flex-col h-full">
       <Header
-        breadcrumbs={['CONSOLA', 'VENTAS', channel === 'all' ? 'TODAS' : channel.toUpperCase()]}
-        title={`Ventas · ${channel === 'all' ? 'Todos los canales' : channelLabel}`}
-        subtitle="Ventas agrupadas — base para facturación"
+        breadcrumbs={['CONSOLA', 'FACTURACIÓN', channel === 'all' ? 'TODAS' : channel.toUpperCase()]}
+        title={`Facturación · ${channel === 'all' ? 'Todos los canales' : channelLabel}`}
+        subtitle="Ventas para emisión de boleta o factura — el fulfillment se gestiona desde Órdenes"
       />
 
       <div className="flex-1 px-7 py-6 overflow-auto">
@@ -67,7 +65,7 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
               <input
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                placeholder="Buscar por # venta, cliente, pack…"
+                placeholder="Buscar # venta, cliente, RUT, pack…"
                 className="sc-input"
                 style={{ paddingLeft: 38 }}
               />
@@ -78,12 +76,12 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
             className="flex gap-1 overflow-x-auto"
             style={{ padding: '0 16px', borderBottom: '1px solid var(--sc-line-soft)' }}
           >
-            {statusTabs.map((tab) => {
-              const active = status === tab.key
+            {tabs.map((tab) => {
+              const active = filter === tab.key
               return (
                 <button
                   key={tab.key}
-                  onClick={() => { setStatus(tab.key); setPage(1) }}
+                  onClick={() => { setFilter(tab.key); setPage(1) }}
                   style={{
                     padding: '13px 16px',
                     fontSize: 13,
@@ -112,14 +110,14 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
           ) : sales.length === 0 ? (
             <div className="text-center py-16">
               <Receipt className="w-12 h-12 mx-auto mb-3" style={{ color: 'var(--sc-text-faint)' }} />
-              <p style={{ color: 'var(--sc-text-low)', fontWeight: 500 }}>No hay ventas</p>
+              <p style={{ color: 'var(--sc-text-low)', fontWeight: 500 }}>No hay ventas en esta vista</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full" style={{ fontSize: 13 }}>
                 <thead>
                   <tr>
-                    {['#VENTA', 'CLIENTE', 'DOC', 'CANAL', 'ÓRDENES', 'TOTAL', 'ESTADO', 'PAGO', 'FECHA', ''].map((h, i) => (
+                    {['#VENTA', 'CLIENTE', 'DOC', 'RUT/ID', 'CANAL', 'ÓRDENES', 'TOTAL', 'PAGO', 'FECHA', ''].map((h, i) => (
                       <th
                         key={i}
                         className="sc-mono text-left"
@@ -141,9 +139,8 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                 </thead>
                 <tbody>
                   {sales.map((sale: any) => {
-                    const statusInfo = ORDER_STATUS_LABELS[sale.status] || { label: sale.status }
-                    const tone = STATUS_TONE[sale.status] || 'low'
                     const orderCount = sale.orders?.length || 0
+                    const isPack = orderCount > 1
                     return (
                       <tr key={sale.id} className="sc-row">
                         <td
@@ -158,7 +155,7 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                         >
                           <div className="flex items-center gap-2">
                             {sale.saleNumber}
-                            {orderCount > 1 && (
+                            {isPack && (
                               <Chip tone="warn">
                                 <Layers className="w-3 h-3" /> {orderCount}
                               </Chip>
@@ -179,12 +176,14 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          <div style={{ color: 'var(--sc-text-hi)', fontWeight: 500 }}>{sale.customerName}</div>
-                          {sale.customerEmail && (
+                          <div style={{ color: 'var(--sc-text-hi)', fontWeight: 500 }}>
+                            {sale.billingName || sale.customerName}
+                          </div>
+                          {sale.billingEmail || sale.customerEmail ? (
                             <div className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', marginTop: 2 }}>
-                              {sale.customerEmail}
+                              {sale.billingEmail || sale.customerEmail}
                             </div>
-                          )}
+                          ) : null}
                         </td>
                         <td
                           style={{
@@ -197,6 +196,18 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                           ) : (
                             <Chip tone="low">Boleta</Chip>
                           )}
+                        </td>
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            fontSize: 12,
+                            color: sale.billingDocNumber ? 'var(--sc-text-mid)' : 'var(--sc-text-faint)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {sale.billingDocNumber || sale.customerDocNumber || '—'}
                         </td>
                         <td
                           style={{
@@ -228,9 +239,6 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                           }}
                         >
                           {formatCurrency(Number(sale.total), sale.currency)}
-                        </td>
-                        <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
-                          <StatusBadge tone={tone}>{statusInfo.label}</StatusBadge>
                         </td>
                         <td
                           style={{
@@ -324,7 +332,6 @@ function SaleDetailModal({ saleId, onClose }: { saleId: string; onClose: () => v
     )
   }
 
-  const statusInfo = ORDER_STATUS_LABELS[sale.status] || { label: sale.status, color: 'bg-gray-100 text-gray-600' }
   const orders = sale.orders || []
 
   return (
@@ -332,16 +339,8 @@ function SaleDetailModal({ saleId, onClose }: { saleId: string; onClose: () => v
       <div className="bg-white rounded-xl w-full max-w-3xl shadow-2xl max-h-[90vh] flex flex-col">
         <div className="p-6 border-b border-gray-100 flex items-start justify-between">
           <div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <h2 className="text-lg font-semibold text-gray-900">{sale.saleNumber}</h2>
-              <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusInfo.color}`}>
-                {statusInfo.label}
-              </span>
-              {orders.length > 1 && (
-                <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-50 text-amber-700 text-xs font-semibold">
-                  <Layers className="w-3.5 h-3.5" /> {orders.length} órdenes agrupadas
-                </span>
-              )}
               {sale.invoiceType === 'factura' ? (
                 <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-50 text-purple-700 text-xs font-semibold">
                   <FileText className="w-3.5 h-3.5" /> Factura
@@ -349,6 +348,20 @@ function SaleDetailModal({ saleId, onClose }: { saleId: string; onClose: () => v
               ) : (
                 <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-100 text-gray-600 text-xs font-medium">
                   Boleta
+                </span>
+              )}
+              <span
+                className={`px-2 py-1 rounded-full text-xs font-medium ${
+                  sale.paymentStatus === 'paid'
+                    ? 'bg-green-100 text-green-700'
+                    : 'bg-amber-100 text-amber-700'
+                }`}
+              >
+                {sale.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente de pago'}
+              </span>
+              {orders.length > 1 && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-50 text-amber-700 text-xs font-semibold">
+                  <Layers className="w-3.5 h-3.5" /> {orders.length} órdenes agrupadas
                 </span>
               )}
             </div>
@@ -468,6 +481,7 @@ function SaleDetailModal({ saleId, onClose }: { saleId: string; onClose: () => v
           <div>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
               Órdenes incluidas ({orders.length})
+              <span className="ml-2 text-gray-400 normal-case font-normal">— el fulfillment se gestiona en Órdenes</span>
             </p>
             <div className="space-y-3">
               {orders.map((order: any) => {

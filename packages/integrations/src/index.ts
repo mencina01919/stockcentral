@@ -1,4 +1,5 @@
 export * from './types/index'
+export * from './types/billing'
 export * from './drivers/registry'
 export { MercadoLibreDriver } from './drivers/mercadolibre.driver'
 export { ShopifyDriver } from './drivers/shopify.driver'
@@ -13,3 +14,4 @@ export type {
   ParisPriceInput,
 } from './drivers/paris.driver'
 export { LiderDriver } from './drivers/lider.driver'
+export { BsaleDriver } from './drivers/bsale.driver'

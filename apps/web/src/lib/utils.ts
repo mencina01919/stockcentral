@@ -43,6 +43,14 @@ export const ORDER_STATUS_LABELS: Record<string, { label: string; color: string 
   cancelled: { label: 'Cancelada', color: 'bg-red-100 text-red-800' },
 }
 
+// Flujo interno de fulfillment — independiente del estado del marketplace.
+export const INTERNAL_ORDER_STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  new:                { label: 'Nueva',           color: 'bg-yellow-100 text-yellow-800' },
+  in_preparation:     { label: 'En preparación',  color: 'bg-blue-100 text-blue-800' },
+  ready_to_ship:      { label: 'Lista p/ despacho', color: 'bg-green-100 text-green-800' },
+  cancelled_internal: { label: 'Cancelada',       color: 'bg-red-100 text-red-800' },
+}
+
 export const CONNECTION_STATUS_LABELS: Record<string, { label: string; color: string; dot: string }> = {
   connected: { label: 'Conectado', color: 'text-green-600', dot: 'bg-green-500' },
   syncing: { label: 'Sincronizando', color: 'text-blue-600', dot: 'bg-blue-500' },

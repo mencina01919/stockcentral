@@ -7,22 +7,39 @@ export class SalesService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(tenantId: string, query: SaleQueryDto) {
-    const { page = 1, limit = 20, search, status, source, sortBy = 'createdAt', sortOrder = 'desc' } = query
+    const {
+      page = 1,
+      limit = 20,
+      search,
+      status,
+      source,
+      invoiceType,
+      paymentStatus,
+      multiOrder,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+    } = query
     const skip = (page - 1) * limit
     const where: any = { tenantId }
 
     if (status) where.status = status
     if (source) where.source = source
+    if (invoiceType) where.invoiceType = invoiceType
+    if (paymentStatus) where.paymentStatus = paymentStatus
+    if (multiOrder === 'true') {
+      where.orders = { some: {} }
+    }
     if (search) {
       where.OR = [
         { saleNumber: { contains: search, mode: 'insensitive' } },
         { customerName: { contains: search, mode: 'insensitive' } },
         { customerEmail: { contains: search, mode: 'insensitive' } },
         { externalGroupId: { contains: search, mode: 'insensitive' } },
+        { billingDocNumber: { contains: search, mode: 'insensitive' } },
       ]
     }
 
-    const [data, total] = await Promise.all([
+    let [data, total] = await Promise.all([
       this.prisma.sale.findMany({
         where,
         skip,
@@ -35,6 +52,7 @@ export class SalesService {
               orderNumber: true,
               externalOrderId: true,
               status: true,
+              internalStatus: true,
               total: true,
               sourceChannel: true,
             },
@@ -43,6 +61,10 @@ export class SalesService {
       }),
       this.prisma.sale.count({ where }),
     ])
+
+    if (multiOrder === 'true') {
+      data = data.filter((s) => (s.orders?.length || 0) > 1)
+    }
 
     return {
       data,

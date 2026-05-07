@@ -5,6 +5,7 @@ import { Queue } from 'bull'
 import { PrismaService } from '../../prisma/prisma.service'
 import { getDriver } from '@stockcentral/integrations'
 import { SYNC_QUEUE, SyncJobType } from './sync.constants'
+import { BillingListener } from '../billing/billing.listener'
 
 @Injectable()
 export class SyncService {
@@ -13,6 +14,7 @@ export class SyncService {
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(SYNC_QUEUE) private readonly syncQueue: Queue,
+    private readonly billing: BillingListener,
   ) {}
 
   // ─── Queue Helpers ────────────────────────────────────────────────────────
@@ -366,6 +368,17 @@ export class SyncService {
               targetSaleId = existing.saleId
             }
             const previousSaleId = existing.saleId
+            const prevPaymentStatus = existing.paymentStatus
+            const prevInternalStatus = existing.internalStatus
+            // Si el internalStatus ya fue cancelado manualmente (cancelled_internal),
+            // o ya está en ready_to_ship, no lo retrocedemos al re-syncear; solo
+            // permitimos avances naturales o cancelación desde el marketplace.
+            const candidateInternal = this.mapInternalStatus(marketOrder.status)
+            const nextInternalStatus =
+              prevInternalStatus === 'cancelled_internal'
+                ? 'cancelled_internal'
+                : candidateInternal
+            const nextPaymentStatus = this.mapPaymentStatus(marketOrder.status)
             await this.prisma.order.update({
               where: { id: existing.id },
               data: {
@@ -387,21 +400,31 @@ export class SyncService {
                 shippingAddress: (marketOrder.shippingAddress as any) ?? undefined,
                 billingAddress: (marketOrder.billingAddress as any) ?? undefined,
                 status: this.mapMarketplaceOrderStatus(marketOrder.status),
-                paymentStatus: this.mapPaymentStatus(marketOrder.status),
+                paymentStatus: nextPaymentStatus,
                 shipmentStatus: this.mapShipmentStatus(marketOrder.status),
+                internalStatus: nextInternalStatus,
               },
             })
             await this.recalculateSale(targetSaleId)
             if (previousSaleId && previousSaleId !== targetSaleId) {
               await this.cleanupSaleIfEmpty(previousSaleId)
             }
+            await this.billing.onOrderTransition({
+              tenantId,
+              orderId: existing.id,
+              saleId: targetSaleId,
+              prev: { paymentStatus: prevPaymentStatus, internalStatus: prevInternalStatus },
+              next: { paymentStatus: nextPaymentStatus, internalStatus: nextInternalStatus },
+            })
             continue
           }
 
           const orderNumber = `${connection.provider.toUpperCase()}-${marketOrder.externalOrderNumber || marketOrder.externalId}`
           const sale = await this.resolveSale(tenantId, connection.provider, marketOrder)
+          const initialPaymentStatus = this.mapPaymentStatus(marketOrder.status)
+          const initialInternalStatus = this.mapInternalStatus(marketOrder.status)
 
-          await this.prisma.order.create({
+          const newOrder = await this.prisma.order.create({
             data: {
               tenantId,
               saleId: sale.id,
@@ -430,8 +453,9 @@ export class SyncService {
               total: marketOrder.total,
               currency: marketOrder.currency,
               status: this.mapMarketplaceOrderStatus(marketOrder.status),
-              paymentStatus: this.mapPaymentStatus(marketOrder.status),
+              paymentStatus: initialPaymentStatus,
               shipmentStatus: this.mapShipmentStatus(marketOrder.status),
+              internalStatus: initialInternalStatus,
               shippingAddress: marketOrder.shippingAddress as any,
               billingAddress: marketOrder.billingAddress as any,
               items: {
@@ -446,6 +470,19 @@ export class SyncService {
             },
           })
           await this.recalculateSale(sale.id)
+          await this.billing.onOrderTransition({
+            tenantId,
+            orderId: newOrder.id,
+            saleId: sale.id,
+            // Para órdenes nuevas: previo es "pending/new" (default Prisma).
+            // Si el marketplace ya entrega la orden pagada, esto dispara la
+            // emisión inmediatamente.
+            prev: { paymentStatus: 'pending', internalStatus: 'new' },
+            next: {
+              paymentStatus: initialPaymentStatus,
+              internalStatus: initialInternalStatus,
+            },
+          })
           created++
         } catch (err: any) {
           this.logger.error(`Error creating order ${marketOrder.externalId}: ${err.message}`)
@@ -731,6 +768,20 @@ export class SyncService {
     if (paid.includes(s)) return 'paid'
     if (refunded.includes(s)) return 'refunded'
     return 'pending'
+  }
+
+  // Flujo interno de fulfillment, derivado del estado del marketplace.
+  // Es el campo que el operador ve en el portal; el `status` real del canal
+  // queda como informativo y nunca se modifica desde la UI.
+  private mapInternalStatus(marketStatus: string): string {
+    const s = marketStatus?.toLowerCase()
+    const cancelled = ['cancelled', 'canceled', 'failed', 'returned', 'invalid']
+    const ready = ['shipped', 'fulfilled', 'delivered', 'completed']
+    const inPrep = ['paid', 'confirmed', 'ready_to_ship', 'readytoship', 'acknowledged', 'partially_refunded']
+    if (cancelled.includes(s)) return 'cancelled_internal'
+    if (ready.includes(s)) return 'ready_to_ship'
+    if (inPrep.includes(s)) return 'in_preparation'
+    return 'new'
   }
 
   // ─── Sale helpers ─────────────────────────────────────────────────────────

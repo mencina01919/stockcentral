@@ -4,6 +4,7 @@ import { SyncService } from './sync.service'
 import { SyncController } from './sync.controller'
 import { SyncProcessor } from './sync.processor'
 import { SYNC_QUEUE } from './sync.constants'
+import { BillingModule } from '../billing/billing.module'
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { SYNC_QUEUE } from './sync.constants'
         removeOnFail: 200,
       },
     }),
+    BillingModule,
   ],
   controllers: [SyncController],
   providers: [SyncService, SyncProcessor],

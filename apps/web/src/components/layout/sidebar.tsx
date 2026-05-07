@@ -83,19 +83,23 @@ export function Sidebar() {
     },
     {
       type: 'group',
-      key: 'sales',
-      label: 'Ventas',
-      icon: Receipt,
-      basePath: '/sales',
-      items: channelLeaves('/sales'),
-    },
-    {
-      type: 'group',
       key: 'orders',
       label: 'Órdenes',
       icon: ShoppingCart,
       basePath: '/orders',
       items: channelLeaves('/orders'),
+    },
+    {
+      type: 'group',
+      key: 'sales',
+      label: 'Facturación',
+      icon: Receipt,
+      basePath: '/sales',
+      items: [
+        { type: 'leaf', href: '/billing/documents', label: 'Documentos' },
+        { type: 'leaf', href: '/billing/setup', label: 'Configuración' },
+        ...channelLeaves('/sales'),
+      ],
     },
     { type: 'leaf', href: '/inventory', label: 'Inventario', icon: Warehouse },
     { type: 'leaf', href: '/warehouses', label: 'Bodegas', icon: Store },
@@ -252,7 +256,13 @@ export function Sidebar() {
 }
 
 function SidebarGroup({ group, pathname }: { group: NavGroup; pathname: string }) {
-  const inGroup = pathname === group.basePath || pathname.startsWith(group.basePath + '/')
+  // Un grupo está activo si la ruta cae bajo basePath O coincide con alguno
+  // de sus leaves (algunos grupos tienen leaves fuera del basePath, p.ej.
+  // Facturación apunta a /sales/* pero también incluye /billing/documents).
+  const inGroup =
+    pathname === group.basePath ||
+    pathname.startsWith(group.basePath + '/') ||
+    group.items.some((leaf) => pathname === leaf.href || pathname.startsWith(leaf.href + '/'))
   const [open, setOpen] = useState(inGroup)
   const Icon = group.icon
 

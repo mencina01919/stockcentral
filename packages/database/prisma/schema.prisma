@@ -28,13 +28,16 @@ model Tenant {
   branding     Json?
   metadata     Json?
 
-  users        User[]
-  products     Product[]
-  orders       Order[]
-  sales        Sale[]
-  connections  Connection[]
-  warehouses   Warehouse[]
-  webhooks     Webhook[]
+  users         User[]
+  products      Product[]
+  orders        Order[]
+  sales         Sale[]
+  connections   Connection[]
+  warehouses    Warehouse[]
+  webhooks      Webhook[]
+  taxDocuments  TaxDocument[]
+  bsaleClients  BsaleClientCache[]
+  webhookEvents MarketplaceWebhookEvent[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -277,8 +280,9 @@ model Sale {
   notes    String?
   metadata Json?
 
-  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  orders Order[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orders       Order[]
+  taxDocuments TaxDocument[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -336,9 +340,10 @@ model Order {
   notes    String?
   metadata Json?
 
-  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sale   Sale?       @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  items  OrderItem[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sale         Sale?         @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  items        OrderItem[]
+  taxDocuments TaxDocument[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -497,4 +502,130 @@ model WebhookDelivery {
 
   @@index([webhookId])
   @@index([status])
+}
+
+// =====================
+// TAX DOCUMENTS (BILLING)
+// =====================
+// Documentos tributarios emitidos vía facturador electrónico (Bsale, etc.).
+// Multi-emisor por diseño: el campo `emitter` identifica el provider.
+// Una venta puede tener varios docs vinculados (boleta original + nota de
+// crédito posterior), de ahí la self-relation TaxDocRefs.
+model TaxDocument {
+  id       String  @id @default(uuid())
+  tenantId String
+  saleId   String?
+  orderId  String?
+
+  // boleta | factura | nota_credito
+  type String
+
+  // pending | issued | failed | cancelled
+  status String @default("pending")
+
+  // bsale | haulmer | openfactura | manual | ...
+  emitter String @default("bsale")
+
+  // Identificadores devueltos por el emisor.
+  externalId String?
+  folio      String?
+  emittedAt  DateTime?
+
+  pdfUrl String?
+  xmlUrl String?
+
+  // Para notas de crédito: apunta al documento original (boleta/factura).
+  referenceDocumentId String?
+  reference           TaxDocument?  @relation("TaxDocRefs", fields: [referenceDocumentId], references: [id], onDelete: SetNull)
+  creditNotes         TaxDocument[] @relation("TaxDocRefs")
+
+  // Snapshot de los datos al momento de emisión, por si la sale cambia luego.
+  snapshot Json?
+
+  // Reintentos automáticos. Tras 5 intentos fallidos => status='failed' y la
+  // UI ofrece reintento manual.
+  lastError String?
+  attempts  Int     @default(0)
+
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sale   Sale?  @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  order  Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  lines  TaxDocumentLine[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, saleId])
+  @@index([tenantId, orderId])
+  @@index([tenantId, emitter, externalId])
+  @@index([referenceDocumentId])
+}
+
+// Líneas del documento. Guardamos `externalLineId` (documentDetailId en Bsale)
+// porque la NC total exige referenciar cada línea original.
+model TaxDocumentLine {
+  id             String  @id @default(uuid())
+  taxDocumentId  String
+  externalLineId String?
+  sku            String
+  name           String
+  quantity       Decimal  @db.Decimal(12, 3)
+  netUnitValue   Decimal  @db.Decimal(12, 2)
+  taxIds         String[]
+  discount       Decimal  @default(0) @db.Decimal(5, 2)
+
+  document TaxDocument @relation(fields: [taxDocumentId], references: [id], onDelete: Cascade)
+
+  @@index([taxDocumentId])
+}
+
+// Eventos webhook recibidos desde marketplaces. Sirve para:
+//  - Idempotencia: dedup por (provider, externalEventId).
+//  - Auditoría: ver qué llegó cuando algo no calza con la orden en DB.
+//  - Reintento: si la verificación pasa pero el procesamiento falla.
+model MarketplaceWebhookEvent {
+  id              String   @id @default(uuid())
+  tenantId        String
+  provider        String
+  // ID del evento que reporta el marketplace (si lo hay). Único por provider
+  // para deduplicar entregas duplicadas.
+  externalEventId String?
+  topic           String?
+  externalResourceId String?
+  // Payload crudo + headers para auditoría.
+  payload         Json
+  headers         Json?
+  signatureValid  Boolean  @default(false)
+
+  status          String   @default("received")  // received | processed | failed | ignored
+  processedAt     DateTime?
+  error           String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([provider, externalEventId])
+  @@index([tenantId, provider])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Cache local de clientes Bsale por RUT. Bsale no expone GET por código,
+// así que cacheamos para no duplicar y no iterar en cada emisión.
+model BsaleClientCache {
+  id                String  @id @default(uuid())
+  tenantId          String
+  rut               String
+  externalClientId  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, rut])
+  @@index([tenantId])
 }

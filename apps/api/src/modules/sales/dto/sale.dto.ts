@@ -7,6 +7,10 @@ export class SaleQueryDto {
   @IsOptional() search?: string
   @IsOptional() status?: string
   @IsOptional() source?: string
+  @IsOptional() invoiceType?: string
+  @IsOptional() paymentStatus?: string
+  // 'true' para devolver sólo ventas con más de una orden agrupada (packs)
+  @IsOptional() multiOrder?: string
   @IsOptional() sortBy?: string = 'createdAt'
   @IsOptional() sortOrder?: 'asc' | 'desc' = 'desc'
 }
