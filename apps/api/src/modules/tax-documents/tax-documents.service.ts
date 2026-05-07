@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -17,6 +17,7 @@ import {
   CreditNoteDto,
   UploadManualDocumentDto,
 } from './dto/tax-document.dto'
+import { BillingListener } from '../billing/billing.listener'
 
 // Multi-emisor: el provider del facturador se almacena en `Connection`. Cada
 // driver implementa la misma interfaz, así que la decisión es tabla.
@@ -34,6 +35,10 @@ export class TaxDocumentsService {
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
+    // forwardRef para evitar el ciclo BillingModule ↔ TaxDocumentsModule.
+    // BillingListener encola el push al marketplace tras emisión exitosa.
+    @Inject(forwardRef(() => BillingListener))
+    private billing: BillingListener,
   ) {
     this.uploadsRoot = path.join(process.cwd(), 'uploads', 'tax-documents')
     if (!fs.existsSync(this.uploadsRoot)) fs.mkdirSync(this.uploadsRoot, { recursive: true })
@@ -147,7 +152,7 @@ export class TaxDocumentsService {
     }
     const client = this.buildClient(sale, type)
 
-    const externalReference = this.buildExternalReference(sale)
+    const references = this.buildReferences(sale)
 
     const { emitter, connection } = await this.resolveEmitter(tenantId)
 
@@ -166,7 +171,7 @@ export class TaxDocumentsService {
       emissionDate: new Date(),
       client,
       lines,
-      externalReference,
+      references,
       currency: sale.currency,
     }
 
@@ -179,7 +184,7 @@ export class TaxDocumentsService {
         type,
         status: 'pending',
         emitter: connection.provider,
-        snapshot: { client, lines, externalReference, type } as any,
+        snapshot: { client, lines, references, type } as any,
         attempts: 0,
       },
     })
@@ -217,6 +222,13 @@ export class TaxDocumentsService {
         },
         include: { lines: true },
       })
+      // Notificar al listener para que (si está habilitado) suba el DTE al
+      // marketplace. El listener decide si encolar según config del tenant.
+      try {
+        await this.billing.onTaxDocumentIssued(tenantId, updated.id)
+      } catch {
+        // No bloquear la emisión si el listener falla.
+      }
       return updated
     } catch (err: any) {
       await this.prisma.taxDocument.update({
@@ -305,7 +317,7 @@ export class TaxDocumentsService {
         },
       )
 
-      return await this.prisma.taxDocument.update({
+      const updated = await this.prisma.taxDocument.update({
         where: { id: draft.id },
         data: {
           status: 'issued',
@@ -317,6 +329,14 @@ export class TaxDocumentsService {
           attempts: 1,
         },
       })
+      // Notificar al listener para que suba la NC al marketplace si está
+      // habilitado (mismo flujo que para boletas/facturas).
+      try {
+        await this.billing.onTaxDocumentIssued(tenantId, updated.id)
+      } catch {
+        // ignoramos error del listener para no bloquear emisión
+      }
+      return updated
     } catch (err: any) {
       await this.prisma.taxDocument.update({
         where: { id: draft.id },
@@ -332,23 +352,38 @@ export class TaxDocumentsService {
 
   // ─── Helpers internos ─────────────────────────────────────────────────────
 
-  // Decide boleta vs factura en base a los datos de billing capturados por los
-  // drivers de marketplace. Si hay RUT + razón social → factura. Si no → boleta.
+  // Decide boleta vs factura. Solo factura cuando el marketplace marca
+  // explícitamente `invoiceType='factura'` (ML detecta esto cuando vienen
+  // BUSINESS_NAME / ECONOMIC_ACTIVITY; Paris vía businessInvoice). Si solo
+  // viene billingDocNumber sin marca explícita, va boleta — los marketplaces
+  // a veces traen el RUT informativo aunque el comprador no haya pedido
+  // factura, y emitir factura sin que el cliente la pida nos obligaría a NC
+  // posterior.
   private decideDocumentType(sale: any): 'boleta' | 'factura' {
-    const hasFacturaData =
-      sale.billingDocNumber && (sale.billingName || sale.invoiceType === 'factura')
-    return hasFacturaData ? 'factura' : 'boleta'
+    return sale.invoiceType === 'factura' ? 'factura' : 'boleta'
   }
 
   private buildLines(sale: any): TaxDocumentLineInput[] {
     const lines: TaxDocumentLineInput[] = []
+    // Los marketplaces (ML, Falabella, Paris, Lider) entregan `unitPrice` como
+    // precio BRUTO (incluye IVA). El consumidor paga ese monto y nosotros
+    // queremos emitir el documento con ese mismo total. Bsale espera
+    // `netUnitValue` (sin IVA) y agrega el impuesto encima — para que el
+    // total final coincida con el precio del marketplace, dividimos por
+    // 1.19 (IVA Chile 19%).
+    //
+    // En el futuro esto debería ser configurable por conexión: marketplaces
+    // que ya entreguen precios netos no aplicarían la división.
+    const IVA_RATE = 1.19
     for (const order of sale.orders || []) {
       for (const item of order.items || []) {
+        const grossUnit = Number(item.unitPrice)
+        const netUnit = grossUnit / IVA_RATE
         lines.push({
           sku: item.sku,
           name: item.name,
           quantity: Number(item.quantity),
-          netUnitValue: Number(item.unitPrice),
+          netUnitValue: netUnit,
         })
       }
     }
@@ -356,6 +391,18 @@ export class TaxDocumentsService {
   }
 
   private buildClient(sale: any, type: 'boleta' | 'factura'): TaxClientInput {
+    // Bsale exige city + address + municipality para emitir factura. Tomamos
+    // billingAddress primero (datos comerciales) y caemos a shippingAddress.
+    // Los drivers entregan las direcciones como Json arbitrario; aceptamos
+    // tanto las claves canónicas (address1/city/state) como las que algunos
+    // marketplaces guardan (street, comuna, region).
+    const addr = (sale.billingAddress || sale.shippingAddress || {}) as any
+    const address: string | undefined =
+      addr.address1 || addr.address || addr.street || undefined
+    const city: string | undefined = addr.city || addr.locality || undefined
+    const municipality: string | undefined =
+      addr.municipality || addr.comuna || addr.district || addr.state || undefined
+
     if (type === 'factura') {
       const fullName: string = sale.billingName || sale.customerName || ''
       const [firstName, ...rest] = fullName.split(' ')
@@ -367,35 +414,55 @@ export class TaxDocumentsService {
         phone: sale.billingPhone || sale.customerPhone,
         businessName: sale.billingName,
         economicActivity: sale.economicActivity,
+        address,
+        city: city || municipality,
+        municipality: municipality || city,
         isCompany: true,
       }
     }
-    // Boleta: si no hay nombre ni RUT, va como consumidor final.
+    // Boleta: si no hay nombre ni RUT, va como consumidor final con el RUT
+    // genérico del SII chileno (66.666.666-6). Esto permite emitir NC sobre
+    // boletas anónimas — el SII exige RUT identificado en la NC aunque la
+    // boleta original no lo tenga.
     const fullName: string = sale.customerName || 'Consumidor final'
     const [firstName, ...rest] = fullName.split(' ')
     return {
-      rut: sale.customerDocNumber || undefined,
+      rut: sale.customerDocNumber || '66666666-6',
       firstName: firstName || fullName,
       lastName: rest.join(' '),
       email: sale.customerEmail,
       phone: sale.customerPhone,
+      address,
+      city: city || municipality,
+      municipality: municipality || city,
     }
   }
 
-  // El número de orden externo del marketplace va como "orden de compra" en el
-  // documento. Si la sale tiene varias orders (pack), tomamos la primera con
-  // externalOrderId; en el caso multi-orden esto puede mejorarse luego para
-  // listar todas las referencias.
-  private buildExternalReference(sale: any): { number: string; reason?: string } | undefined {
+  // Construye la lista de referencias del DTE. Estrategia:
+  //   1) saleNumber (id estable interno) — primero, identificador maestro.
+  //   2) Cada externalOrderId del marketplace — para reconciliación con ML/etc.
+  // Todas con codeSii=801 ("orden de compra" en la tabla SII).
+  // En packs (varias orders agrupadas) listamos todos los IDs de marketplace.
+  private buildReferences(sale: any): Array<{ number: string; reason: string; codeSii: number }> {
+    const refs: Array<{ number: string; reason: string; codeSii: number }> = []
+    if (sale.saleNumber) {
+      refs.push({
+        number: String(sale.saleNumber),
+        reason: 'Venta StockCentral',
+        codeSii: 801,
+      })
+    }
+    const sourceLabel = sale.source ? `Orden ${sale.source}` : 'Orden marketplace'
     for (const order of sale.orders || []) {
       if (order.externalOrderId) {
-        return {
-          number: order.externalOrderId,
-          reason: `Orden ${sale.source}`,
-        }
+        refs.push({
+          number: String(order.externalOrderId),
+          reason: sourceLabel,
+          codeSii: 801,
+        })
       }
     }
-    return undefined
+    return refs
   }
 
   private async resolveEmitter(
@@ -417,6 +484,29 @@ export class TaxDocumentsService {
       )
     }
     return { emitter: factory(), connection }
+  }
+
+  // ─── Push manual al marketplace ──────────────────────────────────────────
+  // Fuerza el upload del DTE al marketplace ignorando el flag pushToMarketplace
+  // (porque el operador ya decidió subirlo al apretar el botón). Usado para:
+  // - Documentos emitidos antes de activar pushToMarketplace.
+  // - Documentos que fallaron el upload automático y se quieren reintentar.
+  async pushToMarketplaceManual(tenantId: string, id: string) {
+    const doc = await this.prisma.taxDocument.findFirst({
+      where: { id, tenantId },
+    })
+    if (!doc) throw new NotFoundException('Documento no encontrado')
+    if (doc.status !== 'issued') {
+      throw new BadRequestException(`El documento debe estar issued (actual: ${doc.status})`)
+    }
+    if (!doc.pdfUrl) {
+      throw new BadRequestException('El documento no tiene pdfUrl')
+    }
+    // Llamamos al listener directamente. El listener verifica el flag pero
+    // como ya está activado (o no, el operador decidió manualmente), agregamos
+    // bypass: encolamos el job directo.
+    await this.billing.enqueuePushToMarketplace(tenantId, id)
+    return { ok: true, message: 'Push encolado' }
   }
 
   // ─── Conversión boleta → factura ─────────────────────────────────────────

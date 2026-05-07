@@ -1,8 +1,13 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../prisma/prisma.service'
 import { SyncService } from '../sync/sync.service'
-import { getDriver, getSupportedProviders } from '@stockcentral/integrations'
+import { getDriver, getSupportedProviders, BsaleDriver } from '@stockcentral/integrations'
 import { CreateConnectionDto, UpdateConnectionDto } from './dto/connection.dto'
+
+// Providers que son facturadores electrónicos (no marketplaces). Tienen su
+// propia interfaz (ITaxDocumentEmitter) y no aparecen en el registry de
+// drivers de marketplace.
+const BILLING_PROVIDERS = new Set(['bsale'])
 
 @Injectable()
 export class ConnectionsService {
@@ -139,10 +144,23 @@ export class ConnectionsService {
       throw new ConflictException(`Ya existe una conexión con ${dto.provider}`)
     }
 
-    const driver = getDriver(dto.provider)
-    const testResult = await driver.testConnection(dto.credentials, dto.config)
-    if (!testResult.success) {
-      throw new BadRequestException(`Las credenciales no son válidas: ${testResult.error}`)
+    // Test de credenciales antes de guardar — distinto según el tipo.
+    let connectionName = dto.name
+    if (BILLING_PROVIDERS.has(dto.provider)) {
+      // Facturadores tienen su propia interfaz (ITaxDocumentEmitter).
+      const emitter = new BsaleDriver()
+      const result = await emitter.testConnection(dto.credentials, dto.config)
+      if (!result.success) {
+        throw new BadRequestException(`Las credenciales no son válidas: ${result.error}`)
+      }
+      connectionName = connectionName || result.accountName || dto.provider
+    } else {
+      const driver = getDriver(dto.provider)
+      const testResult = await driver.testConnection(dto.credentials, dto.config)
+      if (!testResult.success) {
+        throw new BadRequestException(`Las credenciales no son válidas: ${testResult.error}`)
+      }
+      connectionName = connectionName || testResult.shopName || dto.provider
     }
 
     return this.prisma.connection.create({
@@ -150,7 +168,7 @@ export class ConnectionsService {
         tenantId,
         type: dto.type || this.getConnectionType(dto.provider),
         provider: dto.provider,
-        name: dto.name || testResult.shopName || dto.provider,
+        name: connectionName,
         credentials: dto.credentials as any,
         config: (dto.config || {}) as any,
         status: 'connected',
@@ -192,6 +210,26 @@ export class ConnectionsService {
   }
 
   async testConnection(tenantId: string, id: string) {
+    const connection = await this.findOne(tenantId, id)
+    // Facturadores tienen su propia interfaz (ITaxDocumentEmitter) y no
+    // pasan por el registry de marketplace drivers (sync). Los probamos
+    // directamente.
+    if (BILLING_PROVIDERS.has((connection as any).provider)) {
+      const emitter = new BsaleDriver()
+      const result = await emitter.testConnection(
+        (connection as any).credentials as Record<string, string>,
+        (connection as any).config as Record<string, unknown> | undefined,
+      )
+      await this.prisma.connection.update({
+        where: { id },
+        data: {
+          status: result.success ? 'connected' : 'error',
+          lastError: result.success ? null : result.error,
+        },
+      })
+      // Devuelve el shape esperado por el frontend (mismo que sync.testConnection).
+      return { ...result, shopName: result.accountName }
+    }
     return this.syncService.testConnection(tenantId, id)
   }
 
@@ -218,6 +256,7 @@ export class ConnectionsService {
 
   private getConnectionType(provider: string): string {
     const marketplaces = ['mercadolibre', 'falabella', 'walmart', 'ripley', 'paris', 'lider']
+    if (BILLING_PROVIDERS.has(provider)) return 'billing'
     if (marketplaces.includes(provider)) return 'marketplace'
     return 'ecommerce'
   }

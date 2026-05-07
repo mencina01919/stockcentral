@@ -79,5 +79,6 @@ export const PROVIDER_LABELS: Record<string, string> = {
   walmart: 'Walmart',
   ripley: 'Ripley',
   paris: 'Paris',
+  bsale: 'Bsale',
   custom: 'Personalizado',
 }

@@ -8,7 +8,7 @@ import { Header } from '@/components/layout/header'
 import { Panel, Chip } from '@/components/sc/ui'
 import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
 
-type FilterKey = 'all' | 'pending_payment' | 'paid' | 'packs' | 'facturas'
+type FilterKey = 'all' | 'pending_payment' | 'paid' | 'packs' | 'facturas' | 'cancelled'
 
 export default function SalesPage({ params }: { params: { channel: string } }) {
   const channel = params.channel
@@ -25,6 +25,7 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
     const p: Record<string, any> = { search, source: sourceFilter, page, limit: 20 }
     if (filter === 'pending_payment') p.paymentStatus = 'pending'
     if (filter === 'paid') p.paymentStatus = 'paid'
+    if (filter === 'cancelled') p.status = 'cancelled'
     if (filter === 'packs') p.multiOrder = 'true'
     if (filter === 'facturas') p.invoiceType = 'factura'
     return p
@@ -41,6 +42,7 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
   const tabs: { key: FilterKey; label: string }[] = [
     { key: 'pending_payment', label: 'Por facturar' },
     { key: 'paid', label: 'Pagadas' },
+    { key: 'cancelled', label: 'Canceladas' },
     { key: 'facturas', label: 'Solo facturas' },
     { key: 'packs', label: 'Packs (multi-orden)' },
     { key: 'all', label: 'Todas' },

@@ -52,14 +52,26 @@ export class BsaleDriver implements ITaxDocumentEmitter {
     return Number(v)
   }
 
-  private taxIds(config?: DriverConfig): string[] {
+  // Bsale exige `taxId` en cada detail con un formato peculiar: una STRING
+  // con shape de array literal (ej. "[1]" o "[1,2]"). Si se manda como array
+  // JS, Bsale lo descarta silenciosamente y emite el documento como EXENTO.
+  // Devolvemos el string ya formateado.
+  private taxIdString(config?: DriverConfig): string {
     const v = config?.taxIdIVA
-    if (Array.isArray(v) && v.length > 0) return v.map(String).filter(Boolean)
-    if (typeof v === 'string' && v.length > 0) return [v]
-    if (typeof v === 'number') return [String(v)]
-    throw new Error(
-      'Bsale: taxIdIVA no configurado en la conexión. Sin taxId el documento se emite exento, lo cual no está permitido. Configúralo en /billing/setup.',
-    )
+    let ids: string[] = []
+    if (Array.isArray(v)) {
+      ids = v.map(String).filter(Boolean)
+    } else if (typeof v === 'string' && v.length > 0) {
+      ids = [v]
+    } else if (typeof v === 'number') {
+      ids = [String(v)]
+    }
+    if (ids.length === 0) {
+      throw new Error(
+        'Bsale: taxIdIVA no configurado en la conexión. Sin taxId el documento se emite exento, lo cual no está permitido. Configúralo en /billing/setup.',
+      )
+    }
+    return `[${ids.join(',')}]`
   }
 
   // Si en la conexión está declareSii=false, emitimos en Bsale sin enviar al
@@ -70,16 +82,92 @@ export class BsaleDriver implements ITaxDocumentEmitter {
     return 1
   }
 
+  // Resuelve el documentTypeId interno de Bsale a partir del codeSii (que es
+  // estándar SII). Bsale exige documentTypeId en POST /returns.json y los IDs
+  // son por cuenta. Cacheamos en memoria por instancia del driver.
+  private docTypeCache: Map<string, Map<number, number>> = new Map()
+  private async resolveDocumentTypeId(
+    c: AxiosInstance,
+    accessToken: string,
+    codeSii: number,
+  ): Promise<number> {
+    let cache = this.docTypeCache.get(accessToken)
+    if (!cache) {
+      cache = new Map()
+      const res = await c.get('/document_types.json', { params: { limit: 50 } })
+      const items: any[] = res.data?.items || []
+      for (const t of items) {
+        if (t.codeSii != null) cache.set(Number(t.codeSii), Number(t.id))
+      }
+      this.docTypeCache.set(accessToken, cache)
+    }
+    const id = cache.get(codeSii)
+    if (!id) {
+      throw new Error(
+        `Bsale: no hay documentTypeId para codeSii=${codeSii} en esta cuenta. Verifica que tengas habilitado el tipo de documento en Bsale.`,
+      )
+    }
+    return id
+  }
+
   // Bsale espera unix timestamp en segundos (GMT).
   private toUnixSeconds(d: Date): number {
     return Math.floor(d.getTime() / 1000)
   }
 
-  // Normaliza RUT chileno: quita puntos y espacios, mantiene guion y dígito
-  // verificador. "11.111.111-1" → "11111111-1".
+  // Normaliza RUT chileno y calcula DV si falta. Ejemplos:
+  //   "11.111.111-1" → "11111111-1"
+  //   "11111111"     → "11111111-1"   (DV calculado, módulo 11)
+  //   "774441271"    → "77444127-1"   (último dígito ya era el DV: lo separa)
+  //                    o "774441271-K" si el cálculo da K (no este caso).
+  // ML a veces manda el RUT sin guion: en ese caso interpretamos el último
+  // dígito como DV y validamos. Si no calza, asumimos que falta y lo
+  // calculamos.
   private normalizeRut(rut?: string): string | undefined {
     if (!rut) return undefined
-    return rut.replace(/\./g, '').replace(/\s+/g, '').toUpperCase()
+    const clean = rut.replace(/[.\s]/g, '').toUpperCase()
+    if (!clean) return undefined
+    // Si ya viene con guion, respetar.
+    if (clean.includes('-')) {
+      const [body, dv] = clean.split('-')
+      if (!body || !dv) return clean
+      return `${body}-${dv}`
+    }
+    // Sin guion: asumir últimos 1 char es DV solo si es K o dígito.
+    // Si el RUT crudo es solo números y el cálculo coincide con el último
+    // dígito, lo separamos. Si no coincide, calculamos DV sobre todo el
+    // string (asumiendo que el DV faltaba).
+    const allDigits = /^\d+$/.test(clean)
+    if (allDigits && clean.length >= 2) {
+      const body = clean.slice(0, -1)
+      const lastChar = clean.slice(-1)
+      const dvCalc = this.calcRutDv(body)
+      if (dvCalc === lastChar) {
+        return `${body}-${dvCalc}`
+      }
+      // El último dígito no es DV válido → todo el string es body, calcular DV.
+      const dvForFull = this.calcRutDv(clean)
+      return `${clean}-${dvForFull}`
+    }
+    // Caso raro: contiene K o no-numéricos sin guion. Asumimos que la última
+    // posición es el DV.
+    const body = clean.slice(0, -1)
+    const dv = clean.slice(-1)
+    return `${body}-${dv}`
+  }
+
+  // Algoritmo módulo 11 estándar para RUT chileno.
+  private calcRutDv(body: string): string {
+    let sum = 0
+    let factor = 2
+    for (let i = body.length - 1; i >= 0; i--) {
+      sum += Number(body[i]) * factor
+      factor = factor === 7 ? 2 : factor + 1
+    }
+    const mod = 11 - (sum % 11)
+    if (mod === 11) return '0'
+    if (mod === 10) return 'K'
+    return String(mod)
   }
 
   // ─── ITaxDocumentEmitter ──────────────────────────────────────────────────
@@ -93,6 +181,33 @@ export class BsaleDriver implements ITaxDocumentEmitter {
       // Endpoint barato para validar el token. /offices.json devuelve sucursales.
       const res = await c.get('/offices.json', { params: { limit: 1 } })
       const office = res.data?.items?.[0]
+
+      // Validamos que el taxIdIVA configurado existe en la cuenta. Bsale
+      // ignora silenciosamente taxIds inválidos y emite documentos exentos
+      // — eso lo descubrimos en la primera prueba productiva. Mejor fallar
+      // aquí con mensaje claro.
+      const taxIdConfigured = config?.taxIdIVA
+      if (taxIdConfigured) {
+        try {
+          const taxes = await c.get('/taxes.json', { params: { limit: 50 } })
+          const items: any[] = taxes.data?.items || []
+          const found = items.find((t) => String(t.id) === String(taxIdConfigured))
+          if (!found) {
+            const available = items
+              .filter((t) => /iva/i.test(t.name))
+              .map((t) => `id=${t.id} (${t.name} ${t.percentage}%)`)
+              .join(', ')
+            return {
+              success: false,
+              error: `taxIdIVA="${taxIdConfigured}" no existe en esta cuenta Bsale. IVAs disponibles: ${available || 'ninguno'}`,
+            }
+          }
+        } catch {
+          // Si /taxes.json falla, no bloqueamos el test — el token sirvió
+          // al menos para /offices.json.
+        }
+      }
+
       return {
         success: true,
         accountName: office?.name,
@@ -115,12 +230,35 @@ export class BsaleDriver implements ITaxDocumentEmitter {
     const code = this.normalizeRut(client.rut)
 
     // Si tenemos RUT, intentar buscar primero. Bsale no documenta GET por code,
-    // pero la API real soporta `?code=<rut>` como filtro.
+    // pero la API real soporta `?code=<rut>` como filtro. Si encontramos el
+    // cliente con datos faltantes que ahora sí tenemos (city/address), lo
+    // actualizamos: facturas en Chile exigen esos campos y un cliente creado
+    // antes con datos parciales bloquea la emisión.
     if (code) {
       try {
         const search = await c.get('/clients.json', { params: { code, limit: 1 } })
         const found = search.data?.items?.[0]
         if (found?.id) {
+          const patch: Record<string, unknown> = {}
+          if (!found.address && client.address) patch.address = client.address
+          if (!found.city && client.city) patch.city = client.city
+          if (!found.municipality && (client.municipality || client.city)) {
+            patch.municipality = client.municipality || client.city
+          }
+          if (!found.email && client.email) patch.email = client.email
+          if (!found.phone && client.phone) patch.phone = client.phone
+          if (!found.activity && client.economicActivity) {
+            patch.activity = client.economicActivity
+          }
+          if (Object.keys(patch).length > 0) {
+            try {
+              await c.put(`/clients/${found.id}.json`, patch)
+            } catch {
+              // Si la actualización falla, igual seguimos con el cliente
+              // existente — quizás el documento se rechace, pero al menos
+              // intentamos.
+            }
+          }
           return { externalClientId: String(found.id), created: false }
         }
       } catch {
@@ -137,6 +275,12 @@ export class BsaleDriver implements ITaxDocumentEmitter {
     if (client.phone) body.phone = client.phone
     if (client.address) body.address = client.address
     if (client.city) body.city = client.city
+    // Bsale exige `municipality` para facturas. Si solo tenemos city, la
+    // duplicamos como municipality (mejor que dejar el field vacío y que
+    // Bsale rechace el documento).
+    if (client.municipality || client.city) {
+      body.municipality = client.municipality || client.city
+    }
     if (client.isCompany) body.companyOrPerson = 1
     if (client.businessName) body.company = client.businessName
     if (client.economicActivity) body.activity = client.economicActivity
@@ -163,7 +307,7 @@ export class BsaleDriver implements ITaxDocumentEmitter {
   ): Promise<EmitDocumentResult> {
     const c = this.client(credentials)
     const officeId = this.officeId(config)
-    const taxIds = this.taxIds(config)
+    const taxIdStr = this.taxIdString(config)
     const codeSii = input.type === 'factura' ? SII_FACTURA : SII_BOLETA
 
     const { externalClientId } = await this.upsertClient(credentials, config, input.client)
@@ -176,7 +320,9 @@ export class BsaleDriver implements ITaxDocumentEmitter {
       comment: l.name,
       netUnitValue: l.netUnitValue.toFixed(2),
       quantity: l.quantity.toFixed(3),
-      taxId: taxIds,
+      // Sí, Bsale REALMENTE espera el array como string "[1]". Si se envía
+      // como array JS, Bsale lo descarta y el documento sale exento.
+      taxId: taxIdStr,
       discount: l.discountPct ?? 0,
     }))
 
@@ -190,30 +336,47 @@ export class BsaleDriver implements ITaxDocumentEmitter {
       details,
     }
 
-    if (input.externalReference?.number) {
-      body.references = [
-        {
-          number: input.externalReference.number,
-          reason: input.externalReference.reason || 'Orden de compra marketplace',
-        },
-      ]
+    // references[] en Bsale: convertimos cada DocumentReference al shape que
+    // exige la API. codeSii=801 es "orden de compra" en la tabla oficial del
+    // SII chileno (tabla TpoDocRef). Si la referencia no especifica
+    // codeSii, asumimos 801.
+    if (input.references && input.references.length > 0) {
+      body.references = input.references.map((ref) => {
+        const refDate = ref.date ? this.toUnixSeconds(ref.date) : emissionTs
+        return {
+          number: ref.number,
+          reason: ref.reason || 'Orden de compra',
+          codeSii: ref.codeSii ?? 801,
+          referenceDate: refDate,
+        }
+      })
     }
 
     try {
       const res = await c.post('/documents.json', body)
       const data = res.data || {}
+      const docId = String(data.id)
 
-      // Las líneas devuelven sus IDs en el mismo orden que el array `details`
-      // que enviamos. Bsale las expone como `details` (objeto con `items`) o
-      // `details` array según versión; manejamos ambos.
-      const detailsResp = data.details
-      const items: any[] = Array.isArray(detailsResp)
-        ? detailsResp
-        : detailsResp?.items || []
-      const externalLineIds = items.map((it) => String(it.id))
+      // POST /documents.json devuelve `details` como `{ href }` (lazy ref) y
+      // NO incluye los IDs de las líneas. Tenemos que hacer un GET extra al
+      // endpoint de details para obtenerlos. Los necesitamos para emitir NC
+      // posteriormente (el driver usa documentDetailId al revertir líneas).
+      let externalLineIds: string[] = []
+      try {
+        const detailsRes = await c.get(`/documents/${docId}/details.json`, {
+          params: { limit: Math.max(50, input.lines.length) },
+        })
+        const items: any[] = detailsRes.data?.items || []
+        // Ordenar por lineNumber para asegurar mismo orden que enviamos.
+        items.sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0))
+        externalLineIds = items.map((it) => String(it.id))
+      } catch {
+        // Si falla el fetch, dejamos vacío. La NC posterior fallará pero el
+        // documento principal está emitido — mejor que abortar todo.
+      }
 
       return {
-        externalId: String(data.id),
+        externalId: docId,
         folio: data.number != null ? String(data.number) : undefined,
         emittedAt: data.emissionDate ? new Date(Number(data.emissionDate) * 1000) : input.emissionDate,
         pdfUrl: data.urlPdf || data.urlPdfOriginal || undefined,
@@ -236,15 +399,44 @@ export class BsaleDriver implements ITaxDocumentEmitter {
     const officeId = this.officeId(config)
     const emissionTs = this.toUnixSeconds(input.emissionDate)
 
-    // Política del sistema: NC siempre totales. En Bsale eso se expresa con
-    // quantity=0 y unitValue=0 por línea → revierte la línea completa.
+    // Bsale exige documentTypeId (NO codeSii) en /returns.json. El ID es
+    // interno por cuenta — resolvemos a partir del codeSii estándar SII (61).
+    const documentTypeId = await this.resolveDocumentTypeId(
+      c,
+      credentials.accessToken,
+      SII_NOTA_CREDITO,
+    )
+
+    // Bsale exige que el cliente del documento original tenga `code` (RUT)
+    // para emitir NC. Boletas a consumidor final se emiten sin RUT, y la
+    // NC posterior falla con "client attributes required: code". Aquí
+    // verificamos y, si falta, le ponemos el RUT genérico SII (66.666.666-6).
+    try {
+      const docRes = await c.get(`/documents/${input.originalExternalId}.json`)
+      const clientHref = docRes.data?.client?.href
+      if (clientHref) {
+        const clientRes = await c.get(clientHref)
+        const cli = clientRes.data
+        if (cli?.id && !cli.code) {
+          await c.put(`/clients/${cli.id}.json`, { code: '66666666-6' })
+        }
+      }
+    } catch {
+      // Si la inspección/patch del cliente falla, igual seguimos —
+      // Bsale dará error claro abajo si realmente bloquea.
+    }
+
+    // Política del sistema: NC siempre totales. Bsale espera la cantidad
+    // ORIGINAL de la línea — NO 0, contrario a lo que sugiere la doc. La
+    // devolución "total" en Bsale = devolver toda la cantidad de la línea
+    // referenciada. No se manda unitValue (lo toma del documento original).
     const details = input.originalLines.map((l) => ({
       documentDetailId: Number(l.externalLineId),
-      quantity: '0',
-      unitValue: '0',
+      quantity: l.quantity,
     }))
 
     const body: Record<string, unknown> = {
+      documentTypeId,
       officeId,
       referenceDocumentId: Number(input.originalExternalId),
       emissionDate: emissionTs,

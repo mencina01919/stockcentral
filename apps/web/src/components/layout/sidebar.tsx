@@ -97,7 +97,6 @@ export function Sidebar() {
       basePath: '/sales',
       items: [
         { type: 'leaf', href: '/billing/documents', label: 'Documentos' },
-        { type: 'leaf', href: '/billing/setup', label: 'Configuración' },
         ...channelLeaves('/sales'),
       ],
     },

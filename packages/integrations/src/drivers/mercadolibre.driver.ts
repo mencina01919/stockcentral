@@ -381,7 +381,16 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     const client = this.buildClient(credentials.accessToken)
     const sellerId = credentials.sellerId
 
-    const params: Record<string, unknown> = { seller: sellerId, offset, limit }
+    // ML por default ordena por relevancia. Forzamos `date_desc` para que las
+    // órdenes más recientes lleguen primero. Sin esto, el sync con limit=50
+    // y date_created.from=hace_X_dias trae las primeras 50 órdenes ASC desde
+    // ese punto y nunca llega a las recientes en cuentas con muchas órdenes.
+    const params: Record<string, unknown> = {
+      seller: sellerId,
+      offset,
+      limit,
+      sort: 'date_desc',
+    }
     if (since) params['date_created.from'] = since.toISOString()
 
     const res = await client.get('/orders/search', { params })
@@ -583,5 +592,79 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     return Array.from({ length: Math.ceil(arr.length / size) }, (_, i) =>
       arr.slice(i * size, i * size + size),
     )
+  }
+
+  // ─── Upload de DTE (boleta/factura) a Mercado Libre ──────────────────────
+  // Endpoint: POST /packs/{pack_id}/fiscal_documents (multipart). Si la orden
+  // no es parte de un pack, ML acepta order_id como fallback. Acepta PDF
+  // (máx 1 MB) y opcionalmente XML adicional.
+  //
+  // Limitaciones documentadas:
+  //   - Solo Chile (MLC) y Brasil. Para MLA no aplica.
+  //   - El integrador valida que el RUT del comprador coincida con el del DTE.
+  //   - No diferencia boleta/factura: el endpoint guarda el archivo tal cual.
+  //
+  // Referencias:
+  //   https://developers.mercadolibre.com.ar/en_us/upload-invoices
+  //   https://developers.mercadolibre.cl/es_ar/facturacion
+  async uploadInvoice(
+    credentials: DriverCredentials,
+    input: {
+      // Si la orden tiene packId, usarlo; si no, el externalOrderId.
+      packOrOrderId: string
+      // Buffer del archivo (PDF preferido por ML — máx 1 MB).
+      pdfBuffer: Buffer
+      pdfFilename?: string
+      // Opcional: XML DTE firmado por SII para reforzar validación.
+      xmlBuffer?: Buffer
+      xmlFilename?: string
+    },
+  ): Promise<{ success: boolean; rawResponse?: unknown; error?: string }> {
+    const accessToken = credentials.accessToken
+    if (!accessToken) {
+      return { success: false, error: 'ML: accessToken faltante' }
+    }
+    if (!input.packOrOrderId) {
+      return { success: false, error: 'ML: packOrOrderId requerido' }
+    }
+    if (!input.pdfBuffer || input.pdfBuffer.length === 0) {
+      return { success: false, error: 'ML: pdfBuffer vacío' }
+    }
+    if (input.pdfBuffer.length > 1024 * 1024) {
+      return {
+        success: false,
+        error: `ML: el PDF supera 1 MB (${input.pdfBuffer.length} bytes)`,
+      }
+    }
+
+    try {
+      // FormData global está disponible en Node 18+ (undici). Cast a `any`
+      // para evitar fricción de tipos entre Buffer/Uint8Array<ArrayBufferLike>
+      // y BlobPart en TS 5.x con Node 22 — en runtime acepta Buffer sin problema.
+      const fd = new FormData()
+      const pdfBlob = new Blob([input.pdfBuffer as any], { type: 'application/pdf' })
+      fd.append('fiscal_document', pdfBlob, input.pdfFilename || 'document.pdf')
+      if (input.xmlBuffer && input.xmlBuffer.length > 0) {
+        const xmlBlob = new Blob([input.xmlBuffer as any], { type: 'application/xml' })
+        fd.append('fiscal_document', xmlBlob, input.xmlFilename || 'document.xml')
+      }
+
+      const url = `${ML_API}/packs/${input.packOrOrderId}/fiscal_documents`
+      const res = await axios.post(url, fd, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 30000,
+        maxBodyLength: 5 * 1024 * 1024,
+      })
+      return { success: true, rawResponse: res.data }
+    } catch (err: any) {
+      const status = err?.response?.status
+      const data = err?.response?.data
+      const msg =
+        data?.message ||
+        data?.error ||
+        err?.message ||
+        'ML uploadInvoice: error desconocido'
+      return { success: false, error: `${status ? `[${status}] ` : ''}${msg}`, rawResponse: data }
+    }
   }
 }

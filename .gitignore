@@ -48,3 +48,9 @@ STOCK CENTRAL DISIGN/
 
 # Local upload storage
 uploads/
+
+# Claude Code local config (no debe ir al repo)
+.claude/
+
+# Carpetas de archivos del usuario (XLSX, etc.) que no son parte del repo
+CARGAS MASIVAS/

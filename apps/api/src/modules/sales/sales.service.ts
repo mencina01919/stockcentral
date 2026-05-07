@@ -25,7 +25,17 @@ export class SalesService {
     if (status) where.status = status
     if (source) where.source = source
     if (invoiceType) where.invoiceType = invoiceType
-    if (paymentStatus) where.paymentStatus = paymentStatus
+    if (paymentStatus) {
+      where.paymentStatus = paymentStatus
+      // Si se filtra por paymentStatus="pending" (tab "Por facturar"),
+      // excluir explícitamente ventas canceladas u órdenes en estado terminal
+      // de cancelación. Defensa en profundidad: aunque el mapeo del sync
+      // marque bien `paymentStatus`, una venta cancelada NUNCA debe verse
+      // como "por facturar".
+      if (paymentStatus === 'pending') {
+        where.status = { notIn: ['cancelled', 'canceled', 'failed'] }
+      }
+    }
     if (multiOrder === 'true') {
       where.orders = { some: {} }
     }

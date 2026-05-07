@@ -19,6 +19,7 @@ export interface TaxClientInput {
   economicActivity?: string
   address?: string
   city?: string
+  municipality?: string
   isCompany?: boolean
 }
 
@@ -32,14 +33,27 @@ export interface TaxDocumentLineInput {
   discountPct?: number
 }
 
+export interface DocumentReference {
+  // Número del documento referenciado (ej. saleNumber o externalOrderId).
+  number: string
+  // Descripción libre. Bsale la guarda y la muestra en el detalle del DTE.
+  reason?: string
+  // Código SII (TpoDocRef). 801 = orden de compra (default si se omite).
+  // Tabla oficial SII: 801=OC, 802=nota de pedido, 803=contrato, etc.
+  codeSii?: number
+  // Fecha del documento referenciado. Si se omite, el driver usa la fecha
+  // de emisión del DTE.
+  date?: Date
+}
+
 export interface EmitDocumentInput {
   type: Exclude<TaxDocumentType, 'nota_credito'>
   emissionDate: Date
   client: TaxClientInput
   lines: TaxDocumentLineInput[]
-  // Número de orden externo del marketplace (ML, Falabella, etc.). Va como
-  // referencia / "orden de compra" en el documento emitido.
-  externalReference?: { number: string; reason?: string }
+  // Referencias del DTE (orden de compra, etc.). Bsale acepta múltiples;
+  // típicamente se envía el saleNumber interno y los IDs de marketplace.
+  references?: DocumentReference[]
   currency?: string
 }
 

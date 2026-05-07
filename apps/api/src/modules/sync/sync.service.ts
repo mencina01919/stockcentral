@@ -59,6 +59,42 @@ export class SyncService {
 
   // ─── Cron Jobs ────────────────────────────────────────────────────────────
 
+  // Refresca tokens OAuth ANTES de que expiren. ML emite tokens con vida 6h
+  // y refresh_tokens; si no se renuevan, el sync empieza a fallar con 401
+  // silenciosamente. Corremos cada 30min y refrescamos cualquier token que
+  // expire en menos de 1h.
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async scheduledRefreshOAuthTokens() {
+    const connections = await this.prisma.connection.findMany({
+      where: { syncEnabled: true },
+      select: { id: true, tenantId: true, provider: true, config: true },
+    })
+    const now = Date.now()
+    const oneHourMs = 60 * 60 * 1000
+    for (const conn of connections) {
+      const cfg = (conn.config as any) || {}
+      const expiresAtRaw = cfg?.tokenExpiresAt
+      if (!expiresAtRaw) continue
+      const expiresAt = new Date(expiresAtRaw).getTime()
+      if (Number.isNaN(expiresAt)) continue
+      if (expiresAt - now > oneHourMs) continue
+      try {
+        const driver = getDriver(conn.provider)
+        if (!driver.refreshToken) continue
+      } catch {
+        continue
+      }
+      try {
+        await this.refreshOAuthToken(conn.tenantId, conn.id)
+        this.logger.log(`OAuth token refreshed for ${conn.provider} (${conn.id})`)
+      } catch (err: any) {
+        this.logger.error(
+          `OAuth refresh failed for ${conn.provider} (${conn.id}): ${err?.message || err}`,
+        )
+      }
+    }
+  }
+
   @Cron(CronExpression.EVERY_5_MINUTES)
   async scheduledOrdersInbound() {
     const connections = await this.prisma.connection.findMany({
@@ -557,20 +593,31 @@ export class SyncService {
     const connection = await this.getConnection(tenantId, connectionId)
     const driver = getDriver(connection.provider)
     const credentials = connection.credentials as Record<string, string>
-    const config = connection.config as Record<string, unknown> | undefined
+    const config = (connection.config as Record<string, unknown> | undefined) || {}
 
     if (!driver.refreshToken || !credentials.refreshToken) return
 
-    const tokens = await driver.refreshToken(credentials.refreshToken, config || {})
+    const tokens = await driver.refreshToken(credentials.refreshToken, config)
     const updatedCredentials = {
       ...credentials,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken || credentials.refreshToken,
     }
+    // Persistir tokenExpiresAt para que el cron pueda decidir cuándo
+    // renovar la próxima vez.
+    const updatedConfig = {
+      ...config,
+      tokenExpiresAt: tokens.expiresAt
+        ? tokens.expiresAt.toISOString()
+        : (config as any).tokenExpiresAt,
+    }
 
     await this.prisma.connection.update({
       where: { id: connectionId },
-      data: { credentials: updatedCredentials as any },
+      data: {
+        credentials: updatedCredentials as any,
+        config: updatedConfig as any,
+      },
     })
   }
 
@@ -764,9 +811,14 @@ export class SyncService {
   private mapPaymentStatus(marketStatus: string): string {
     const paid = ['delivered', 'shipped', 'ready_to_ship', 'readytoship', 'paid', 'partially_refunded']
     const refunded = ['returned']
+    // Cancelaciones del marketplace deben quedar como `cancelled`, no como
+    // `pending`. Antes una orden cancelada caía en "Por facturar" porque
+    // /pending/ era el catch-all del default.
+    const cancelled = ['cancelled', 'canceled', 'failed', 'invalid']
     const s = marketStatus?.toLowerCase()
     if (paid.includes(s)) return 'paid'
     if (refunded.includes(s)) return 'refunded'
+    if (cancelled.includes(s)) return 'cancelled'
     return 'pending'
   }
 

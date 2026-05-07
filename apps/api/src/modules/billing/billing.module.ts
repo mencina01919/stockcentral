@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common'
+import { Module, forwardRef } from '@nestjs/common'
 import { BullModule } from '@nestjs/bull'
 import { BILLING_QUEUE } from './billing.constants'
 import { BillingListener } from './billing.listener'
@@ -14,7 +14,7 @@ import { TaxDocumentsModule } from '../tax-documents/tax-documents.module'
         removeOnFail: 200,
       },
     }),
-    TaxDocumentsModule,
+    forwardRef(() => TaxDocumentsModule),
   ],
   providers: [BillingListener, BillingProcessor],
   exports: [BillingListener],

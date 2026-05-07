@@ -128,4 +128,13 @@ export class TaxDocumentsController {
   convertToFactura(@TenantId() tenantId: string, @Param('saleId') saleId: string) {
     return this.service.convertBoletaToFactura(tenantId, saleId)
   }
+
+  @ApiBearerAuth()
+  @Post(':id/push-to-marketplace')
+  @ApiOperation({
+    summary: 'Forzar push del DTE al marketplace (manual, ignora flag pushToMarketplace)',
+  })
+  pushToMarketplace(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.service.pushToMarketplaceManual(tenantId, id)
+  }
 }

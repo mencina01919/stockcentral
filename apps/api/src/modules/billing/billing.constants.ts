@@ -3,6 +3,10 @@ export const BILLING_QUEUE = 'billing'
 export const BillingJobType = {
   EMIT_DOCUMENT: 'billing:emit-document',
   EMIT_CREDIT_NOTE: 'billing:emit-credit-note',
+  // Sube el PDF del DTE emitido al marketplace (hoy solo ML soporta esto).
+  // Se encola desde el listener cuando un TaxDocument pasa a `issued` y la
+  // conexión Bsale tiene `pushToMarketplace: true`.
+  PUSH_TO_MARKETPLACE: 'billing:push-to-marketplace',
 } as const
 export type BillingJobType = (typeof BillingJobType)[keyof typeof BillingJobType]
 

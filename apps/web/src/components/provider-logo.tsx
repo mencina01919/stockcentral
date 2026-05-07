@@ -28,6 +28,7 @@ const PROVIDER_BG: Record<string, string> = {
   walmart:      'bg-blue-50',
   ripley:       'bg-red-50',
   prestashop:   'bg-pink-50',
+  bsale:        'bg-orange-50',
   custom:       'bg-gray-100',
 }
 
@@ -43,6 +44,7 @@ const PROVIDER_TEXT: Record<string, string> = {
   walmart:      'text-blue-700',
   ripley:       'text-red-700',
   prestashop:   'text-pink-700',
+  bsale:        'text-orange-700',
   custom:       'text-gray-600',
 }
 

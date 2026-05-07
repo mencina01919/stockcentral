@@ -17,7 +17,7 @@ import { toast } from 'sonner'
 
 const PROVIDER_META: Record<string, {
   label: string
-  type: 'ecommerce' | 'marketplace'
+  type: 'ecommerce' | 'marketplace' | 'billing'
   color: string
   bg: string
   authType: 'oauth' | 'apikey' | 'basic'
@@ -103,6 +103,58 @@ const PROVIDER_META: Record<string, {
       },
     ],
   },
+  bsale: {
+    label: 'Bsale', type: 'billing', color: 'text-orange-600', bg: 'bg-orange-50',
+    authType: 'apikey',
+    fields: [
+      {
+        key: 'accessToken',
+        label: 'Access Token',
+        placeholder: 'pega tu token de Bsale',
+        secret: true,
+        hint: 'Bsale → Configuración → API. Para sandbox usa el token de account.bsale.dev.',
+      },
+      {
+        key: 'officeId',
+        label: 'Sucursal (officeId)',
+        placeholder: 'ej. 1',
+        configField: true,
+        hint: 'ID de la sucursal de emisión en Bsale.',
+      },
+      {
+        key: 'taxIdIVA',
+        label: 'IVA — taxId (obligatorio)',
+        placeholder: 'ej. 14',
+        configField: true,
+        hint: 'ID del impuesto IVA en TU cuenta Bsale. Sin esto los DTE saldrían exentos.',
+      },
+      {
+        key: 'declareSii',
+        label: 'Declarar al SII',
+        type: 'checkbox',
+        configField: true,
+        defaultValue: true,
+        hint: 'Desactivar para sandbox o pruebas sin gastar folios reales.',
+      },
+      {
+        key: 'autoEmit',
+        label: 'Emisión automática al pago',
+        type: 'checkbox',
+        configField: true,
+        defaultValue: false,
+        hint: 'Cuando OFF, el listener no emite solo: solo se emite vía POST manual a /tax-documents/emit/sale/:saleId. Recomendado dejarlo OFF hasta validar que todo funciona correctamente.',
+      },
+      {
+        key: 'pushToMarketplace',
+        label: 'Subir DTE al marketplace tras emisión',
+        type: 'checkbox',
+        configField: true,
+        defaultValue: false,
+        hint: 'Sube el PDF a la orden del comprador en el marketplace (hoy solo MercadoLibre). Se ejecuta tras cada emisión exitosa. Dejar OFF hasta validar el flujo de emisión.',
+      },
+    ],
+    docs: 'https://docs.bsale.dev/',
+  },
 }
 
 interface CredentialField {
@@ -111,6 +163,12 @@ interface CredentialField {
   placeholder?: string
   hint?: string
   secret?: boolean
+  // Cuando true, el valor va a `config` en vez de a `credentials`. Útil para
+  // settings no-secretos del provider (officeId, taxId, flags…).
+  configField?: boolean
+  // Tipo de input. 'checkbox' renderiza un toggle y persiste boolean.
+  type?: 'text' | 'checkbox'
+  defaultValue?: string | boolean
 }
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
@@ -197,6 +255,7 @@ export default function ConnectionsPage() {
 
   const ecommerce = connections?.filter((c: any) => c.type === 'ecommerce') || []
   const marketplaces = connections?.filter((c: any) => c.type === 'marketplace') || []
+  const billing = connections?.filter((c: any) => c.type === 'billing') || []
 
   return (
     <div className="flex h-full">
@@ -272,6 +331,27 @@ export default function ConnectionsPage() {
                   <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Marketplaces</h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                     {marketplaces.map((conn: any) => (
+                      <ConnectionCard
+                        key={conn.id}
+                        conn={conn}
+                        syncing={syncMutation.isPending && syncMutation.variables === conn.id}
+                        testing={testMutation.isPending && testMutation.variables === conn.id}
+                        onSync={() => syncMutation.mutate(conn.id)}
+                        onTest={() => testMutation.mutate(conn.id)}
+                        onDelete={() => deleteMutation.mutate(conn.id)}
+                        onStatus={() => setStatusPanel(statusPanel === conn.id ? null : conn.id)}
+                        showStatus={statusPanel === conn.id}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {billing.length > 0 && (
+                <section>
+                  <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Facturadores</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {billing.map((conn: any) => (
                       <ConnectionCard
                         key={conn.id}
                         conn={conn}
@@ -538,18 +618,24 @@ type Step = 'select' | 'configure' | 'oauth_ml'
 function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [step, setStep] = useState<Step>('select')
   const [provider, setProvider] = useState<string | null>(null)
-  const [credentials, setCredentials] = useState<Record<string, string>>({})
+  // Mapa unificado por field.key. Al guardar, separamos según field.configField.
+  const [values, setValues] = useState<Record<string, string | boolean>>({})
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
 
   const meta = provider ? PROVIDER_META[provider] : null
 
-  const setField = (key: string, value: string) =>
-    setCredentials((prev) => ({ ...prev, [key]: value }))
+  const setField = (key: string, value: string | boolean) =>
+    setValues((prev) => ({ ...prev, [key]: value }))
 
   const handleSelect = (p: string) => {
     setProvider(p)
-    setCredentials({})
+    // Inicializar defaults (e.g. checkboxes que arrancan en true).
+    const initial: Record<string, string | boolean> = {}
+    for (const f of PROVIDER_META[p]?.fields || []) {
+      if (f.defaultValue !== undefined) initial[f.key] = f.defaultValue
+    }
+    setValues(initial)
     setName(PROVIDER_META[p]?.label || p)
     setStep(p === 'mercadolibre' ? 'oauth_ml' : 'configure')
   }
@@ -558,10 +644,22 @@ function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
     if (!provider || !meta) return
     setLoading(true)
     try {
+      const credentials: Record<string, string> = {}
+      const config: Record<string, string | boolean> = {}
+      for (const f of meta.fields) {
+        const v = values[f.key]
+        if (v === undefined || v === '') continue
+        if (f.configField) {
+          config[f.key] = v
+        } else {
+          credentials[f.key] = String(v)
+        }
+      }
       await api.post('/connections', {
         provider,
         name: name || meta.label,
         credentials,
+        ...(Object.keys(config).length ? { config } : {}),
       })
       toast.success(`${meta.label} conectado correctamente`)
       onSuccess()
@@ -572,7 +670,19 @@ function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
     }
   }
 
-  const canSubmit = meta?.fields.every((f) => !f.secret ? true : credentials[f.key]?.trim())
+  // Validación: todos los `secret` deben tener valor; checkboxes no requieren.
+  const canSubmit = meta?.fields.every((f) => {
+    if (f.type === 'checkbox') return true
+    if (!f.secret && !f.configField) return true
+    if (f.configField && !f.secret) {
+      // Campos config no-secretos: requeridos solo si no tienen default.
+      if (f.defaultValue !== undefined) return true
+      const v = values[f.key]
+      return typeof v === 'string' && v.trim().length > 0
+    }
+    const v = values[f.key]
+    return typeof v === 'string' && v.trim().length > 0
+  })
 
   const stepTitle: Record<Step, string> = {
     select: 'Nueva conexión',
@@ -608,7 +718,7 @@ function ConnectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
               provider={provider!}
               meta={meta!}
               name={name}
-              credentials={credentials}
+              values={values}
               onNameChange={setName}
               onFieldChange={setField}
             />
@@ -844,11 +954,15 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
 function ProviderGrid({ onSelect }: { onSelect: (p: string) => void }) {
   const ecommerceProviders = Object.entries(PROVIDER_META).filter(([, m]) => m.type === 'ecommerce')
   const marketplaceProviders = Object.entries(PROVIDER_META).filter(([, m]) => m.type === 'marketplace')
+  const billingProviders = Object.entries(PROVIDER_META).filter(([, m]) => m.type === 'billing')
 
   return (
     <div className="p-6 space-y-5">
       <ProviderSection title="Tiendas / E-commerce" providers={ecommerceProviders} onSelect={onSelect} />
       <ProviderSection title="Marketplaces" providers={marketplaceProviders} onSelect={onSelect} />
+      {billingProviders.length > 0 && (
+        <ProviderSection title="Facturadores" providers={billingProviders} onSelect={onSelect} />
+      )}
     </div>
   )
 }
@@ -890,14 +1004,14 @@ function ProviderSection({
 // ─── Credentials form ─────────────────────────────────────────────────────────
 
 function CredentialsForm({
-  provider, meta, name, credentials, onNameChange, onFieldChange,
+  provider, meta, name, values, onNameChange, onFieldChange,
 }: {
   provider: string
   meta: typeof PROVIDER_META[string]
   name: string
-  credentials: Record<string, string>
+  values: Record<string, string | boolean>
   onNameChange: (v: string) => void
-  onFieldChange: (key: string, value: string) => void
+  onFieldChange: (key: string, value: string | boolean) => void
 }) {
   return (
     <div className="p-6 space-y-4">
@@ -922,23 +1036,42 @@ function CredentialsForm({
         />
       </div>
 
-      {/* Dynamic credential fields */}
-      {meta.fields.map((field) => (
-        <div key={field.key}>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">{field.label}</label>
-          <input
-            type={field.secret ? 'password' : 'text'}
-            value={credentials[field.key] || ''}
-            onChange={(e) => onFieldChange(field.key, e.target.value)}
-            placeholder={field.placeholder}
-            autoComplete={field.secret ? 'new-password' : 'off'}
-            className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent font-mono"
-          />
-          {field.hint && (
-            <p className="text-xs text-gray-400 mt-1">{field.hint}</p>
-          )}
-        </div>
-      ))}
+      {/* Dynamic fields (credentials + config) */}
+      {meta.fields.map((field) => {
+        if (field.type === 'checkbox') {
+          const v = !!values[field.key]
+          return (
+            <div key={field.key}>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={v}
+                  onChange={(e) => onFieldChange(field.key, e.target.checked)}
+                />
+                <span className="text-sm font-medium text-gray-700">{field.label}</span>
+              </label>
+              {field.hint && <p className="text-xs text-gray-400 mt-1">{field.hint}</p>}
+            </div>
+          )
+        }
+        const value = (values[field.key] as string) || ''
+        return (
+          <div key={field.key}>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">{field.label}</label>
+            <input
+              type={field.secret ? 'password' : 'text'}
+              value={value}
+              onChange={(e) => onFieldChange(field.key, e.target.value)}
+              placeholder={field.placeholder}
+              autoComplete={field.secret ? 'new-password' : 'off'}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent font-mono"
+            />
+            {field.hint && (
+              <p className="text-xs text-gray-400 mt-1">{field.hint}</p>
+            )}
+          </div>
+        )
+      })}
 
       {/* Tip box */}
       <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-xs text-amber-700 flex items-start gap-2">
