@@ -202,37 +202,43 @@ export default function ConnectionsPage() {
     <div className="flex h-full">
       {/* Main content */}
       <div className="flex flex-col flex-1 min-w-0">
-        <Header title="Conexiones" subtitle="Gestiona tus plataformas y marketplaces" />
-
-        <div className="flex-1 p-6 overflow-auto space-y-6">
-          {/* Toolbar */}
-          <div className="flex justify-between items-center">
-            <p className="text-sm text-gray-500">
-              {connections?.length || 0} conexión{connections?.length !== 1 ? 'es' : ''} activa{connections?.length !== 1 ? 's' : ''}
-            </p>
-            <div className="flex items-center gap-2">
+        <Header
+          breadcrumbs={['CONSOLA', 'CONEXIONES']}
+          title="Conexiones · Hub omnicanal"
+          subtitle={
+            connections
+              ? `${connections.length} plataforma${connections.length !== 1 ? 's' : ''} configurada${connections.length !== 1 ? 's' : ''}`
+              : 'Gestiona tus plataformas y marketplaces'
+          }
+          actions={
+            <>
               <button
                 onClick={runAudit}
                 disabled={auditing}
                 title="Detecta y limpia mappings basura (productos vinculados de forma corrupta)"
-                className="flex items-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                className="sc-btn-ghost"
+                style={{ padding: '8px 14px', fontSize: 12 }}
               >
                 {auditing ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 ) : (
-                  <Stethoscope className="w-4 h-4" />
+                  <Stethoscope className="w-3.5 h-3.5" />
                 )}
                 Auditar mappings
               </button>
               <button
                 onClick={() => setShowModal(true)}
-                className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                className="sc-btn-primary"
+                style={{ padding: '8px 14px', fontSize: 12 }}
               >
-                <Plus className="w-4 h-4" />
+                <Plus className="w-3.5 h-3.5" />
                 Nueva conexión
               </button>
-            </div>
-          </div>
+            </>
+          }
+        />
+
+        <div className="flex-1 px-7 py-6 overflow-auto space-y-5">
 
           {isLoading ? (
             <div className="flex items-center justify-center h-48">

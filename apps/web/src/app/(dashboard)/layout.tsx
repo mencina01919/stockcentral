@@ -16,10 +16,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, [isAuthenticated, router])
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen sc-grid-bg">
       <Sidebar />
-      <main className="flex-1 overflow-auto">
-        {children}
+      <main className="flex-1 flex flex-col min-w-0 relative overflow-hidden">
+        <div className="sc-glow" />
+        <div className="flex-1 overflow-auto relative" style={{ zIndex: 1 }}>
+          {children}
+        </div>
       </main>
     </div>
   )

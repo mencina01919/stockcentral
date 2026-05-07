@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Settings, Loader2, Building2, CreditCard } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
+import { Panel, MonoLabel, ProgressBar, Chip } from '@/components/sc/ui'
 import { useAuthStore } from '@/stores/auth.store'
 
 export default function SettingsPage() {
@@ -28,104 +29,201 @@ export default function SettingsPage() {
   }
 
   const limits = planLimits[tenant?.plan || 'free']
+  const userInitials = `${user?.firstName?.[0] || ''}${user?.lastName?.[0] || ''}`.toUpperCase()
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="Configuración" subtitle="Configuración de tu cuenta y plan" />
+      <Header
+        breadcrumbs={['CONSOLA', 'CONFIGURACIÓN']}
+        title="Configuración"
+        subtitle="Ajusta tu cuenta, equipo y preferencias"
+      />
 
-      <div className="flex-1 p-6 overflow-auto space-y-6 max-w-3xl">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-48">
-            <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
-          </div>
-        ) : (
-          <>
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Building2 className="w-5 h-5 text-gray-500" />
-                <h3 className="font-semibold text-gray-800">Información de la empresa</h3>
-              </div>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                {[
-                  { label: 'Nombre', value: tenant?.name },
-                  { label: 'Slug', value: tenant?.slug },
-                  { label: 'Email', value: tenant?.email },
-                  { label: 'País', value: tenant?.country },
-                  { label: 'Moneda', value: tenant?.currency },
-                  { label: 'Plan', value: <span className="capitalize font-semibold text-sky-600">{tenant?.plan}</span> },
-                ].map(({ label, value }) => (
-                  <div key={label}>
-                    <p className="text-gray-500 text-xs mb-0.5">{label}</p>
-                    <p className="font-medium text-gray-800">{value}</p>
-                  </div>
-                ))}
-              </div>
+      <div className="flex-1 px-7 py-6 overflow-auto">
+        <div className="max-w-3xl space-y-5">
+          {isLoading ? (
+            <div className="flex items-center justify-center h-48">
+              <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--sc-blue-500)' }} />
             </div>
+          ) : (
+            <>
+              {/* Profile preview */}
+              <Panel style={{ padding: 28 }}>
+                <MonoLabel tone="blue">// ACCOUNT.PROFILE</MonoLabel>
+                <h3
+                  className="mt-1 mb-5"
+                  style={{ fontSize: 20, fontWeight: 600, color: 'var(--sc-text-hi)', letterSpacing: '-0.01em' }}
+                >
+                  Perfil de la cuenta
+                </h3>
 
-            {usage && limits && (
-              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-                <div className="flex items-center gap-2 mb-4">
-                  <CreditCard className="w-5 h-5 text-gray-500" />
-                  <h3 className="font-semibold text-gray-800">Uso del plan</h3>
+                <div
+                  className="flex items-center gap-5"
+                  style={{
+                    padding: 18,
+                    background: '#f7f9fd',
+                    borderRadius: 10,
+                    border: '1px solid var(--sc-line-faint)',
+                  }}
+                >
+                  <div
+                    className="flex items-center justify-center text-white sc-mono flex-shrink-0"
+                    style={{
+                      width: 64,
+                      height: 64,
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #3b82f6, #1e3a8a)',
+                      fontSize: 22,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {userInitials || 'SC'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--sc-text-hi)' }}>
+                      {user?.firstName} {user?.lastName}
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--sc-text-mid)', marginTop: 2 }}>
+                      {user?.email}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <Chip tone="blue">{user?.role?.toUpperCase() || 'USER'}</Chip>
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-4">
+              </Panel>
+
+              {/* Company */}
+              <Panel style={{ padding: 28 }}>
+                <div className="flex items-center gap-2 mb-5">
+                  <Building2 className="w-4 h-4" style={{ color: 'var(--sc-blue-600)' }} />
+                  <MonoLabel tone="blue">// COMPANY.INFO</MonoLabel>
+                </div>
+                <h3
+                  className="mb-5"
+                  style={{ fontSize: 18, fontWeight: 600, color: 'var(--sc-text-hi)', letterSpacing: '-0.01em' }}
+                >
+                  Información de la empresa
+                </h3>
+                <div className="grid grid-cols-2 gap-5">
                   {[
-                    { label: 'Productos', used: usage.products, limit: limits.products },
-                    { label: 'Conexiones', used: usage.connections, limit: limits.connections },
-                    { label: 'Usuarios', used: usage.users, limit: limits.users },
-                  ].map(({ label, used, limit }) => {
-                    const pct = Math.min((used / limit) * 100, 100)
-                    return (
-                      <div key={label}>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-600">{label}</span>
-                          <span className="text-gray-500 font-medium">
-                            {used} / {limit === 999999 ? '∞' : limit}
-                          </span>
-                        </div>
-                        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all ${pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-sky-500'}`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                      </div>
-                    )
-                  })}
+                    { label: 'NOMBRE', value: tenant?.name },
+                    { label: 'SLUG', value: tenant?.slug },
+                    { label: 'EMAIL', value: tenant?.email },
+                    { label: 'PAÍS', value: tenant?.country },
+                    { label: 'MONEDA', value: tenant?.currency },
+                    {
+                      label: 'PLAN',
+                      value: <Chip tone="blue">{(tenant?.plan || 'free').toUpperCase()}</Chip>,
+                    },
+                  ].map(({ label, value }) => (
+                    <div key={label}>
+                      <MonoLabel>{label}</MonoLabel>
+                      <p
+                        className="mt-1.5"
+                        style={{ fontSize: 14, fontWeight: 500, color: 'var(--sc-text-hi)' }}
+                      >
+                        {value || '—'}
+                      </p>
+                    </div>
+                  ))}
                 </div>
+              </Panel>
 
-                {tenant?.plan !== 'enterprise' && (
-                  <div className="mt-6 p-4 bg-sky-50 rounded-lg border border-sky-100">
-                    <p className="text-sm text-sky-800 font-medium mb-1">¿Necesitas más capacidad?</p>
-                    <p className="text-xs text-sky-600 mb-3">Actualiza tu plan para acceder a más productos, conexiones y usuarios.</p>
-                    <button className="bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-                      Ver planes disponibles
-                    </button>
+              {/* Plan usage */}
+              {usage && limits && (
+                <Panel style={{ padding: 28 }}>
+                  <div className="flex items-center gap-2 mb-5">
+                    <CreditCard className="w-4 h-4" style={{ color: 'var(--sc-blue-600)' }} />
+                    <MonoLabel tone="blue">// PLAN.USAGE</MonoLabel>
                   </div>
-                )}
-              </div>
-            )}
+                  <h3
+                    className="mb-5"
+                    style={{ fontSize: 18, fontWeight: 600, color: 'var(--sc-text-hi)', letterSpacing: '-0.01em' }}
+                  >
+                    Uso del plan
+                  </h3>
+                  <div className="space-y-5">
+                    {[
+                      { label: 'Productos', used: usage.products, limit: limits.products },
+                      { label: 'Conexiones', used: usage.connections, limit: limits.connections },
+                      { label: 'Usuarios', used: usage.users, limit: limits.users },
+                    ].map(({ label, used, limit }) => {
+                      const pct = Math.min((used / limit) * 100, 100)
+                      const tone = pct > 90 ? 'err' : pct > 70 ? 'warn' : 'blue'
+                      return (
+                        <div key={label}>
+                          <div className="flex justify-between mb-2" style={{ fontSize: 13 }}>
+                            <span style={{ color: 'var(--sc-text-hi)', fontWeight: 500 }}>{label}</span>
+                            <span
+                              className="sc-mono"
+                              style={{ color: 'var(--sc-text-low)' }}
+                            >
+                              {used} / {limit === 999999 ? '∞' : limit}
+                            </span>
+                          </div>
+                          <ProgressBar value={pct} tone={tone} />
+                        </div>
+                      )
+                    })}
+                  </div>
 
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Settings className="w-5 h-5 text-gray-500" />
-                <h3 className="font-semibold text-gray-800">Mi perfil</h3>
-              </div>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                {[
-                  { label: 'Nombre', value: `${user?.firstName} ${user?.lastName}` },
-                  { label: 'Email', value: user?.email },
-                  { label: 'Rol', value: <span className="capitalize">{user?.role}</span> },
-                ].map(({ label, value }) => (
-                  <div key={label}>
-                    <p className="text-gray-500 text-xs mb-0.5">{label}</p>
-                    <p className="font-medium text-gray-800">{value}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
+                  {tenant?.plan !== 'enterprise' && (
+                    <div
+                      className="mt-6"
+                      style={{
+                        padding: 16,
+                        background: 'rgba(59,130,246,0.06)',
+                        border: '1px solid rgba(59,130,246,0.20)',
+                        borderRadius: 10,
+                      }}
+                    >
+                      <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--sc-blue-700)', marginBottom: 4 }}>
+                        ¿Necesitas más capacidad?
+                      </p>
+                      <p style={{ fontSize: 12, color: 'var(--sc-text-mid)', marginBottom: 12 }}>
+                        Actualiza tu plan para acceder a más productos, conexiones y usuarios.
+                      </p>
+                      <button className="sc-btn-primary" style={{ padding: '8px 14px', fontSize: 12 }}>
+                        Ver planes disponibles
+                      </button>
+                    </div>
+                  )}
+                </Panel>
+              )}
+
+              <Panel style={{ padding: 28 }}>
+                <div className="flex items-center gap-2 mb-5">
+                  <Settings className="w-4 h-4" style={{ color: 'var(--sc-blue-600)' }} />
+                  <MonoLabel tone="blue">// USER.PROFILE</MonoLabel>
+                </div>
+                <h3
+                  className="mb-5"
+                  style={{ fontSize: 18, fontWeight: 600, color: 'var(--sc-text-hi)', letterSpacing: '-0.01em' }}
+                >
+                  Mi perfil
+                </h3>
+                <div className="grid grid-cols-2 gap-5">
+                  {[
+                    { label: 'NOMBRE', value: `${user?.firstName} ${user?.lastName}` },
+                    { label: 'EMAIL', value: user?.email },
+                    { label: 'ROL', value: user?.role },
+                  ].map(({ label, value }) => (
+                    <div key={label}>
+                      <MonoLabel>{label}</MonoLabel>
+                      <p
+                        className="mt-1.5"
+                        style={{ fontSize: 14, fontWeight: 500, color: 'var(--sc-text-hi)' }}
+                      >
+                        {value || '—'}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            </>
+          )}
+        </div>
       </div>
     </div>
   )

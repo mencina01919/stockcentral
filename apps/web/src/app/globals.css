@@ -4,26 +4,53 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* shadcn-style HSL tokens, mapped to the new blue-tech palette */
+    --background: 217 50% 97%;          /* #f4f7fc */
+    --foreground: 220 65% 14%;          /* #0b1f3f */
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 220 65% 14%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 201 96% 32%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 201 96% 32%;
-    --radius: 0.5rem;
+    --popover-foreground: 220 65% 14%;
+    --primary: 221 83% 53%;             /* blue-600 #2563eb */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 95% 93%;           /* blue-100 */
+    --secondary-foreground: 224 76% 33%;/* blue-700 */
+    --muted: 214 32% 95%;
+    --muted-foreground: 220 18% 46%;    /* text-mid */
+    --accent: 214 100% 97%;             /* blue-50 */
+    --accent-foreground: 224 76% 33%;
+    --destructive: 0 73% 51%;           /* #dc2626 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 50% 88%;
+    --input: 220 50% 88%;
+    --ring: 221 83% 53%;
+    --radius: 0.625rem;
+
+    /* StockCentral redesign tokens (additive) */
+    --sc-bg-deep: #f4f7fc;
+    --sc-bg-shell: #ffffff;
+    --sc-line-faint: rgba(30, 58, 138, 0.06);
+    --sc-line-soft: rgba(30, 58, 138, 0.10);
+    --sc-line-strong: rgba(30, 58, 138, 0.18);
+    --sc-blue-50: #eff6ff;
+    --sc-blue-100: #dbeafe;
+    --sc-blue-200: #bfdbfe;
+    --sc-blue-300: #93c5fd;
+    --sc-blue-400: #60a5fa;
+    --sc-blue-500: #3b82f6;
+    --sc-blue-600: #2563eb;
+    --sc-blue-700: #1d4ed8;
+    --sc-blue-800: #1e40af;
+    --sc-blue-900: #1e3a8a;
+    --sc-cyan-400: #22d3ee;
+    --sc-text-hi: #0b1f3f;
+    --sc-text-mid: #46587a;
+    --sc-text-low: #6c7d9e;
+    --sc-text-faint: #a7b5cf;
+    --sc-ok: #10b981;
+    --sc-warn: #d97706;
+    --sc-err: #dc2626;
+    --sc-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
   }
 
   .dark {
@@ -33,19 +60,19 @@
     --card-foreground: 210 40% 98%;
     --popover: 222.2 84% 4.9%;
     --popover-foreground: 210 40% 98%;
-    --primary: 201 96% 50%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 217 33% 17%;
     --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
     --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+    --destructive: 0 63% 31%;
     --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 201 96% 50%;
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 217 91% 60%;
   }
 }
 
@@ -56,4 +83,235 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* ==========================================================
+   StockCentral redesign — additive utility classes.
+   These are scoped via .sc- prefixes so they only apply to
+   components that opt in. Existing pages keep working.
+   ========================================================== */
+
+/* Gridded background used by the app shell */
+.sc-grid-bg {
+  background-color: var(--sc-bg-deep);
+  background-image:
+    linear-gradient(rgba(30, 58, 138, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 58, 138, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+}
+
+/* Glow accent (used behind dashboard) */
+.sc-glow {
+  position: absolute;
+  top: 0;
+  left: 30%;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.12), transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Sidebar */
+.sc-side {
+  width: 248px;
+  background: #ffffff;
+  border-right: 1px solid var(--sc-line-soft);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.sc-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--sc-text-mid);
+  transition: all 0.15s;
+  cursor: pointer;
+  user-select: none;
+  text-decoration: none;
+}
+.sc-nav-item:hover {
+  background: rgba(59, 130, 246, 0.06);
+  color: var(--sc-blue-700);
+}
+.sc-nav-item.is-active {
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.10), rgba(59, 130, 246, 0.02));
+  color: var(--sc-blue-700);
+  box-shadow: inset 2px 0 0 var(--sc-blue-600);
+}
+
+.sc-nav-sub {
+  display: block;
+  padding: 6px 12px 6px 40px;
+  font-size: 12px;
+  color: var(--sc-text-low);
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.sc-nav-sub:hover {
+  color: var(--sc-blue-700);
+  background: rgba(59, 130, 246, 0.05);
+}
+.sc-nav-sub.is-active {
+  color: var(--sc-blue-700);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+/* Panels / cards */
+.sc-panel {
+  background: #ffffff;
+  border: 1px solid var(--sc-line-soft);
+  border-radius: 12px;
+  box-shadow:
+    0 1px 0 rgba(30, 58, 138, 0.04),
+    0 8px 24px -16px rgba(30, 58, 138, 0.18);
+}
+.sc-panel-flat {
+  background: #ffffff;
+  border: 1px solid var(--sc-line-soft);
+  border-radius: 12px;
+}
+
+/* Buttons */
+.sc-btn-primary {
+  background: linear-gradient(135deg, var(--sc-blue-500), var(--sc-blue-700));
+  color: white;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 13px;
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  box-shadow:
+    0 6px 20px -8px rgba(59, 130, 246, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.sc-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 10px 26px -8px rgba(59, 130, 246, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+.sc-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.sc-btn-ghost {
+  background: #ffffff;
+  color: var(--sc-text-mid);
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--sc-line-soft);
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.sc-btn-ghost:hover {
+  color: var(--sc-blue-700);
+  border-color: var(--sc-blue-300);
+  background: rgba(59, 130, 246, 0.04);
+}
+
+/* Chips */
+.sc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--sc-mono);
+  font-weight: 500;
+  border: 1px solid rgba(59, 130, 246, 0.20);
+  background: rgba(59, 130, 246, 0.06);
+  color: var(--sc-blue-700);
+}
+
+/* Pulse dot (status / live) */
+.sc-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sc-ok);
+  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6);
+  animation: sc-pulse 2s infinite;
+}
+@keyframes sc-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6); }
+  70%  { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+/* Inputs */
+.sc-input {
+  background: #ffffff;
+  border: 1px solid var(--sc-line-soft);
+  color: var(--sc-text-hi);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  width: 100%;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.sc-input:focus {
+  outline: none;
+  border-color: var(--sc-blue-500);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+.sc-input::placeholder {
+  color: var(--sc-text-faint);
+}
+
+/* Mono helper */
+.sc-mono {
+  font-family: var(--sc-mono);
+  letter-spacing: 0.02em;
+}
+
+/* Animated scan line (used in login hero) */
+@keyframes sc-scan {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(2400%); }
+}
+.sc-scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--sc-blue-400), transparent);
+  opacity: 0.4;
+  animation: sc-scan 6s linear infinite;
+  pointer-events: none;
+}
+
+/* Hide scrollbars where the redesign expects it */
+.sc-scroll-hide::-webkit-scrollbar { display: none; }
+.sc-scroll-hide { scrollbar-width: none; }
+
+/* Hover for table rows in redesign */
+.sc-row { transition: background-color .12s; }
+.sc-row:hover td { background: rgba(59, 130, 246, 0.04); }
+
+/* Number features (tabular numbers) globally for mono spans */
+.sc-mono {
+  font-feature-settings: 'tnum';
 }

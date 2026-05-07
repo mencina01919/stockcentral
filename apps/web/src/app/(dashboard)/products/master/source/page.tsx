@@ -114,6 +114,7 @@ export default function CatalogSourcePage() {
   return (
     <div className="flex flex-col h-full">
       <Header
+        breadcrumbs={['CONSOLA', 'PRODUCTOS', 'MAESTRO', 'FUENTE']}
         title="Fuente del catálogo maestro"
         subtitle="Define qué conexión alimenta tu catálogo de productos"
       />

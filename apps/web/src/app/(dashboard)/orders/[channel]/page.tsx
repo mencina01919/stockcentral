@@ -5,8 +5,18 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Search, ShoppingCart, Loader2, Eye, Package, MapPin, CreditCard, ExternalLink } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
+import { Panel, Chip, StatusBadge, MonoLabel } from '@/components/sc/ui'
 import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
 import { toast } from 'sonner'
+
+const STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
+  pending: 'warn',
+  confirmed: 'blue',
+  processing: 'blue',
+  fulfilled: 'cyan',
+  completed: 'ok',
+  cancelled: 'err',
+}
 
 export default function OrdersPage({ params }: { params: { channel: string } }) {
   const channel = params.channel
@@ -52,107 +62,218 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
   return (
     <div className="flex flex-col h-full">
       <Header
-        title="Órdenes"
-        subtitle={`Órdenes de ${channelLabel}`}
+        breadcrumbs={['CONSOLA', 'ÓRDENES', channel === 'all' ? 'TODAS' : channel.toUpperCase()]}
+        title={`Órdenes · ${channel === 'all' ? 'Todos los canales' : channelLabel}`}
+        subtitle={meta ? `${meta.total} órdenes encontradas` : 'Gestión de órdenes omnicanal'}
       />
 
-      <div className="flex-1 p-6 overflow-auto">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="p-4 border-b border-gray-100">
+      <div className="flex-1 px-7 py-6 overflow-auto">
+        <Panel className="overflow-hidden">
+          <div style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}>
             <div className="relative max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Search
+                className="w-3.5 h-3.5 absolute"
+                style={{ left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--sc-text-low)' }}
+              />
               <input
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                placeholder="Buscar por orden, cliente..."
-                className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                placeholder="Buscar #orden, cliente, email…"
+                className="sc-input"
+                style={{ paddingLeft: 38 }}
               />
             </div>
           </div>
 
-          <div className="px-4 border-b border-gray-100 flex gap-1 overflow-x-auto">
-            {statusTabs.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => { setStatus(tab.key); setPage(1) }}
-                className={`px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
-                  status === tab.key
-                    ? 'border-sky-600 text-sky-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div
+            className="flex gap-1 overflow-x-auto"
+            style={{ padding: '0 16px', borderBottom: '1px solid var(--sc-line-soft)' }}
+          >
+            {statusTabs.map((tab) => {
+              const active = status === tab.key
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => { setStatus(tab.key); setPage(1) }}
+                  style={{
+                    padding: '13px 16px',
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: active ? 'var(--sc-blue-600)' : 'var(--sc-text-mid)',
+                    borderBottom: `2px solid ${active ? 'var(--sc-blue-600)' : 'transparent'}`,
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottomWidth: 2,
+                    borderBottomStyle: 'solid',
+                    borderBottomColor: active ? 'var(--sc-blue-600)' : 'transparent',
+                    whiteSpace: 'nowrap',
+                    cursor: 'pointer',
+                    transition: 'color .15s',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              )
+            })}
           </div>
 
           {isLoading ? (
             <div className="flex items-center justify-center h-48">
-              <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
+              <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--sc-blue-500)' }} />
             </div>
           ) : orders.length === 0 ? (
             <div className="text-center py-16">
-              <ShoppingCart className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500 font-medium">No hay órdenes</p>
+              <ShoppingCart className="w-12 h-12 mx-auto mb-3" style={{ color: 'var(--sc-text-faint)' }} />
+              <p style={{ color: 'var(--sc-text-low)', fontWeight: 500 }}>No hay órdenes</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50">
+              <table className="w-full" style={{ fontSize: 13 }}>
+                <thead>
                   <tr>
-                    {['# Orden', 'Cliente', 'Canal', 'Items', 'Total', 'Estado', 'Pago', 'Fecha', 'Acciones'].map((h) => (
-                      <th key={h} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                    {['#ORDEN', 'CLIENTE', 'CANAL', 'ITEMS', 'TOTAL', 'ESTADO', 'PAGO', 'FECHA', ''].map((h, i) => (
+                      <th
+                        key={i}
+                        className="sc-mono text-left"
+                        style={{
+                          padding: '12px 16px',
+                          fontSize: 10.5,
+                          letterSpacing: '0.16em',
+                          color: 'var(--sc-text-low)',
+                          background: '#f7f9fd',
+                          borderBottom: '1px solid var(--sc-line-soft)',
+                          fontWeight: 500,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {h}
+                      </th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody>
                   {orders.map((order: any) => {
-                    const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status, color: 'bg-gray-100 text-gray-600' }
+                    const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status }
+                    const tone = STATUS_TONE[order.status] || 'low'
                     return (
-                      <tr key={order.id} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-6 py-4 text-sm font-medium text-sky-600 whitespace-nowrap">
+                      <tr key={order.id} className="sc-row">
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            color: 'var(--sc-blue-600)',
+                            fontWeight: 500,
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           {order.orderNumber}
                         </td>
-                        <td className="px-6 py-4">
-                          <p className="text-sm font-medium text-gray-900">{order.customerName}</p>
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          <div style={{ color: 'var(--sc-text-hi)', fontWeight: 500 }}>{order.customerName}</div>
                           {order.customerEmail && (
-                            <p className="text-xs text-gray-400">{order.customerEmail}</p>
+                            <div className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', marginTop: 2 }}>
+                              {order.customerEmail}
+                            </div>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-500 capitalize">
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            color: 'var(--sc-text-mid)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
                           {PROVIDER_LABELS[order.sourceChannel] || order.sourceChannel}
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-600">
-                          {order.items?.length || 0} items
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            color: 'var(--sc-text-mid)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {order.items?.length || 0}
                         </td>
-                        <td className="px-6 py-4 text-sm font-semibold text-gray-800 whitespace-nowrap">
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            fontWeight: 600,
+                            color: 'var(--sc-text-hi)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           {formatCurrency(Number(order.total), order.currency)}
                         </td>
-                        <td className="px-6 py-4">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusInfo.color}`}>
-                            {statusInfo.label}
-                          </span>
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          <StatusBadge tone={tone}>{statusInfo.label}</StatusBadge>
                         </td>
-                        <td className="px-6 py-4">
-                          <span className={`text-xs ${order.paymentStatus === 'paid' ? 'text-green-600' : 'text-yellow-600'}`}>
-                            {order.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente'}
-                          </span>
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            fontSize: 12,
+                            color:
+                              order.paymentStatus === 'paid'
+                                ? 'var(--sc-ok)'
+                                : 'var(--sc-warn)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {order.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente'}
                         </td>
-                        <td className="px-6 py-4 text-xs text-gray-400 whitespace-nowrap">
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            fontSize: 11,
+                            color: 'var(--sc-text-low)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           {formatDate(order.createdAt)}
                         </td>
-                        <td className="px-6 py-4">
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => setSelectedOrder(order)}
-                              className="p-1.5 text-gray-400 hover:text-sky-600 hover:bg-sky-50 rounded transition-colors"
+                              className="sc-btn-ghost"
+                              style={{ padding: 6 }}
+                              aria-label="Ver detalle"
                             >
-                              <Eye className="w-4 h-4" />
+                              <Eye className="w-3.5 h-3.5" />
                             </button>
                             {['pending', 'confirmed'].includes(order.status) && (
                               <button
                                 onClick={() => cancelMutation.mutate(order.id)}
-                                className="px-2 py-1 text-xs text-red-500 hover:bg-red-50 rounded transition-colors"
+                                style={{
+                                  padding: '5px 10px',
+                                  fontSize: 11,
+                                  color: 'var(--sc-err)',
+                                  borderRadius: 6,
+                                  background: 'transparent',
+                                  border: '1px solid rgba(220,38,38,0.20)',
+                                  cursor: 'pointer',
+                                  transition: 'background .15s',
+                                }}
                               >
                                 Cancelar
                               </button>
@@ -168,17 +289,34 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
           )}
 
           {meta && meta.totalPages > 1 && (
-            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between">
-              <p className="text-sm text-gray-500">
-                {meta.total} órdenes — Página {meta.page} de {meta.totalPages}
+            <div
+              className="flex items-center justify-between"
+              style={{ padding: '14px 20px', borderTop: '1px solid var(--sc-line-soft)' }}
+            >
+              <p className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', letterSpacing: '0.14em' }}>
+                {meta.total} ÓRDENES · PÁGINA {meta.page} DE {meta.totalPages}
               </p>
               <div className="flex gap-2">
-                <button onClick={() => setPage((p) => p - 1)} disabled={!meta.hasPrevPage} className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Anterior</button>
-                <button onClick={() => setPage((p) => p + 1)} disabled={!meta.hasNextPage} className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Siguiente</button>
+                <button
+                  onClick={() => setPage((p) => p - 1)}
+                  disabled={!meta.hasPrevPage}
+                  className="sc-btn-ghost"
+                  style={{ padding: '6px 14px', fontSize: 12 }}
+                >
+                  Anterior
+                </button>
+                <button
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={!meta.hasNextPage}
+                  className="sc-btn-ghost"
+                  style={{ padding: '6px 14px', fontSize: 12 }}
+                >
+                  Siguiente
+                </button>
               </div>
             </div>
           )}
-        </div>
+        </Panel>
       </div>
 
       {selectedOrder && (
@@ -195,8 +333,15 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
   )
 }
 
-function OrderDetailModal({ order, onClose, onStatusChange }: { order: any; onClose: () => void; onStatusChange: () => void }) {
-  const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status, color: 'bg-gray-100 text-gray-600' }
+function OrderDetailModal({
+  order, onClose, onStatusChange,
+}: {
+  order: any
+  onClose: () => void
+  onStatusChange: () => void
+}) {
+  const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status }
+  const tone = STATUS_TONE[order.status] || 'low'
 
   const advanceMutation = useMutation({
     mutationFn: () => api.patch(`/orders/${order.id}/advance`),
@@ -227,114 +372,276 @@ function OrderDetailModal({ order, onClose, onStatusChange }: { order: any; onCl
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-2xl shadow-2xl max-h-[90vh] flex flex-col">
-        <div className="p-6 border-b border-gray-100 flex items-start justify-between">
+    <div
+      className="fixed inset-0 flex items-center justify-center z-50 p-4"
+      style={{ background: 'rgba(11,31,63,0.5)', backdropFilter: 'blur(4px)' }}
+    >
+      <Panel className="w-full max-w-2xl flex flex-col" style={{ maxHeight: '90vh' }}>
+        <div
+          className="flex items-start justify-between flex-shrink-0"
+          style={{ padding: 24, borderBottom: '1px solid var(--sc-line-soft)' }}
+        >
           <div>
-            <div className="flex items-center gap-3">
-              <h2 className="text-lg font-semibold text-gray-900">{order.orderNumber}</h2>
-              <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusInfo.color}`}>
-                {statusInfo.label}
-              </span>
+            <MonoLabel tone="blue">// ORDER.DETAIL</MonoLabel>
+            <div className="flex items-center gap-3 mt-1">
+              <h2
+                style={{ fontSize: 18, fontWeight: 600, color: 'var(--sc-text-hi)', letterSpacing: '-0.01em' }}
+              >
+                {order.orderNumber}
+              </h2>
+              <StatusBadge tone={tone}>{statusInfo.label}</StatusBadge>
             </div>
-            <p className="text-xs text-gray-400 mt-1">{formatDate(order.createdAt)}</p>
+            <p className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', marginTop: 4 }}>
+              {formatDate(order.createdAt)}
+            </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+          <button
+            onClick={onClose}
+            style={{
+              color: 'var(--sc-text-low)',
+              fontSize: 24,
+              lineHeight: 1,
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+            }}
+            aria-label="Cerrar"
+          >
+            ×
+          </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        <div className="flex-1 overflow-y-auto space-y-5" style={{ padding: 24 }}>
           <div className="grid grid-cols-2 gap-4">
-            <div className="bg-gray-50 rounded-xl p-4">
+            <Panel
+              className="sc-panel-flat"
+              style={{ padding: 16, background: '#f7f9fd', boxShadow: 'none' }}
+            >
               <div className="flex items-center gap-2 mb-3">
-                <Package className="w-4 h-4 text-gray-400" />
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Cliente</p>
+                <Package className="w-3.5 h-3.5" style={{ color: 'var(--sc-text-low)' }} />
+                <MonoLabel>CLIENTE</MonoLabel>
               </div>
-              <p className="text-sm font-medium text-gray-900">{order.customerName}</p>
-              {order.customerEmail && <p className="text-xs text-gray-500 mt-0.5">{order.customerEmail}</p>}
-              {order.customerPhone && <p className="text-xs text-gray-500">{order.customerPhone}</p>}
-            </div>
-            <div className="bg-gray-50 rounded-xl p-4">
+              <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--sc-text-hi)' }}>{order.customerName}</p>
+              {order.customerEmail && (
+                <p style={{ fontSize: 12, color: 'var(--sc-text-low)', marginTop: 2 }}>{order.customerEmail}</p>
+              )}
+              {order.customerPhone && (
+                <p style={{ fontSize: 12, color: 'var(--sc-text-low)' }}>{order.customerPhone}</p>
+              )}
+            </Panel>
+            <Panel
+              className="sc-panel-flat"
+              style={{ padding: 16, background: '#f7f9fd', boxShadow: 'none' }}
+            >
               <div className="flex items-center gap-2 mb-3">
-                <CreditCard className="w-4 h-4 text-gray-400" />
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pago</p>
+                <CreditCard className="w-3.5 h-3.5" style={{ color: 'var(--sc-text-low)' }} />
+                <MonoLabel>PAGO</MonoLabel>
               </div>
-              <p className="text-sm font-medium text-gray-900">{formatCurrency(Number(order.total), order.currency)}</p>
-              <p className={`text-xs mt-0.5 ${order.paymentStatus === 'paid' ? 'text-green-600' : 'text-amber-600'}`}>
+              <p
+                className="sc-mono"
+                style={{ fontSize: 14, fontWeight: 600, color: 'var(--sc-text-hi)' }}
+              >
+                {formatCurrency(Number(order.total), order.currency)}
+              </p>
+              <p
+                style={{
+                  fontSize: 12,
+                  marginTop: 2,
+                  color: order.paymentStatus === 'paid' ? 'var(--sc-ok)' : 'var(--sc-warn)',
+                }}
+              >
                 {order.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente de pago'}
               </p>
-              <p className="text-xs text-gray-500 mt-1 capitalize">
+              <p style={{ fontSize: 12, color: 'var(--sc-text-low)', marginTop: 4 }}>
                 Canal: {PROVIDER_LABELS[order.sourceChannel] || order.sourceChannel}
               </p>
-            </div>
+            </Panel>
           </div>
 
           {order.shippingAddress && (
-            <div className="bg-gray-50 rounded-xl p-4">
+            <Panel
+              className="sc-panel-flat"
+              style={{ padding: 16, background: '#f7f9fd', boxShadow: 'none' }}
+            >
               <div className="flex items-center gap-2 mb-3">
-                <MapPin className="w-4 h-4 text-gray-400" />
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Dirección de envío</p>
+                <MapPin className="w-3.5 h-3.5" style={{ color: 'var(--sc-text-low)' }} />
+                <MonoLabel>DIRECCIÓN DE ENVÍO</MonoLabel>
               </div>
-              <p className="text-sm text-gray-700">
+              <p style={{ fontSize: 13, color: 'var(--sc-text-hi)' }}>
                 {order.shippingAddress.address1}
                 {order.shippingAddress.address2 && `, ${order.shippingAddress.address2}`}
               </p>
-              <p className="text-sm text-gray-700">
+              <p style={{ fontSize: 13, color: 'var(--sc-text-mid)' }}>
                 {order.shippingAddress.city}{order.shippingAddress.state ? `, ${order.shippingAddress.state}` : ''}
                 {order.shippingAddress.zip ? ` ${order.shippingAddress.zip}` : ''}
               </p>
-              {order.shippingAddress.country && <p className="text-sm text-gray-700">{order.shippingAddress.country}</p>}
-            </div>
+              {order.shippingAddress.country && (
+                <p style={{ fontSize: 13, color: 'var(--sc-text-mid)' }}>{order.shippingAddress.country}</p>
+              )}
+            </Panel>
           )}
 
           {order.items && order.items.length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Productos</p>
-              <div className="border border-gray-200 rounded-xl overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50">
+              <MonoLabel>PRODUCTOS</MonoLabel>
+              <Panel className="overflow-hidden mt-2">
+                <table className="w-full" style={{ fontSize: 13 }}>
+                  <thead>
                     <tr>
                       {['Producto', 'SKU', 'Cant.', 'Precio unit.', 'Total'].map((h) => (
-                        <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500">{h}</th>
+                        <th
+                          key={h}
+                          className="sc-mono text-left uppercase"
+                          style={{
+                            padding: '10px 14px',
+                            fontSize: 10,
+                            letterSpacing: '0.16em',
+                            color: 'var(--sc-text-low)',
+                            background: '#f7f9fd',
+                            borderBottom: '1px solid var(--sc-line-soft)',
+                            fontWeight: 500,
+                          }}
+                        >
+                          {h}
+                        </th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-100">
+                  <tbody>
                     {order.items.map((item: any) => (
-                      <tr key={item.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 font-medium text-gray-900 text-xs">{item.name}</td>
-                        <td className="px-4 py-3 font-mono text-gray-500 text-xs">{item.sku}</td>
-                        <td className="px-4 py-3 text-gray-700 text-xs">{item.quantity}</td>
-                        <td className="px-4 py-3 text-gray-700 text-xs">{formatCurrency(Number(item.unitPrice), order.currency)}</td>
-                        <td className="px-4 py-3 font-semibold text-gray-900 text-xs">{formatCurrency(Number(item.totalPrice), order.currency)}</td>
+                      <tr key={item.id}>
+                        <td
+                          style={{
+                            padding: '10px 14px',
+                            color: 'var(--sc-text-hi)',
+                            fontWeight: 500,
+                            fontSize: 12,
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {item.name}
+                        </td>
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '10px 14px',
+                            color: 'var(--sc-text-low)',
+                            fontSize: 12,
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {item.sku}
+                        </td>
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '10px 14px',
+                            color: 'var(--sc-text-mid)',
+                            fontSize: 12,
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {item.quantity}
+                        </td>
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '10px 14px',
+                            color: 'var(--sc-text-mid)',
+                            fontSize: 12,
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {formatCurrency(Number(item.unitPrice), order.currency)}
+                        </td>
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '10px 14px',
+                            color: 'var(--sc-text-hi)',
+                            fontWeight: 600,
+                            fontSize: 12,
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {formatCurrency(Number(item.totalPrice), order.currency)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
-                  <tfoot className="bg-gray-50">
+                  <tfoot>
                     <tr>
-                      <td colSpan={4} className="px-4 py-2.5 text-right text-xs font-semibold text-gray-700">Total</td>
-                      <td className="px-4 py-2.5 text-xs font-bold text-gray-900">{formatCurrency(Number(order.total), order.currency)}</td>
+                      <td
+                        colSpan={4}
+                        className="sc-mono uppercase"
+                        style={{
+                          padding: '10px 14px',
+                          background: '#f7f9fd',
+                          textAlign: 'right',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: 'var(--sc-text-mid)',
+                          letterSpacing: '0.14em',
+                        }}
+                      >
+                        Total
+                      </td>
+                      <td
+                        className="sc-mono"
+                        style={{
+                          padding: '10px 14px',
+                          background: '#f7f9fd',
+                          fontSize: 13,
+                          fontWeight: 700,
+                          color: 'var(--sc-text-hi)',
+                        }}
+                      >
+                        {formatCurrency(Number(order.total), order.currency)}
+                      </td>
                     </tr>
                   </tfoot>
                 </table>
-              </div>
+              </Panel>
             </div>
           )}
 
           {order.externalId && (
-            <div className="flex items-center gap-2 text-xs text-gray-500">
+            <div className="flex items-center gap-2" style={{ fontSize: 12, color: 'var(--sc-text-low)' }}>
               <ExternalLink className="w-3.5 h-3.5" />
-              <span>ID externo: <code className="font-mono bg-gray-100 px-1 rounded">{order.externalId}</code></span>
+              <span>
+                ID externo:{' '}
+                <code
+                  className="sc-mono"
+                  style={{
+                    background: 'rgba(30,58,138,0.05)',
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    fontSize: 11,
+                  }}
+                >
+                  {order.externalId}
+                </code>
+              </span>
             </div>
           )}
         </div>
 
         {(canAdvance || canCancel) && (
-          <div className="p-5 border-t border-gray-100 flex gap-3">
+          <div
+            className="flex gap-3 flex-shrink-0"
+            style={{ padding: 20, borderTop: '1px solid var(--sc-line-soft)' }}
+          >
             {canCancel && (
               <button
                 onClick={() => cancelMutation.mutate()}
                 disabled={cancelMutation.isPending}
-                className="px-4 py-2 border border-red-200 text-red-600 hover:bg-red-50 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                className="sc-btn-ghost"
+                style={{
+                  color: 'var(--sc-err)',
+                  borderColor: 'rgba(220,38,38,0.30)',
+                  padding: '10px 16px',
+                  fontSize: 13,
+                }}
               >
                 {cancelMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
                 Cancelar orden
@@ -344,7 +651,8 @@ function OrderDetailModal({ order, onClose, onStatusChange }: { order: any; onCl
               <button
                 onClick={() => advanceMutation.mutate()}
                 disabled={advanceMutation.isPending}
-                className="flex-1 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                className="sc-btn-primary"
+                style={{ flex: 1, justifyContent: 'center', padding: '10px 16px', fontSize: 13 }}
               >
                 {advanceMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
                 {nextStatus[order.status]}
@@ -352,7 +660,7 @@ function OrderDetailModal({ order, onClose, onStatusChange }: { order: any; onCl
             )}
           </div>
         )}
-      </div>
+      </Panel>
     </div>
   )
 }

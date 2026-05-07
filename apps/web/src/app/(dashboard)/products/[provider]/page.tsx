@@ -74,7 +74,7 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
   if (!connections) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
+        <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--sc-blue-500)' }} />
       </div>
     )
   }
@@ -82,14 +82,28 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
   if (!connection) {
     return (
       <div className="flex flex-col h-full">
-        <Header title={`Productos en ${providerLabel}`} subtitle="Vista por marketplace" />
-        <div className="flex-1 p-6">
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
-            <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
-            <p className="text-sm font-medium text-amber-800">
+        <Header
+          breadcrumbs={['CONSOLA', 'PRODUCTOS', providerLabel.toUpperCase()]}
+          title={`Productos en ${providerLabel}`}
+          subtitle="Vista por marketplace"
+        />
+        <div className="flex-1 px-7 py-6">
+          <div
+            className="sc-panel text-center"
+            style={{
+              padding: 32,
+              background: 'rgba(217,119,6,0.05)',
+              borderColor: 'rgba(217,119,6,0.25)',
+            }}
+          >
+            <AlertTriangle
+              className="w-10 h-10 mx-auto mb-3"
+              style={{ color: 'var(--sc-warn)' }}
+            />
+            <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--sc-text-hi)' }}>
               No hay una conexión configurada para {providerLabel}
             </p>
-            <p className="text-xs text-amber-700 mt-1">
+            <p style={{ fontSize: 12, color: 'var(--sc-text-mid)', marginTop: 6 }}>
               Crea la conexión desde la sección Conexiones para ver tus productos publicados.
             </p>
           </div>
@@ -101,6 +115,7 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
   return (
     <div className="flex flex-col h-full">
       <Header
+        breadcrumbs={['CONSOLA', 'PRODUCTOS', providerLabel.toUpperCase()]}
         title={`Productos en ${providerLabel}`}
         subtitle={`Productos publicados en ${connection.name}`}
       />

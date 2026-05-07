@@ -64,26 +64,60 @@ export default function WebhooksPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Header title="Webhooks" subtitle="Recibe notificaciones en tiempo real cuando ocurran eventos" />
-
-      <div className="flex-1 p-6 overflow-auto space-y-6">
-        <div className="bg-sky-50 border border-sky-200 rounded-xl p-4 text-sm text-sky-800">
-          <p className="font-semibold mb-1">¿Cómo funcionan los webhooks?</p>
-          <p className="text-sky-700">
-            StockCentral enviará una solicitud POST a tu URL con un payload JSON cada vez que ocurra un evento.
-            Verifica la firma <code className="bg-sky-100 px-1 rounded font-mono">X-StockCentral-Signature</code> usando tu secret para validar la autenticidad.
-          </p>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-700">{webhooks.length} webhook{webhooks.length !== 1 ? 's' : ''} configurado{webhooks.length !== 1 ? 's' : ''}</h2>
+      <Header
+        breadcrumbs={['CONSOLA', 'WEBHOOKS']}
+        title="Webhooks · Eventos entrantes"
+        subtitle={`${webhooks.length} endpoint${webhooks.length !== 1 ? 's' : ''} configurado${webhooks.length !== 1 ? 's' : ''}`}
+        actions={
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            className="sc-btn-primary"
+            style={{ padding: '8px 14px', fontSize: 12 }}
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-3.5 h-3.5" />
             Nuevo webhook
           </button>
+        }
+      />
+
+      <div className="flex-1 px-7 py-6 overflow-auto space-y-5">
+        <div
+          className="sc-panel"
+          style={{
+            padding: 16,
+            background: 'rgba(59,130,246,0.05)',
+            borderColor: 'rgba(59,130,246,0.20)',
+            fontSize: 13,
+          }}
+        >
+          <p
+            className="sc-mono"
+            style={{
+              fontSize: 11,
+              color: 'var(--sc-blue-600)',
+              letterSpacing: '0.18em',
+              marginBottom: 6,
+            }}
+          >
+            // ¿CÓMO FUNCIONAN?
+          </p>
+          <p style={{ color: 'var(--sc-text-mid)' }}>
+            StockCentral enviará una solicitud POST a tu URL con un payload JSON cada vez que ocurra un evento.
+            Verifica la firma{' '}
+            <code
+              className="sc-mono"
+              style={{
+                background: 'rgba(59,130,246,0.10)',
+                padding: '2px 6px',
+                borderRadius: 4,
+                fontSize: 11,
+                color: 'var(--sc-blue-700)',
+              }}
+            >
+              X-StockCentral-Signature
+            </code>{' '}
+            usando tu secret para validar la autenticidad.
+          </p>
         </div>
 
         {isLoading ? (

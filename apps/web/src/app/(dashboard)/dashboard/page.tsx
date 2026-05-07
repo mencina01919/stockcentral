@@ -2,46 +2,33 @@
 
 import { useQuery } from '@tanstack/react-query'
 import {
-  TrendingUp, TrendingDown, ShoppingCart, Package, Plug, DollarSign,
-  AlertTriangle, CheckCircle2, Loader2, RefreshCw,
+  ShoppingCart, Package, Plug, DollarSign,
+  Loader2, RefreshCw,
 } from 'lucide-react'
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
-import { formatCurrency, formatRelativeDate, ORDER_STATUS_LABELS, CONNECTION_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
+import {
+  Panel, MonoLabel, StatTile, Sparkline, Chip, StatusBadge,
+} from '@/components/sc/ui'
+import {
+  formatCurrency, formatRelativeDate, ORDER_STATUS_LABELS,
+  CONNECTION_STATUS_LABELS, PROVIDER_LABELS,
+} from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth.store'
 
-function StatCard({
-  title, value, change, icon: Icon, color,
-}: {
-  title: string; value: string; change?: number; icon: any; color: string
-}) {
-  return (
-    <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-gray-500 font-medium">{title}</p>
-        <div className={`p-2 rounded-lg ${color}`}>
-          <Icon className="w-4 h-4 text-white" />
-        </div>
-      </div>
-      <p className="text-2xl font-bold text-gray-900">{value}</p>
-      {change !== undefined && (
-        <div className="flex items-center gap-1 mt-2">
-          {change >= 0 ? (
-            <TrendingUp className="w-3 h-3 text-green-500" />
-          ) : (
-            <TrendingDown className="w-3 h-3 text-red-500" />
-          )}
-          <span className={`text-xs font-medium ${change >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-            {change >= 0 ? '+' : ''}{change.toFixed(1)}% vs mes anterior
-          </span>
-        </div>
-      )}
-    </div>
-  )
+const STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
+  pending: 'warn',
+  confirmed: 'blue',
+  processing: 'blue',
+  fulfilled: 'cyan',
+  completed: 'ok',
+  cancelled: 'err',
 }
+
+const TODAY = new Date().toLocaleDateString('es-CL', { day: '2-digit', month: 'short', year: 'numeric' })
 
 export default function DashboardPage() {
   const { user } = useAuthStore()
@@ -60,145 +47,314 @@ export default function DashboardPage() {
     { day: 'Vie', ventas: 88000 }, { day: 'Sáb', ventas: 120000 },
     { day: 'Dom', ventas: 95000 },
   ]
+  const salesByDay = stats.salesByChannel?.length ? stats.salesByChannel : sampleSalesData
 
   return (
     <div className="flex flex-col h-full">
       <Header
+        breadcrumbs={['CONSOLA', 'DASHBOARD']}
         title={`Bienvenido, ${user?.firstName || 'Usuario'}`}
-        subtitle="Resumen de tu negocio este mes"
+        subtitle={`Resumen de tu operación · ${TODAY}`}
       />
 
-      <div className="flex-1 p-6 overflow-auto">
+      <div className="flex-1 px-7 py-6 overflow-auto">
         {isLoading ? (
           <div className="flex items-center justify-center h-48">
-            <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
+            <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--sc-blue-500)' }} />
           </div>
         ) : (
-          <div className="space-y-6">
+          <div className="space-y-5">
+            {/* KPI grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-              <StatCard
-                title="Ventas del mes"
-                value={formatCurrency(stats.totalSales || 0, user?.tenant?.currency || 'CLP')}
-                change={stats.salesChange}
-                icon={DollarSign}
-                color="bg-sky-500"
+              <StatTile
+                label="VENTAS DEL MES"
+                kpi="GMV · CLP"
+                value={formatCurrency(stats.totalSales || 0, user?.tenant?.currency || 'CLP').replace(/^[^\d-]+/, '')}
+                prefix="$"
+                delta={stats.salesChange}
               />
-              <StatCard
-                title="Órdenes"
-                value={String(stats.totalOrders || 0)}
-                change={stats.ordersChange}
-                icon={ShoppingCart}
-                color="bg-violet-500"
+              <StatTile
+                label="ÓRDENES"
+                kpi="ORDERS · 30D"
+                value={(stats.totalOrders || 0).toLocaleString('es-CL')}
+                delta={stats.ordersChange}
               />
-              <StatCard
-                title="Productos activos"
-                value={String(stats.totalProducts || 0)}
-                icon={Package}
-                color="bg-emerald-500"
+              <StatTile
+                label="PRODUCTOS ACTIVOS"
+                kpi="SKU · TOTAL"
+                value={(stats.totalProducts || 0).toLocaleString('es-CL')}
               />
-              <StatCard
-                title="Conexiones activas"
+              <StatTile
+                label="CONEXIONES"
+                kpi="CHANNELS · LIVE"
                 value={String(stats.totalConnections || 0)}
-                icon={Plug}
-                color="bg-amber-500"
               />
             </div>
 
-            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-              <div className="xl:col-span-2 bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="font-semibold text-gray-800">Ventas por día (últimos 7 días)</h3>
-                  <button onClick={() => refetch()} className="p-1.5 text-gray-400 hover:text-gray-600 rounded">
-                    <RefreshCw className="w-4 h-4" />
+            {/* Chart + connections */}
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+              <Panel className="xl:col-span-2 p-6">
+                <div className="flex items-start justify-between mb-5">
+                  <div>
+                    <MonoLabel tone="blue">// REVENUE.STREAM</MonoLabel>
+                    <h3
+                      className="mt-1"
+                      style={{
+                        fontSize: 18,
+                        fontWeight: 600,
+                        color: 'var(--sc-text-hi)',
+                        letterSpacing: '-0.01em',
+                      }}
+                    >
+                      Ventas por canal
+                    </h3>
+                  </div>
+                  <button
+                    onClick={() => refetch()}
+                    className="sc-btn-ghost"
+                    style={{ padding: '7px 9px' }}
+                    aria-label="Refrescar"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                <ResponsiveContainer width="100%" height={200}>
-                  <AreaChart data={stats.salesByChannel?.length ? stats.salesByChannel : sampleSalesData}>
+                <ResponsiveContainer width="100%" height={220}>
+                  <AreaChart data={salesByDay}>
                     <defs>
-                      <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0} />
+                      <linearGradient id="scSalesGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="day" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}K`} />
-                    <Tooltip formatter={(v: number) => formatCurrency(v)} />
-                    <Area type="monotone" dataKey="ventas" stroke="#0ea5e9" fill="url(#salesGrad)" strokeWidth={2} />
+                    <CartesianGrid strokeDasharray="3 6" stroke="rgba(96,165,250,0.15)" />
+                    <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#6c7d9e', fontFamily: 'JetBrains Mono' }} stroke="rgba(30,58,138,0.10)" />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: '#6c7d9e', fontFamily: 'JetBrains Mono' }}
+                      stroke="rgba(30,58,138,0.10)"
+                      tickFormatter={(v) => `$${(v / 1000).toFixed(0)}K`}
+                    />
+                    <Tooltip
+                      formatter={(v: number) => formatCurrency(v)}
+                      contentStyle={{
+                        borderRadius: 8,
+                        border: '1px solid var(--sc-line-soft)',
+                        background: 'rgba(255,255,255,0.95)',
+                        backdropFilter: 'blur(8px)',
+                        fontSize: 12,
+                      }}
+                    />
+                    <Area type="monotone" dataKey="ventas" stroke="#2563eb" fill="url(#scSalesGrad)" strokeWidth={2} />
                   </AreaChart>
                 </ResponsiveContainer>
-              </div>
+              </Panel>
 
-              <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-                <h3 className="font-semibold text-gray-800 mb-4">Estado de conexiones</h3>
+              <Panel className="p-6">
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <MonoLabel tone="blue">// CHANNELS</MonoLabel>
+                    <h3
+                      className="mt-1"
+                      style={{
+                        fontSize: 18,
+                        fontWeight: 600,
+                        color: 'var(--sc-text-hi)',
+                        letterSpacing: '-0.01em',
+                      }}
+                    >
+                      Estado de conexiones
+                    </h3>
+                  </div>
+                </div>
                 {stats.connectionStatus?.length > 0 ? (
                   <div className="space-y-3">
                     {stats.connectionStatus.map((conn: any) => {
                       const s = CONNECTION_STATUS_LABELS[conn.status] || CONNECTION_STATUS_LABELS.disconnected
+                      const tone =
+                        conn.status === 'connected'
+                          ? 'ok'
+                          : conn.status === 'syncing'
+                          ? 'warn'
+                          : conn.status === 'error'
+                          ? 'err'
+                          : 'low'
                       return (
                         <div key={conn.id} className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className={`w-2 h-2 rounded-full ${s.dot}`} />
-                            <span className="text-sm text-gray-700">{PROVIDER_LABELS[conn.provider] || conn.name}</span>
+                          <div className="flex items-center gap-2.5">
+                            <span
+                              style={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: '50%',
+                                background:
+                                  tone === 'ok'
+                                    ? 'var(--sc-ok)'
+                                    : tone === 'warn'
+                                    ? 'var(--sc-warn)'
+                                    : tone === 'err'
+                                    ? 'var(--sc-err)'
+                                    : 'var(--sc-text-low)',
+                              }}
+                            />
+                            <span style={{ fontSize: 13, color: 'var(--sc-text-hi)' }}>
+                              {PROVIDER_LABELS[conn.provider] || conn.name}
+                            </span>
                           </div>
-                          <span className={`text-xs font-medium ${s.color}`}>{s.label}</span>
+                          <Chip tone={tone}>{s.label}</Chip>
                         </div>
                       )
                     })}
                   </div>
                 ) : (
                   <div className="text-center py-8">
-                    <Plug className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                    <p className="text-sm text-gray-400">Sin conexiones aún</p>
-                    <a href="/connections" className="text-sky-600 text-xs hover:underline mt-1 inline-block">
-                      Conectar plataforma
+                    <Plug className="w-10 h-10 mx-auto mb-2" style={{ color: 'var(--sc-text-faint)' }} />
+                    <p style={{ fontSize: 13, color: 'var(--sc-text-low)' }}>Sin conexiones aún</p>
+                    <a
+                      href="/connections"
+                      style={{
+                        color: 'var(--sc-blue-600)',
+                        fontSize: 12,
+                        marginTop: 6,
+                        display: 'inline-block',
+                        fontWeight: 500,
+                      }}
+                    >
+                      Conectar plataforma →
                     </a>
                   </div>
                 )}
-              </div>
+              </Panel>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-                <h3 className="font-semibold text-gray-800">Órdenes recientes</h3>
-                <a href="/orders" className="text-sky-600 text-sm hover:underline">Ver todas</a>
+            {/* Recent orders */}
+            <Panel className="overflow-hidden">
+              <div
+                className="flex items-center justify-between"
+                style={{ padding: '16px 24px', borderBottom: '1px solid var(--sc-line-soft)' }}
+              >
+                <div>
+                  <MonoLabel tone="blue">// ORDERS.RECENT</MonoLabel>
+                  <h3
+                    className="mt-1"
+                    style={{
+                      fontSize: 16,
+                      fontWeight: 600,
+                      color: 'var(--sc-text-hi)',
+                      letterSpacing: '-0.01em',
+                    }}
+                  >
+                    Última actividad
+                  </h3>
+                </div>
+                <a
+                  href="/orders"
+                  className="sc-mono"
+                  style={{ color: 'var(--sc-blue-600)', fontSize: 12, fontWeight: 500 }}
+                >
+                  VER TODAS →
+                </a>
               </div>
               {stats.recentOrders?.length > 0 ? (
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      {['#Orden', 'Cliente', 'Canal', 'Total', 'Estado', 'Fecha'].map((h) => (
-                        <th key={h} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {stats.recentOrders.map((order: any) => {
-                      const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status, color: 'bg-gray-100 text-gray-600' }
-                      return (
-                        <tr key={order.id} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-6 py-4 text-sm font-medium text-sky-600">{order.orderNumber}</td>
-                          <td className="px-6 py-4 text-sm text-gray-600">{order.customerName}</td>
-                          <td className="px-6 py-4 text-sm text-gray-500 capitalize">{PROVIDER_LABELS[order.sourceChannel] || order.sourceChannel}</td>
-                          <td className="px-6 py-4 text-sm font-medium text-gray-800">{formatCurrency(Number(order.total))}</td>
-                          <td className="px-6 py-4">
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusInfo.color}`}>
-                              {statusInfo.label}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-xs text-gray-400">{formatRelativeDate(order.createdAt)}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                <div className="overflow-x-auto">
+                  <table className="w-full" style={{ fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        {['#ORDEN', 'CLIENTE', 'CANAL', 'TOTAL', 'ESTADO', 'HACE'].map((h) => (
+                          <th
+                            key={h}
+                            className="sc-mono text-left"
+                            style={{
+                              padding: '12px 16px',
+                              fontSize: 10.5,
+                              letterSpacing: '0.16em',
+                              color: 'var(--sc-text-low)',
+                              background: '#f7f9fd',
+                              borderBottom: '1px solid var(--sc-line-soft)',
+                              fontWeight: 500,
+                            }}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.recentOrders.map((order: any) => {
+                        const statusInfo = ORDER_STATUS_LABELS[order.status] || { label: order.status }
+                        const tone = STATUS_TONE[order.status] || 'low'
+                        return (
+                          <tr key={order.id}>
+                            <td
+                              className="sc-mono"
+                              style={{
+                                padding: '13px 16px',
+                                color: 'var(--sc-blue-600)',
+                                fontWeight: 500,
+                                borderBottom: '1px solid var(--sc-line-faint)',
+                              }}
+                            >
+                              {order.orderNumber}
+                            </td>
+                            <td
+                              style={{
+                                padding: '13px 16px',
+                                color: 'var(--sc-text-hi)',
+                                borderBottom: '1px solid var(--sc-line-faint)',
+                              }}
+                            >
+                              {order.customerName}
+                            </td>
+                            <td
+                              style={{
+                                padding: '13px 16px',
+                                color: 'var(--sc-text-mid)',
+                                borderBottom: '1px solid var(--sc-line-faint)',
+                              }}
+                            >
+                              {PROVIDER_LABELS[order.sourceChannel] || order.sourceChannel}
+                            </td>
+                            <td
+                              className="sc-mono"
+                              style={{
+                                padding: '13px 16px',
+                                color: 'var(--sc-text-hi)',
+                                fontWeight: 600,
+                                borderBottom: '1px solid var(--sc-line-faint)',
+                              }}
+                            >
+                              {formatCurrency(Number(order.total))}
+                            </td>
+                            <td
+                              style={{
+                                padding: '13px 16px',
+                                borderBottom: '1px solid var(--sc-line-faint)',
+                              }}
+                            >
+                              <StatusBadge tone={tone}>{statusInfo.label}</StatusBadge>
+                            </td>
+                            <td
+                              className="sc-mono"
+                              style={{
+                                padding: '13px 16px',
+                                color: 'var(--sc-text-low)',
+                                fontSize: 11,
+                                borderBottom: '1px solid var(--sc-line-faint)',
+                              }}
+                            >
+                              {formatRelativeDate(order.createdAt)}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               ) : (
                 <div className="text-center py-12">
-                  <ShoppingCart className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                  <p className="text-gray-500">No hay órdenes aún</p>
+                  <ShoppingCart className="w-12 h-12 mx-auto mb-3" style={{ color: 'var(--sc-text-faint)' }} />
+                  <p style={{ color: 'var(--sc-text-low)' }}>No hay órdenes aún</p>
                 </div>
               )}
-            </div>
+            </Panel>
           </div>
         )}
       </div>

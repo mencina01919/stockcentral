@@ -2126,11 +2126,35 @@ export default function PublicationsPage() {
   }, [deepLinkProductId, deepLinkConnectionId, products, connections, deepLinkApplied])
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="px-7 py-6 space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Publicaciones</h1>
-          <p className="text-sm text-gray-500 mt-1">Publica productos en tus marketplaces</p>
+          <p
+            className="sc-mono uppercase"
+            style={{
+              fontSize: 11,
+              letterSpacing: '0.14em',
+              color: 'var(--sc-text-low)',
+              marginBottom: 6,
+            }}
+          >
+            CONSOLA <span style={{ margin: '0 8px', color: 'var(--sc-text-faint)' }}>/</span>
+            <span style={{ color: 'var(--sc-blue-600)' }}>PUBLICACIONES</span>
+          </p>
+          <h1
+            style={{
+              fontSize: 24,
+              fontWeight: 600,
+              color: 'var(--sc-text-hi)',
+              letterSpacing: '-0.01em',
+              margin: 0,
+            }}
+          >
+            Publicaciones por canal
+          </h1>
+          <p style={{ fontSize: 13, color: 'var(--sc-text-mid)', margin: '4px 0 0' }}>
+            Publica productos en tus marketplaces
+          </p>
         </div>
       </div>
 

@@ -5,7 +5,17 @@ import { useQuery } from '@tanstack/react-query'
 import { Search, Receipt, Loader2, Eye, Package, MapPin, CreditCard, Layers, FileText, IdCard } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
+import { Panel, Chip, StatusBadge } from '@/components/sc/ui'
 import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
+
+const STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
+  pending: 'warn',
+  confirmed: 'blue',
+  processing: 'blue',
+  fulfilled: 'cyan',
+  completed: 'ok',
+  cancelled: 'err',
+}
 
 export default function SalesPage({ params }: { params: { channel: string } }) {
   const channel = params.channel
@@ -41,123 +51,217 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
   return (
     <div className="flex flex-col h-full">
       <Header
-        title="Ventas"
-        subtitle={`Ventas agrupadas de ${channelLabel} — base para facturación`}
+        breadcrumbs={['CONSOLA', 'VENTAS', channel === 'all' ? 'TODAS' : channel.toUpperCase()]}
+        title={`Ventas · ${channel === 'all' ? 'Todos los canales' : channelLabel}`}
+        subtitle="Ventas agrupadas — base para facturación"
       />
 
-      <div className="flex-1 p-6 overflow-auto">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="p-4 border-b border-gray-100">
+      <div className="flex-1 px-7 py-6 overflow-auto">
+        <Panel className="overflow-hidden">
+          <div style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}>
             <div className="relative max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Search
+                className="w-3.5 h-3.5 absolute"
+                style={{ left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--sc-text-low)' }}
+              />
               <input
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                placeholder="Buscar por # venta, cliente, pack..."
-                className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                placeholder="Buscar por # venta, cliente, pack…"
+                className="sc-input"
+                style={{ paddingLeft: 38 }}
               />
             </div>
           </div>
 
-          <div className="px-4 border-b border-gray-100 flex gap-1 overflow-x-auto">
-            {statusTabs.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => { setStatus(tab.key); setPage(1) }}
-                className={`px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
-                  status === tab.key
-                    ? 'border-sky-600 text-sky-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div
+            className="flex gap-1 overflow-x-auto"
+            style={{ padding: '0 16px', borderBottom: '1px solid var(--sc-line-soft)' }}
+          >
+            {statusTabs.map((tab) => {
+              const active = status === tab.key
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => { setStatus(tab.key); setPage(1) }}
+                  style={{
+                    padding: '13px 16px',
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: active ? 'var(--sc-blue-600)' : 'var(--sc-text-mid)',
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottomWidth: 2,
+                    borderBottomStyle: 'solid',
+                    borderBottomColor: active ? 'var(--sc-blue-600)' : 'transparent',
+                    whiteSpace: 'nowrap',
+                    cursor: 'pointer',
+                    transition: 'color .15s',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              )
+            })}
           </div>
 
           {isLoading ? (
             <div className="flex items-center justify-center h-48">
-              <Loader2 className="w-8 h-8 animate-spin text-sky-500" />
+              <Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--sc-blue-500)' }} />
             </div>
           ) : sales.length === 0 ? (
             <div className="text-center py-16">
-              <Receipt className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500 font-medium">No hay ventas</p>
+              <Receipt className="w-12 h-12 mx-auto mb-3" style={{ color: 'var(--sc-text-faint)' }} />
+              <p style={{ color: 'var(--sc-text-low)', fontWeight: 500 }}>No hay ventas</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50">
+              <table className="w-full" style={{ fontSize: 13 }}>
+                <thead>
                   <tr>
-                    {['# Venta', 'Cliente', 'Doc', 'Canal', 'Órdenes', 'Total', 'Estado', 'Pago', 'Fecha', 'Acciones'].map((h) => (
-                      <th key={h} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                    {['#VENTA', 'CLIENTE', 'DOC', 'CANAL', 'ÓRDENES', 'TOTAL', 'ESTADO', 'PAGO', 'FECHA', ''].map((h, i) => (
+                      <th
+                        key={i}
+                        className="sc-mono text-left"
+                        style={{
+                          padding: '12px 16px',
+                          fontSize: 10.5,
+                          letterSpacing: '0.16em',
+                          color: 'var(--sc-text-low)',
+                          background: '#f7f9fd',
+                          borderBottom: '1px solid var(--sc-line-soft)',
+                          fontWeight: 500,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {h}
+                      </th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody>
                   {sales.map((sale: any) => {
-                    const statusInfo = ORDER_STATUS_LABELS[sale.status] || { label: sale.status, color: 'bg-gray-100 text-gray-600' }
+                    const statusInfo = ORDER_STATUS_LABELS[sale.status] || { label: sale.status }
+                    const tone = STATUS_TONE[sale.status] || 'low'
                     const orderCount = sale.orders?.length || 0
                     return (
-                      <tr key={sale.id} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-6 py-4 text-sm font-medium text-sky-600 whitespace-nowrap">
+                      <tr key={sale.id} className="sc-row">
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            color: 'var(--sc-blue-600)',
+                            fontWeight: 500,
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           <div className="flex items-center gap-2">
                             {sale.saleNumber}
                             {orderCount > 1 && (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 text-[10px] font-semibold">
+                              <Chip tone="warn">
                                 <Layers className="w-3 h-3" /> {orderCount}
-                              </span>
+                              </Chip>
                             )}
                           </div>
                           {sale.externalGroupId && (
-                            <p className="text-[10px] text-gray-400 font-mono mt-0.5">pack {sale.externalGroupId}</p>
+                            <p
+                              className="sc-mono"
+                              style={{ fontSize: 10, color: 'var(--sc-text-faint)', marginTop: 2 }}
+                            >
+                              pack {sale.externalGroupId}
+                            </p>
                           )}
                         </td>
-                        <td className="px-6 py-4">
-                          <p className="text-sm font-medium text-gray-900">{sale.customerName}</p>
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          <div style={{ color: 'var(--sc-text-hi)', fontWeight: 500 }}>{sale.customerName}</div>
                           {sale.customerEmail && (
-                            <p className="text-xs text-gray-400">{sale.customerEmail}</p>
+                            <div className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', marginTop: 2 }}>
+                              {sale.customerEmail}
+                            </div>
                           )}
                         </td>
-                        <td className="px-6 py-4">
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
                           {sale.invoiceType === 'factura' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 text-xs font-semibold">
-                              Factura
-                            </span>
+                            <Chip tone="cyan">Factura</Chip>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs font-medium">
-                              Boleta
-                            </span>
+                            <Chip tone="low">Boleta</Chip>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-500 capitalize">
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            color: 'var(--sc-text-mid)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
                           {PROVIDER_LABELS[sale.source] || sale.source}
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-600">
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            color: 'var(--sc-text-mid)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
                           {orderCount}
                         </td>
-                        <td className="px-6 py-4 text-sm font-semibold text-gray-800 whitespace-nowrap">
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            fontWeight: 600,
+                            color: 'var(--sc-text-hi)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           {formatCurrency(Number(sale.total), sale.currency)}
                         </td>
-                        <td className="px-6 py-4">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusInfo.color}`}>
-                            {statusInfo.label}
-                          </span>
+                        <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                          <StatusBadge tone={tone}>{statusInfo.label}</StatusBadge>
                         </td>
-                        <td className="px-6 py-4">
-                          <span className={`text-xs ${sale.paymentStatus === 'paid' ? 'text-green-600' : 'text-yellow-600'}`}>
-                            {sale.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente'}
-                          </span>
+                        <td
+                          style={{
+                            padding: '13px 16px',
+                            fontSize: 12,
+                            color: sale.paymentStatus === 'paid' ? 'var(--sc-ok)' : 'var(--sc-warn)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          {sale.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente'}
                         </td>
-                        <td className="px-6 py-4 text-xs text-gray-400 whitespace-nowrap">
+                        <td
+                          className="sc-mono"
+                          style={{
+                            padding: '13px 16px',
+                            fontSize: 11,
+                            color: 'var(--sc-text-low)',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           {formatDate(sale.createdAt)}
                         </td>
-                        <td className="px-6 py-4">
+                        <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
                           <button
                             onClick={() => setSelectedSaleId(sale.id)}
-                            className="p-1.5 text-gray-400 hover:text-sky-600 hover:bg-sky-50 rounded transition-colors"
+                            className="sc-btn-ghost"
+                            style={{ padding: 6 }}
+                            aria-label="Ver detalle"
                           >
-                            <Eye className="w-4 h-4" />
+                            <Eye className="w-3.5 h-3.5" />
                           </button>
                         </td>
                       </tr>
@@ -169,17 +273,34 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
           )}
 
           {meta && meta.totalPages > 1 && (
-            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between">
-              <p className="text-sm text-gray-500">
-                {meta.total} ventas — Página {meta.page} de {meta.totalPages}
+            <div
+              className="flex items-center justify-between"
+              style={{ padding: '14px 20px', borderTop: '1px solid var(--sc-line-soft)' }}
+            >
+              <p className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', letterSpacing: '0.14em' }}>
+                {meta.total} VENTAS · PÁGINA {meta.page} DE {meta.totalPages}
               </p>
               <div className="flex gap-2">
-                <button onClick={() => setPage((p) => p - 1)} disabled={!meta.hasPrevPage} className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Anterior</button>
-                <button onClick={() => setPage((p) => p + 1)} disabled={!meta.hasNextPage} className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Siguiente</button>
+                <button
+                  onClick={() => setPage((p) => p - 1)}
+                  disabled={!meta.hasPrevPage}
+                  className="sc-btn-ghost"
+                  style={{ padding: '6px 14px', fontSize: 12 }}
+                >
+                  Anterior
+                </button>
+                <button
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={!meta.hasNextPage}
+                  className="sc-btn-ghost"
+                  style={{ padding: '6px 14px', fontSize: 12 }}
+                >
+                  Siguiente
+                </button>
               </div>
             </div>
           )}
-        </div>
+        </Panel>
       </div>
 
       {selectedSaleId && (

@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Package, ShoppingCart, Warehouse, Plug, BarChart3,
-  Settings, LogOut, Package2, Webhook, Receipt, ChevronDown, ChevronRight,
+  Settings, LogOut, Webhook, Receipt, ChevronDown, ChevronRight,
   Store, RefreshCw,
 } from 'lucide-react'
 import api from '@/lib/api'
@@ -23,6 +23,21 @@ type NavGroup = {
   items: NavLeaf[]
 }
 type NavItem = { type: 'leaf'; href: string; label: string; icon: any } | NavGroup
+
+function BrandMark() {
+  return (
+    <svg width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden>
+      <path d="M16 2L29 9.5V22.5L16 30L3 22.5V9.5L16 2Z" stroke="url(#sc-brand-grad)" strokeWidth="1.6" />
+      <path d="M16 9L22 12.5V19.5L16 23L10 19.5V12.5L16 9Z" fill="url(#sc-brand-grad)" />
+      <defs>
+        <linearGradient id="sc-brand-grad" x1="3" y1="2" x2="29" y2="30" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#60A5FA" />
+          <stop offset="1" stopColor="#1D4ED8" />
+        </linearGradient>
+      </defs>
+    </svg>
+  )
+}
 
 export function Sidebar() {
   const pathname = usePathname()
@@ -84,47 +99,108 @@ export function Sidebar() {
     },
     { type: 'leaf', href: '/inventory', label: 'Inventario', icon: Warehouse },
     { type: 'leaf', href: '/warehouses', label: 'Bodegas', icon: Store },
-    { type: 'leaf', href: '/publications', label: 'Publicaciones', icon: Package2 },
+    { type: 'leaf', href: '/publications', label: 'Publicaciones', icon: Package },
     { type: 'leaf', href: '/stock-sync', label: 'Sync de Stock', icon: RefreshCw },
     { type: 'leaf', href: '/connections', label: 'Conexiones', icon: Plug },
     { type: 'leaf', href: '/reports', label: 'Reportes', icon: BarChart3 },
     { type: 'leaf', href: '/webhooks', label: 'Webhooks', icon: Webhook },
   ]
 
+  const tenantInitials = (user?.tenant?.name || 'SC').slice(0, 2).toUpperCase()
+  const userInitials = `${user?.firstName?.[0] || ''}${user?.lastName?.[0] || ''}`.toUpperCase()
+
   return (
-    <aside className="w-64 bg-gray-900 text-white flex flex-col min-h-screen">
-      <div className="p-5 border-b border-gray-700">
+    <aside className="sc-side">
+      {/* Brand */}
+      <div className="px-[18px] py-5" style={{ borderBottom: '1px solid var(--sc-line-soft)' }}>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 bg-sky-500 rounded-lg flex items-center justify-center">
-            <Package2 className="w-5 h-5 text-white" />
-          </div>
+          <BrandMark />
           <div>
-            <p className="font-bold text-sm">StockCentral</p>
-            <p className="text-xs text-gray-400 truncate max-w-[140px]">
-              {user?.tenant?.name || 'Mi Tienda'}
-            </p>
+            <div
+              className="sc-mono"
+              style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.12em', color: 'var(--sc-text-hi)' }}
+            >
+              STOCK<span style={{ color: 'var(--sc-blue-600)' }}>CENTRAL</span>
+            </div>
+            <div
+              className="sc-mono"
+              style={{ fontSize: 10, color: 'var(--sc-text-low)', letterSpacing: '0.18em', marginTop: 2 }}
+            >
+              v2.4.0 · OMNICANAL
+            </div>
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+      {/* Tenant chip */}
+      <div className="px-[18px] pt-[14px] pb-[10px]">
+        <div
+          className="sc-panel-flat flex items-center gap-2.5"
+          style={{ padding: '10px 12px', background: 'rgba(59,130,246,0.05)' }}
+        >
+          <div
+            className="flex items-center justify-center sc-mono text-white"
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 6,
+              background: 'linear-gradient(135deg, #3b82f6, #1e3a8a)',
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+          >
+            {tenantInitials}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[12px] font-semibold truncate" style={{ color: 'var(--sc-text-hi)' }}>
+              {user?.tenant?.name || 'Mi Tienda'}
+            </div>
+            <div className="sc-mono text-[10px]" style={{ color: 'var(--sc-text-low)' }}>
+              {user?.tenant?.currency || 'CLP'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 overflow-y-auto sc-scroll-hide" style={{ padding: '8px 12px' }}>
+        <div
+          className="sc-mono"
+          style={{ padding: '8px 8px 6px', fontSize: 10, letterSpacing: '0.2em', color: 'var(--sc-text-faint)' }}
+        >
+          NAVEGACIÓN
+        </div>
         {navItems.map((item) => {
           if (item.type === 'leaf') {
             const Icon = item.icon
             const active = pathname === item.href || pathname.startsWith(item.href + '/')
+            const isLive = item.href === '/stock-sync'
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-                  active
-                    ? 'bg-sky-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-800 hover:text-white',
-                )}
+                className={cn('sc-nav-item', active && 'is-active')}
               >
-                <Icon className="w-4 h-4 flex-shrink-0" />
-                {item.label}
+                <Icon
+                  className="w-[15px] h-[15px] flex-shrink-0"
+                  style={{ color: active ? 'var(--sc-blue-600)' : 'var(--sc-text-mid)' }}
+                />
+                <span className="flex-1">{item.label}</span>
+                {isLive && (
+                  <span
+                    className="sc-mono"
+                    style={{
+                      fontSize: 9,
+                      color: 'var(--sc-ok)',
+                      padding: '2px 6px',
+                      borderRadius: 4,
+                      background: 'rgba(16,185,129,0.10)',
+                      border: '1px solid rgba(16,185,129,0.25)',
+                    }}
+                  >
+                    LIVE
+                  </span>
+                )}
               </Link>
             )
           }
@@ -132,36 +208,45 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="p-4 border-t border-gray-700 space-y-1">
-        <Link
-          href="/settings"
-          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
-        >
-          <Settings className="w-4 h-4" />
-          Configuración
+      {/* Footer */}
+      <div className="px-3 py-3" style={{ borderTop: '1px solid var(--sc-line-soft)' }}>
+        <Link href="/settings" className="sc-nav-item">
+          <Settings className="w-[15px] h-[15px]" style={{ color: 'var(--sc-text-mid)' }} />
+          <span>Configuración</span>
         </Link>
-        <button
-          onClick={logout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
-        >
-          <LogOut className="w-4 h-4" />
-          Cerrar sesión
+        <button onClick={logout} className="sc-nav-item w-full text-left" style={{ background: 'transparent' }}>
+          <LogOut className="w-[15px] h-[15px]" style={{ color: 'var(--sc-text-mid)' }} />
+          <span>Cerrar sesión</span>
         </button>
-      </div>
 
-      {user && (
-        <div className="p-4 border-t border-gray-700">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-sky-600 rounded-full flex items-center justify-center text-xs font-bold">
-              {user.firstName[0]}{user.lastName[0]}
+        {user && (
+          <div className="flex items-center gap-2.5 mt-1.5" style={{ padding: '10px 12px' }}>
+            <div
+              className="flex items-center justify-center text-white sc-mono"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #3b82f6, #1e3a8a)',
+                fontSize: 11,
+                fontWeight: 700,
+                border: '1px solid var(--sc-line-strong)',
+              }}
+            >
+              {userInitials || 'SC'}
             </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium truncate">{user.firstName} {user.lastName}</p>
-              <p className="text-xs text-gray-400 capitalize">{user.role}</p>
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] font-semibold truncate" style={{ color: 'var(--sc-text-hi)' }}>
+                {user.firstName} {user.lastName}
+              </div>
+              <div className="sc-mono text-[10px] uppercase" style={{ color: 'var(--sc-text-low)' }}>
+                {user.role} · ONLINE
+              </div>
             </div>
+            <span className="sc-pulse-dot" />
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </aside>
   )
 }
@@ -174,32 +259,33 @@ function SidebarGroup({ group, pathname }: { group: NavGroup; pathname: string }
   return (
     <div>
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className={cn(
-          'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-          inGroup
-            ? 'bg-gray-800 text-white'
-            : 'text-gray-300 hover:bg-gray-800 hover:text-white',
-        )}
+        className={cn('sc-nav-item w-full text-left', inGroup && 'is-active')}
       >
-        <Icon className="w-4 h-4 flex-shrink-0" />
-        <span className="flex-1 text-left">{group.label}</span>
-        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        <Icon
+          className="w-[15px] h-[15px] flex-shrink-0"
+          style={{ color: inGroup ? 'var(--sc-blue-600)' : 'var(--sc-text-mid)' }}
+        />
+        <span className="flex-1">{group.label}</span>
+        {open ? (
+          <ChevronDown className="w-[13px] h-[13px]" style={{ color: 'var(--sc-text-low)' }} />
+        ) : (
+          <ChevronRight className="w-[13px] h-[13px]" style={{ color: 'var(--sc-text-low)' }} />
+        )}
       </button>
       {open && (
-        <div className="mt-1 ml-3 pl-4 border-l border-gray-700 space-y-0.5">
+        <div
+          className="my-1"
+          style={{ marginLeft: 14, paddingLeft: 14, borderLeft: '1px solid var(--sc-line-soft)' }}
+        >
           {group.items.map((leaf) => {
             const active = pathname === leaf.href
             return (
               <Link
                 key={leaf.href}
                 href={leaf.href}
-                className={cn(
-                  'block px-3 py-2 rounded-md text-xs font-medium transition-colors',
-                  active
-                    ? 'bg-sky-600 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800',
-                )}
+                className={cn('sc-nav-sub', active && 'is-active')}
               >
                 {leaf.label}
               </Link>

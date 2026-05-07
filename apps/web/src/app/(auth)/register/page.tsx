@@ -8,7 +8,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import api from '@/lib/api'
 import { useAuthStore } from '@/stores/auth.store'
-import { Loader2, Package } from 'lucide-react'
+import { ChevronRight, Loader2 } from 'lucide-react'
 
 const schema = z.object({
   firstName: z.string().min(2, 'Mínimo 2 caracteres'),
@@ -19,6 +19,21 @@ const schema = z.object({
 })
 
 type RegisterForm = z.infer<typeof schema>
+
+function BrandMark({ size = 32 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden>
+      <path d="M16 2L29 9.5V22.5L16 30L3 22.5V9.5L16 2Z" stroke="url(#sc-reg-grad)" strokeWidth="1.6" />
+      <path d="M16 9L22 12.5V19.5L16 23L10 19.5V12.5L16 9Z" fill="url(#sc-reg-grad)" />
+      <defs>
+        <linearGradient id="sc-reg-grad" x1="3" y1="2" x2="29" y2="30" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#60A5FA" />
+          <stop offset="1" stopColor="#1D4ED8" />
+        </linearGradient>
+      </defs>
+    </svg>
+  )
+}
 
 export default function RegisterPage() {
   const router = useRouter()
@@ -49,71 +64,166 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-sky-50 to-indigo-100 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <div className="bg-white rounded-2xl shadow-xl p-8">
-          <div className="flex items-center gap-3 mb-8">
-            <div className="w-10 h-10 bg-sky-600 rounded-xl flex items-center justify-center">
-              <Package className="w-6 h-6 text-white" />
+    <div
+      className="sc-grid-bg relative overflow-hidden flex items-center justify-center"
+      style={{
+        minHeight: '100vh',
+        padding: 24,
+        background: 'linear-gradient(135deg, #f4f7fc 0%, #e8effa 60%, #dbe7fa 100%)',
+      }}
+    >
+      <div className="sc-scan-line" style={{ top: 0 }} />
+
+      <div className="sc-panel relative w-full" style={{ maxWidth: 460, padding: 40 }}>
+        <div
+          style={{
+            position: 'absolute',
+            top: -1,
+            left: 24,
+            right: 24,
+            height: 1,
+            background: 'linear-gradient(90deg, transparent, var(--sc-blue-400), transparent)',
+          }}
+        />
+
+        <div className="flex items-center gap-3 mb-7">
+          <BrandMark />
+          <div>
+            <div
+              className="sc-mono"
+              style={{ fontSize: 14, fontWeight: 600, letterSpacing: '0.12em', color: 'var(--sc-text-hi)' }}
+            >
+              STOCK<span style={{ color: 'var(--sc-blue-600)' }}>CENTRAL</span>
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">StockCentral</h1>
-              <p className="text-xs text-gray-500">Prueba gratis 14 días</p>
+            <div
+              className="sc-mono"
+              style={{ fontSize: 10, color: 'var(--sc-text-low)', letterSpacing: '0.18em', marginTop: 2 }}
+            >
+              PRUEBA · 14 DÍAS
             </div>
           </div>
-
-          <h2 className="text-2xl font-semibold text-gray-800 mb-6">Crear cuenta</h2>
-
-          {serverError && (
-            <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3 mb-4">
-              {serverError}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
-                <input {...register('firstName')} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 text-sm" />
-                {errors.firstName && <p className="text-red-500 text-xs mt-1">{errors.firstName.message}</p>}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Apellido</label>
-                <input {...register('lastName')} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 text-sm" />
-                {errors.lastName && <p className="text-red-500 text-xs mt-1">{errors.lastName.message}</p>}
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Nombre de tu empresa/tienda</label>
-              <input {...register('tenantName')} placeholder="Mi Tienda Online" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 text-sm" />
-              {errors.tenantName && <p className="text-red-500 text-xs mt-1">{errors.tenantName.message}</p>}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input {...register('email')} type="email" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 text-sm" />
-              {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email.message}</p>}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
-              <input {...register('password')} type="password" placeholder="Mínimo 8 caracteres" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500 text-sm" />
-              {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>}
-            </div>
-
-            <button type="submit" disabled={loading} className="w-full bg-sky-600 hover:bg-sky-700 disabled:bg-sky-400 text-white font-medium py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-2">
-              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-              {loading ? 'Creando cuenta...' : 'Crear cuenta gratis'}
-            </button>
-          </form>
-
-          <p className="text-center text-sm text-gray-500 mt-6">
-            ¿Ya tienes cuenta?{' '}
-            <a href="/login" className="text-sky-600 hover:underline font-medium">Inicia sesión</a>
-          </p>
         </div>
+
+        <div className="mb-6">
+          <div
+            className="sc-mono"
+            style={{ fontSize: 11, color: 'var(--sc-blue-600)', letterSpacing: '0.2em' }}
+          >
+            // AUTH.SIGNUP
+          </div>
+          <h2
+            style={{
+              fontSize: 26,
+              fontWeight: 600,
+              margin: '8px 0 0',
+              letterSpacing: '-0.01em',
+              color: 'var(--sc-text-hi)',
+            }}
+          >
+            Crear cuenta
+          </h2>
+        </div>
+
+        {serverError && (
+          <div
+            className="mb-4"
+            style={{
+              background: 'rgba(220,38,38,0.06)',
+              border: '1px solid rgba(220,38,38,0.25)',
+              color: 'var(--sc-err)',
+              fontSize: 13,
+              borderRadius: 8,
+              padding: '10px 12px',
+            }}
+          >
+            {serverError}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Nombre" error={errors.firstName?.message}>
+              <input {...register('firstName')} className="sc-input" />
+            </Field>
+            <Field label="Apellido" error={errors.lastName?.message}>
+              <input {...register('lastName')} className="sc-input" />
+            </Field>
+          </div>
+
+          <Field label="Empresa / Tienda" error={errors.tenantName?.message}>
+            <input
+              {...register('tenantName')}
+              placeholder="Mi Tienda Online"
+              className="sc-input"
+            />
+          </Field>
+
+          <Field label="Email" error={errors.email?.message}>
+            <input {...register('email')} type="email" className="sc-input" placeholder="tu@email.com" />
+          </Field>
+
+          <Field label="Contraseña" error={errors.password?.message}>
+            <input
+              {...register('password')}
+              type="password"
+              placeholder="Mínimo 8 caracteres"
+              className="sc-input"
+            />
+          </Field>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="sc-btn-primary"
+            style={{ width: '100%', justifyContent: 'center', padding: 14, fontSize: 14, marginTop: 4 }}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Creando cuenta…
+              </>
+            ) : (
+              <>
+                <span>Crear cuenta gratis</span>
+                <ChevronRight className="w-4 h-4" />
+              </>
+            )}
+          </button>
+        </form>
+
+        <p
+          className="text-center mt-6"
+          style={{ fontSize: 13, color: 'var(--sc-text-mid)' }}
+        >
+          ¿Ya tienes cuenta?{' '}
+          <a href="/login" style={{ color: 'var(--sc-blue-600)', fontWeight: 500, textDecoration: 'none' }}>
+            Inicia sesión
+          </a>
+        </p>
       </div>
+    </div>
+  )
+}
+
+function Field({
+  label,
+  children,
+  error,
+}: {
+  label: string
+  children: React.ReactNode
+  error?: string
+}) {
+  return (
+    <div>
+      <label
+        className="sc-mono uppercase block mb-2"
+        style={{ fontSize: 11, color: 'var(--sc-text-low)', letterSpacing: '0.16em' }}
+      >
+        {label}
+      </label>
+      {children}
+      {error && <p style={{ color: 'var(--sc-err)', fontSize: 12, marginTop: 4 }}>{error}</p>}
     </div>
   )
 }

@@ -42,3 +42,9 @@ prisma/migrations/dev/
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Design mockups (reference only — not part of the app)
+STOCK CENTRAL DISIGN/
+
+# Local upload storage
+uploads/
