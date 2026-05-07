@@ -178,21 +178,42 @@ export class ConnectionsService {
 
   async update(tenantId: string, id: string, dto: UpdateConnectionDto) {
     const conn = await this.findOne(tenantId, id)
+    const provider = (conn as any).provider as string
 
+    // Si llegan credenciales nuevas, validamos contra la API real. Para
+    // facturadores usamos el driver específico (BsaleDriver) porque no está
+    // en el registry de marketplace drivers.
     if (dto.credentials) {
-      const driver = getDriver((conn as any).provider)
-      const testResult = await driver.testConnection(dto.credentials, dto.config)
-      if (!testResult.success) {
-        throw new BadRequestException(`Las credenciales no son válidas: ${testResult.error}`)
+      if (BILLING_PROVIDERS.has(provider)) {
+        const emitter = new BsaleDriver()
+        const result = await emitter.testConnection(
+          dto.credentials,
+          dto.config || ((conn as any).config as Record<string, unknown> | undefined),
+        )
+        if (!result.success) {
+          throw new BadRequestException(`Las credenciales no son válidas: ${result.error}`)
+        }
+      } else {
+        const driver = getDriver(provider)
+        const testResult = await driver.testConnection(dto.credentials, dto.config)
+        if (!testResult.success) {
+          throw new BadRequestException(`Las credenciales no son válidas: ${testResult.error}`)
+        }
       }
     }
+
+    // Para config sin credenciales nuevas: hacemos merge con la config
+    // existente para no perder otros campos.
+    const mergedConfig = dto.config
+      ? { ...((conn as any).config || {}), ...dto.config }
+      : undefined
 
     return this.prisma.connection.update({
       where: { id },
       data: {
         ...(dto.name && { name: dto.name }),
         ...(dto.credentials && { credentials: dto.credentials as any }),
-        ...(dto.config && { config: dto.config as any }),
+        ...(mergedConfig && { config: mergedConfig as any }),
         ...(dto.syncEnabled !== undefined && { syncEnabled: dto.syncEnabled }),
       },
     })

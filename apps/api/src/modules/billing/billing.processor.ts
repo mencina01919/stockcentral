@@ -11,6 +11,7 @@ import {
   FACTURA_WAIT_MS,
   RETRY_BACKOFF_MS,
   MAX_RETRY_ATTEMPTS,
+  BULK_EMIT_THROTTLE_MS,
 } from './billing.constants'
 
 interface EmitDocumentJob {
@@ -30,6 +31,12 @@ interface PushToMarketplaceJob {
   tenantId: string
   taxDocumentId: string
   attempt: number
+}
+
+interface EmitNowJob {
+  tenantId: string
+  saleId: string
+  type?: 'boleta' | 'factura'
 }
 
 @Processor(BILLING_QUEUE)
@@ -298,6 +305,25 @@ export class BillingProcessor {
       { tenantId: doc.tenantId, taxDocumentId, attempt: attempt + 1 },
       { delay, attempts: 1, removeOnComplete: 100, removeOnFail: 200 },
     )
+  }
+
+  // ─── EMIT_NOW (manual, 1 doc o bulk) ─────────────────────────────────────
+  // Disparado por el operador desde la UI (`/sales` botón emitir o selección
+  // masiva). NO chequea autoEmit ni espera 24h: el operador ya decidió.
+  // Idempotente: el service rechaza si ya hay doc issued/pending.
+  @Process(BillingJobType.EMIT_NOW)
+  async handleEmitNow(job: Job<EmitNowJob>) {
+    const { tenantId, saleId, type } = job.data
+    try {
+      const doc = await this.taxDocs.emitForSale(tenantId, saleId, type ? { type } : {})
+      this.logger.log(
+        `EMIT_NOW: sale=${saleId} type=${doc.type} folio=${doc.folio || '-'} id=${doc.id}`,
+      )
+    } catch (err: any) {
+      // Si la venta ya tiene doc o falla, lo logueamos pero no reintentamos
+      // (el operador puede usar /retry desde la UI si quiere insistir).
+      this.logger.warn(`EMIT_NOW falló sale=${saleId}: ${err?.message || err}`)
+    }
   }
 
   @OnQueueFailed()

@@ -16,6 +16,7 @@ import {
   EmitTaxDocumentDto,
   CreditNoteDto,
   UploadManualDocumentDto,
+  EmitBulkDto,
 } from './dto/tax-document.dto'
 import { BillingListener } from '../billing/billing.listener'
 
@@ -484,6 +485,55 @@ export class TaxDocumentsService {
       )
     }
     return { emitter: factory(), connection }
+  }
+
+  // ─── Emisión bulk (manual desde UI) ──────────────────────────────────────
+  // Encola un job EMIT_NOW por cada saleId con delay creciente para
+  // throttle Bsale. Filtra de antemano:
+  //   - sales que existen y pertenecen al tenant
+  //   - sales sin doc issued/pending vigente
+  // Devuelve el detalle de cuántos se encolaron y por qué se saltaron otros.
+  async emitBulk(tenantId: string, dto: EmitBulkDto) {
+    if (!dto.saleIds || dto.saleIds.length === 0) {
+      throw new BadRequestException('saleIds vacío')
+    }
+    const sales = await this.prisma.sale.findMany({
+      where: { id: { in: dto.saleIds }, tenantId },
+      include: {
+        taxDocuments: {
+          where: { type: { in: ['boleta', 'factura'] }, status: { in: ['issued', 'pending'] } },
+          select: { id: true, status: true },
+        },
+      },
+    })
+
+    const queued: string[] = []
+    const skipped: Array<{ saleId: string; reason: string }> = []
+    const notFound: string[] = []
+
+    const foundIds = new Set(sales.map((s) => s.id))
+    for (const id of dto.saleIds) {
+      if (!foundIds.has(id)) notFound.push(id)
+    }
+
+    let delay = 0
+    for (const sale of sales) {
+      if (sale.taxDocuments.length > 0) {
+        skipped.push({ saleId: sale.id, reason: 'ya tiene documento emitido o en proceso' })
+        continue
+      }
+      await this.billing.enqueueEmitNow(tenantId, sale.id, dto.type, delay)
+      queued.push(sale.id)
+      delay += 1000 // 1s entre cada uno (throttle Bsale)
+    }
+
+    return {
+      requested: dto.saleIds.length,
+      queued: queued.length,
+      skipped: skipped.length,
+      notFound: notFound.length,
+      details: { queued, skipped, notFound },
+    }
   }
 
   // ─── Push manual al marketplace ──────────────────────────────────────────

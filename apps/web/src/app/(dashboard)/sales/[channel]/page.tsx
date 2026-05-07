@@ -1,12 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Search, Receipt, Loader2, Eye, Package, MapPin, CreditCard, Layers, FileText, IdCard } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Search, Receipt, Loader2, Eye, Package, MapPin, CreditCard, Layers, FileText, IdCard, Send } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Panel, Chip } from '@/components/sc/ui'
 import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
+import { toast } from 'sonner'
 
 type FilterKey = 'all' | 'pending_payment' | 'paid' | 'packs' | 'facturas' | 'cancelled'
 
@@ -16,10 +17,13 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
   const channelLabel =
     channel === 'all' ? 'todos los canales' : PROVIDER_LABELS[channel] || channel
 
+  const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<FilterKey>('pending_payment')
   const [page, setPage] = useState(1)
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null)
+  // IDs de Sale seleccionadas para emisión masiva.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const buildParams = () => {
     const p: Record<string, any> = { search, source: sourceFilter, page, limit: 20 }
@@ -39,6 +43,80 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
   const sales = data?.data || []
   const meta = data?.meta
 
+  // Mutación de emisión individual (1 sale)
+  const emitOne = useMutation({
+    mutationFn: (saleId: string) =>
+      api.post(`/tax-documents/emit/sale/${saleId}`, {}).then((r) => r.data),
+    onSuccess: (doc: any) => {
+      toast.success(`${doc.type === 'factura' ? 'Factura' : 'Boleta'} emitida${doc.folio ? ` · folio ${doc.folio}` : ''}`)
+      queryClient.invalidateQueries({ queryKey: ['sales'] })
+      queryClient.invalidateQueries({ queryKey: ['tax-documents'] })
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al emitir'),
+  })
+
+  // Mutación bulk
+  const emitBulk = useMutation({
+    mutationFn: (ids: string[]) =>
+      api.post('/tax-documents/emit-bulk', { saleIds: ids }).then((r) => r.data),
+    onSuccess: (res: any) => {
+      const msg = `Encolados: ${res.queued}/${res.requested}` +
+        (res.skipped > 0 ? ` · saltados: ${res.skipped}` : '') +
+        (res.notFound > 0 ? ` · no encontradas: ${res.notFound}` : '')
+      toast.success(msg)
+      setSelectedIds(new Set())
+      queryClient.invalidateQueries({ queryKey: ['sales'] })
+      queryClient.invalidateQueries({ queryKey: ['tax-documents'] })
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al emitir bulk'),
+  })
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  const toggleSelectAllVisible = () => {
+    const visibleIds = sales
+      .filter((s: any) => canEmitForSale(s))
+      .map((s: any) => s.id)
+    const allSelected = visibleIds.every((id: string) => selectedIds.has(id))
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allSelected) {
+        for (const id of visibleIds) next.delete(id)
+      } else {
+        for (const id of visibleIds) next.add(id)
+      }
+      return next
+    })
+  }
+  const handleEmitSelected = () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    if (ids.length > 10) {
+      const ok = confirm(`Vas a emitir ${ids.length} documentos. Esto encola los jobs y procesa de a 1 por segundo. ¿Continuar?`)
+      if (!ok) return
+    }
+    emitBulk.mutate(ids)
+  }
+
+  // Una venta puede emitirse si está pagada y NO tiene doc emitido/pendiente.
+  // El backend hace su propio chequeo, pero filtramos en UI para no permitir
+  // selecciones inválidas.
+  function canEmitForSale(s: any): boolean {
+    if (s.paymentStatus !== 'paid') return false
+    if (s.status === 'cancelled') return false
+    const hasDoc = (s.taxDocuments || []).some(
+      (d: any) =>
+        ['boleta', 'factura'].includes(d.type) &&
+        ['issued', 'pending'].includes(d.status),
+    )
+    return !hasDoc
+  }
+
   const tabs: { key: FilterKey; label: string }[] = [
     { key: 'pending_payment', label: 'Por facturar' },
     { key: 'paid', label: 'Pagadas' },
@@ -54,6 +132,31 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
         breadcrumbs={['CONSOLA', 'FACTURACIÓN', channel === 'all' ? 'TODAS' : channel.toUpperCase()]}
         title={`Facturación · ${channel === 'all' ? 'Todos los canales' : channelLabel}`}
         subtitle="Ventas para emisión de boleta o factura — el fulfillment se gestiona desde Órdenes"
+        actions={
+          selectedIds.size > 0 ? (
+            <div className="flex items-center gap-2">
+              <span className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)' }}>
+                {selectedIds.size} SELECCIONADA{selectedIds.size === 1 ? '' : 'S'}
+              </span>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="sc-btn-ghost"
+                style={{ padding: '6px 12px', fontSize: 12 }}
+              >
+                Limpiar
+              </button>
+              <button
+                onClick={handleEmitSelected}
+                disabled={emitBulk.isPending}
+                className="sc-btn-primary"
+                style={{ padding: '6px 14px', fontSize: 12 }}
+              >
+                {emitBulk.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                Emitir DTE de seleccionadas
+              </button>
+            </div>
+          ) : null
+        }
       />
 
       <div className="flex-1 px-7 py-6 overflow-auto">
@@ -119,6 +222,26 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
               <table className="w-full" style={{ fontSize: 13 }}>
                 <thead>
                   <tr>
+                    <th
+                      style={{
+                        padding: '12px 12px 12px 16px',
+                        background: '#f7f9fd',
+                        borderBottom: '1px solid var(--sc-line-soft)',
+                        width: 32,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label="Seleccionar todas"
+                        onChange={toggleSelectAllVisible}
+                        checked={
+                          sales.filter((s: any) => canEmitForSale(s)).length > 0 &&
+                          sales
+                            .filter((s: any) => canEmitForSale(s))
+                            .every((s: any) => selectedIds.has(s.id))
+                        }
+                      />
+                    </th>
                     {['#VENTA', 'CLIENTE', 'DOC', 'RUT/ID', 'CANAL', 'ÓRDENES', 'TOTAL', 'PAGO', 'FECHA', ''].map((h, i) => (
                       <th
                         key={i}
@@ -143,8 +266,27 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                   {sales.map((sale: any) => {
                     const orderCount = sale.orders?.length || 0
                     const isPack = orderCount > 1
+                    const canEmit = canEmitForSale(sale)
+                    const issuedDoc = (sale.taxDocuments || []).find((d: any) =>
+                      ['boleta', 'factura'].includes(d.type) && d.status === 'issued',
+                    )
                     return (
                       <tr key={sale.id} className="sc-row">
+                        <td
+                          style={{
+                            padding: '13px 12px 13px 16px',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            aria-label={`Seleccionar ${sale.saleNumber}`}
+                            disabled={!canEmit}
+                            checked={selectedIds.has(sale.id)}
+                            onChange={() => toggleSelect(sale.id)}
+                            title={!canEmit ? 'Esta venta no puede emitirse' : ''}
+                          />
+                        </td>
                         <td
                           className="sc-mono"
                           style={{
@@ -160,6 +302,11 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                             {isPack && (
                               <Chip tone="warn">
                                 <Layers className="w-3 h-3" /> {orderCount}
+                              </Chip>
+                            )}
+                            {issuedDoc && (
+                              <Chip tone="ok">
+                                {issuedDoc.type === 'factura' ? 'F' : 'B'} {issuedDoc.folio || ''}
                               </Chip>
                             )}
                           </div>
@@ -265,14 +412,40 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                           {formatDate(sale.createdAt)}
                         </td>
                         <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
-                          <button
-                            onClick={() => setSelectedSaleId(sale.id)}
-                            className="sc-btn-ghost"
-                            style={{ padding: 6 }}
-                            aria-label="Ver detalle"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setSelectedSaleId(sale.id)}
+                              className="sc-btn-ghost"
+                              style={{ padding: 6 }}
+                              aria-label="Ver detalle"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                            {canEmit && (
+                              <button
+                                onClick={() => emitOne.mutate(sale.id)}
+                                disabled={emitOne.isPending && emitOne.variables === sale.id}
+                                style={{
+                                  padding: '5px 10px',
+                                  fontSize: 11,
+                                  color: 'var(--sc-blue-600)',
+                                  borderRadius: 6,
+                                  background: 'transparent',
+                                  border: '1px solid rgba(37,99,235,0.20)',
+                                  cursor: 'pointer',
+                                  whiteSpace: 'nowrap',
+                                }}
+                                title="Emitir DTE para esta venta"
+                              >
+                                {emitOne.isPending && emitOne.variables === sale.id ? (
+                                  <Loader2 className="w-3 h-3 inline animate-spin" />
+                                ) : (
+                                  <Send className="w-3 h-3 inline" />
+                                )}{' '}
+                                Emitir
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     )

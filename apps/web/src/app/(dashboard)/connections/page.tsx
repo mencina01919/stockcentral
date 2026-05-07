@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus, Plug, Loader2, RefreshCw, Trash2, CheckCircle, XCircle,
   Clock, AlertTriangle, ChevronRight, ExternalLink, Zap, BarChart2, X,
-  ShieldCheck, Globe, Key, Stethoscope,
+  ShieldCheck, Globe, Key, Stethoscope, Pencil,
 } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
@@ -145,6 +145,13 @@ const PROVIDER_META: Record<string, {
         hint: 'Cuando OFF, el listener no emite solo: solo se emite vía POST manual a /tax-documents/emit/sale/:saleId. Recomendado dejarlo OFF hasta validar que todo funciona correctamente.',
       },
       {
+        key: 'emitFromDate',
+        label: 'Emitir solo desde (fecha ISO)',
+        configField: true,
+        placeholder: '2026-05-07T22:00:00Z',
+        hint: 'Cutoff para protección del backlog: el auto-emit solo dispara para ventas creadas DESPUÉS de esta fecha. Formato ISO 8601 UTC. Vacío = emitir todas las ventas que cumplan los demás filtros.',
+      },
+      {
         key: 'pushToMarketplace',
         label: 'Subir DTE al marketplace tras emisión',
         type: 'checkbox',
@@ -190,6 +197,7 @@ export default function ConnectionsPage() {
   const queryClient = useQueryClient()
   const [showModal, setShowModal] = useState(false)
   const [statusPanel, setStatusPanel] = useState<string | null>(null)
+  const [editingConn, setEditingConn] = useState<any | null>(null)
 
   const { data: connections, isLoading } = useQuery({
     queryKey: ['connections'],
@@ -318,6 +326,7 @@ export default function ConnectionsPage() {
                         onSync={() => syncMutation.mutate(conn.id)}
                         onTest={() => testMutation.mutate(conn.id)}
                         onDelete={() => deleteMutation.mutate(conn.id)}
+                        onEdit={() => setEditingConn(conn)}
                         onStatus={() => setStatusPanel(statusPanel === conn.id ? null : conn.id)}
                         showStatus={statusPanel === conn.id}
                       />
@@ -339,6 +348,7 @@ export default function ConnectionsPage() {
                         onSync={() => syncMutation.mutate(conn.id)}
                         onTest={() => testMutation.mutate(conn.id)}
                         onDelete={() => deleteMutation.mutate(conn.id)}
+                        onEdit={() => setEditingConn(conn)}
                         onStatus={() => setStatusPanel(statusPanel === conn.id ? null : conn.id)}
                         showStatus={statusPanel === conn.id}
                       />
@@ -360,6 +370,7 @@ export default function ConnectionsPage() {
                         onSync={() => syncMutation.mutate(conn.id)}
                         onTest={() => testMutation.mutate(conn.id)}
                         onDelete={() => deleteMutation.mutate(conn.id)}
+                        onEdit={() => setEditingConn(conn)}
                         onStatus={() => setStatusPanel(statusPanel === conn.id ? null : conn.id)}
                         showStatus={statusPanel === conn.id}
                       />
@@ -393,6 +404,17 @@ export default function ConnectionsPage() {
           }}
         />
       )}
+
+      {editingConn && (
+        <EditConnectionModal
+          conn={editingConn}
+          onClose={() => setEditingConn(null)}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['connections'] })
+            setEditingConn(null)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -400,7 +422,7 @@ export default function ConnectionsPage() {
 // ─── Connection card ──────────────────────────────────────────────────────────
 
 function ConnectionCard({
-  conn, syncing, testing, onSync, onTest, onDelete, onStatus, showStatus,
+  conn, syncing, testing, onSync, onTest, onDelete, onEdit, onStatus, showStatus,
 }: {
   conn: any
   syncing: boolean
@@ -408,6 +430,7 @@ function ConnectionCard({
   onSync: () => void
   onTest: () => void
   onDelete: () => void
+  onEdit: () => void
   onStatus: () => void
   showStatus: boolean
 }) {
@@ -484,6 +507,13 @@ function ConnectionCard({
             title="Probar conexión"
           >
             {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={onEdit}
+            className="flex items-center justify-center p-2 bg-gray-50 hover:bg-gray-100 text-gray-500 hover:text-sky-600 rounded-lg transition-colors"
+            title="Editar configuración"
+          >
+            <Pencil className="w-4 h-4" />
           </button>
           <button
             onClick={onStatus}
@@ -1077,6 +1107,146 @@ function CredentialsForm({
       <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-xs text-amber-700 flex items-start gap-2">
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
         Al hacer clic en "Conectar y verificar" se probarán las credenciales contra la API real de {meta.label} antes de guardarlas.
+      </div>
+    </div>
+  )
+}
+
+// ─── Edit modal ───────────────────────────────────────────────────────────
+// Reusa CredentialsForm con valores pre-cargados desde la conexión existente.
+// El accessToken/secret nunca se rellena (queda vacío); si el operador no lo
+// cambia, no se sobreescribe en el backend.
+function EditConnectionModal({
+  conn, onClose, onSuccess,
+}: {
+  conn: any
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const meta = PROVIDER_META[conn.provider]
+  const [name, setName] = useState<string>(conn.name || meta?.label || '')
+  const [values, setValues] = useState<Record<string, string | boolean>>(() => {
+    // Pre-cargar valores config no-secretos. Los secret se dejan vacíos.
+    const initial: Record<string, string | boolean> = {}
+    const currentConfig = (conn.config || {}) as any
+    for (const f of meta?.fields || []) {
+      if (f.secret) continue
+      if (f.type === 'checkbox') {
+        const stored = currentConfig[f.key]
+        initial[f.key] = stored !== undefined ? !!stored : !!f.defaultValue
+      } else if (f.configField) {
+        const stored = currentConfig[f.key]
+        initial[f.key] = stored !== undefined && stored !== null ? String(stored) : ''
+      }
+      // Campos no-config no-secretos no se pre-cargan (no hay forma de saber
+      // sin exponer credentials). El operador los re-ingresa si quiere
+      // cambiarlos.
+    }
+    return initial
+  })
+  const [loading, setLoading] = useState(false)
+
+  if (!meta) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-xl p-6 max-w-md">
+          <p className="text-sm text-gray-700">
+            Provider <strong>{conn.provider}</strong> no está registrado en PROVIDER_META.
+          </p>
+          <button onClick={onClose} className="mt-4 text-sm text-sky-600 hover:underline">
+            Cerrar
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const setField = (key: string, value: string | boolean) =>
+    setValues((prev) => ({ ...prev, [key]: value }))
+
+  const handleSave = async () => {
+    setLoading(true)
+    try {
+      const credentials: Record<string, string> = {}
+      const config: Record<string, string | boolean> = {}
+      for (const f of meta.fields) {
+        const v = values[f.key]
+        if (f.type === 'checkbox') {
+          if (f.configField) config[f.key] = !!v
+          continue
+        }
+        if (v === undefined || v === '') continue
+        if (f.configField) {
+          config[f.key] = v
+        } else {
+          credentials[f.key] = String(v)
+        }
+      }
+      const body: Record<string, unknown> = { name }
+      // Solo enviamos credentials si el operador llenó al menos un campo
+      // secret (o no-secret no-config). Si todos están vacíos, mantenemos
+      // las credenciales actuales.
+      if (Object.keys(credentials).length > 0) body.credentials = credentials
+      if (Object.keys(config).length > 0) body.config = config
+      await api.patch(`/connections/${conn.id}`, body)
+      toast.success('Conexión actualizada')
+      onSuccess()
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Error al guardar')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <ProviderIcon provider={conn.provider} size="sm" />
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Editar {meta.label}</h2>
+              <p className="text-xs text-gray-400 mt-0.5">Modifica la configuración o reemplaza las credenciales</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto flex-1">
+          <CredentialsForm
+            provider={conn.provider}
+            meta={meta}
+            name={name}
+            values={values}
+            onNameChange={setName}
+            onFieldChange={setField}
+          />
+        </div>
+
+        <div className="p-6 border-t border-gray-100 flex-shrink-0">
+          <div className="bg-sky-50 border border-sky-100 rounded-lg p-3 text-xs text-sky-700 flex items-start gap-2 mb-4">
+            <ShieldCheck className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+            Los campos secretos (token, password) están vacíos por seguridad. Si los dejas así, se mantienen los valores actuales.
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className="px-4 py-2.5 border border-gray-200 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+              Guardar cambios
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

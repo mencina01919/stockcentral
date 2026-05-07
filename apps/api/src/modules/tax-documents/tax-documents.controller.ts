@@ -19,6 +19,7 @@ import {
   EmitTaxDocumentDto,
   CreditNoteDto,
   UploadManualDocumentDto,
+  EmitBulkDto,
 } from './dto/tax-document.dto'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
 import { Public } from '../../common/decorators/public.decorator'
@@ -100,6 +101,13 @@ export class TaxDocumentsController {
     @Body() dto: EmitTaxDocumentDto,
   ) {
     return this.service.emitForSale(tenantId, saleId, dto)
+  }
+
+  @ApiBearerAuth()
+  @Post('emit-bulk')
+  @ApiOperation({ summary: 'Emitir DTE para múltiples ventas (encola con throttle)' })
+  emitBulk(@TenantId() tenantId: string, @Body() dto: EmitBulkDto) {
+    return this.service.emitBulk(tenantId, dto)
   }
 
   @ApiBearerAuth()

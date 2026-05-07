@@ -62,6 +62,28 @@ export class BillingListener {
       return
     }
 
+    // Guarda contra backlog: emitFromDate define desde qué momento las
+    // órdenes se emiten automáticamente. Sales con createdAt anterior se
+    // ignoran (deben emitirse manualmente desde la UI). Sin emitFromDate
+    // configurado, emite cualquier orden (no recomendado en cuentas con
+    // muchas ventas históricas).
+    const emitFromDateRaw = (billingConnection.config as any)?.emitFromDate
+    if (emitFromDateRaw) {
+      const emitFromDate = new Date(emitFromDateRaw)
+      if (!Number.isNaN(emitFromDate.getTime())) {
+        const sale = await this.prisma.sale.findUnique({
+          where: { id: saleId },
+          select: { createdAt: true },
+        })
+        if (sale && sale.createdAt < emitFromDate) {
+          this.logger.debug(
+            `Sale ${saleId} createdAt ${sale.createdAt.toISOString()} < emitFromDate ${emitFromDate.toISOString()} — skip auto-emit`,
+          )
+          return
+        }
+      }
+    }
+
     if (wantsEmit) {
       this.logger.log(`Order ${orderId} paid → enqueueing emit-document for sale ${saleId}`)
       await this.queue.add(
@@ -97,6 +119,22 @@ export class BillingListener {
       return
     }
     await this.enqueuePushToMarketplace(tenantId, taxDocumentId)
+  }
+
+  // Encola un job EMIT_NOW para emisión manual disparada por el operador
+  // (botón "Emitir DTE" en la UI o selección masiva). El delay permite
+  // espaciar emisiones bulk para no saturar Bsale.
+  async enqueueEmitNow(
+    tenantId: string,
+    saleId: string,
+    type?: 'boleta' | 'factura',
+    delay = 0,
+  ) {
+    await this.queue.add(
+      BillingJobType.EMIT_NOW,
+      { tenantId, saleId, type },
+      { delay, attempts: 1, removeOnComplete: 100, removeOnFail: 200 },
+    )
   }
 
   // Encola el job de push directamente, sin chequear flags. Usado por el

@@ -67,6 +67,12 @@ export class SalesService {
               sourceChannel: true,
             },
           },
+          // Traemos los DTE para que la UI sepa si la venta ya está facturada
+          // y desactive selección/emisión.
+          taxDocuments: {
+            select: { id: true, type: true, status: true, folio: true },
+            where: { status: { in: ['issued', 'pending'] } },
+          },
         },
       }),
       this.prisma.sale.count({ where }),

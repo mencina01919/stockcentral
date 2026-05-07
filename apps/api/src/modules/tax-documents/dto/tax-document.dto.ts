@@ -33,6 +33,16 @@ export class CreditNoteDto {
   motive?: string
 }
 
+export class EmitBulkDto {
+  @ApiProperty({ type: [String], description: 'IDs de Sale a facturar' })
+  saleIds: string[]
+
+  @ApiProperty({ required: false, enum: ['boleta', 'factura'] })
+  @IsOptional()
+  @IsString()
+  type?: 'boleta' | 'factura'
+}
+
 // Para registrar manualmente un documento emitido fuera del sistema.
 // Útil para órdenes legacy o cuando Bsale falló y se emitió por otra vía.
 export class UploadManualDocumentDto {
