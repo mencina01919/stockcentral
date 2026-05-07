@@ -61,10 +61,18 @@ export class SyncService {
   async scheduledOrdersInbound() {
     const connections = await this.prisma.connection.findMany({
       where: { syncEnabled: true, status: 'connected' },
-      select: { id: true, tenantId: true, lastSync: true },
+      select: { id: true, tenantId: true, provider: true, lastSync: true },
     })
 
     for (const conn of connections) {
+      // Skip providers whose driver opts out of write sync (read-only catalog
+      // sources like EYLSTORE that don't expose orders).
+      try {
+        const driver = getDriver(conn.provider)
+        if (driver.supportsWriteSync === false) continue
+      } catch {
+        continue
+      }
       await this.enqueueOrdersInbound(conn.tenantId, conn.id, conn.lastSync || undefined)
     }
   }
@@ -95,6 +103,15 @@ export class SyncService {
   async syncProductsOutbound(tenantId: string, connectionId: string, productIds?: string[]) {
     const connection = await this.getConnection(tenantId, connectionId)
     const driver = getDriver(connection.provider)
+
+    // Read-only drivers (catalog sources like EYLSTORE) don't expose write APIs.
+    // Returning early prevents 'NOT_IMPLEMENTED' errors from each mapped product
+    // tripping the circuit breaker and auto-disabling the connection.
+    if (driver.supportsWriteSync === false) {
+      this.logger.log(`Skipping outbound product sync for read-only provider: ${connection.provider}`)
+      return { synced: 0, errors: 0, suspiciousSkipped: 0, circuitTripped: false, total: 0, skipped: true }
+    }
+
     const credentials = connection.credentials as Record<string, string>
     const config = connection.config as Record<string, unknown> | undefined
 
@@ -523,14 +540,32 @@ export class SyncService {
   // ─── Manual Trigger (from controller) ─────────────────────────────────────
 
   async triggerFullSync(tenantId: string, connectionId: string) {
-    const [ordersJob, productsInJob, productsOutJob] = await Promise.all([
-      this.enqueueOrdersInbound(tenantId, connectionId),
-      this.enqueueProductsInbound(tenantId, connectionId),
-      this.enqueueProductsOutbound(tenantId, connectionId),
-    ])
+    const connection = await this.getConnection(tenantId, connectionId)
+
+    let isReadOnly = false
+    try {
+      const driver = getDriver(connection.provider)
+      isReadOnly = driver.supportsWriteSync === false
+    } catch {
+      // Unknown provider: fall through and try all jobs.
+    }
+
+    // For read-only catalog sources (EYLSTORE) there's nothing to push out
+    // and no orders to fetch — only the inbound product sync makes sense.
+    const jobs: Promise<any>[] = isReadOnly
+      ? [this.enqueueProductsInbound(tenantId, connectionId)]
+      : [
+          this.enqueueOrdersInbound(tenantId, connectionId),
+          this.enqueueProductsInbound(tenantId, connectionId),
+          this.enqueueProductsOutbound(tenantId, connectionId),
+        ]
+
+    const results = await Promise.all(jobs)
     return {
       message: 'Sincronización encolada',
-      jobs: { orders: ordersJob.id, productsIn: productsInJob.id, productsOut: productsOutJob.id },
+      jobs: isReadOnly
+        ? { productsIn: results[0].id }
+        : { orders: results[0].id, productsIn: results[1].id, productsOut: results[2].id },
     }
   }
 
