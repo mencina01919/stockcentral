@@ -56,7 +56,7 @@ export class ProductsService {
         include: {
           variants: true,
           inventory: {
-            include: { warehouse: { select: { name: true } } },
+            include: { warehouse: { select: { name: true, warehouseType: true } } },
           },
           marketplaceMappings: {
             select: {
