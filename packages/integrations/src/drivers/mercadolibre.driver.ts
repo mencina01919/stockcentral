@@ -569,17 +569,73 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
         : undefined)
 
     // ML expone el motivo de cancelación / situaciones especiales en
-    // status_detail + tags. Lo capturamos para distinguir "cancelled por
-    // mediación" vs "cancelled normal" en la UI.
+    // status_detail + tags + cancel_detail. Lo capturamos para distinguir
+    // "cancelled por mediación abierta" vs "cancelled normal" en la UI.
+    //
+    // Importante: data.mediations es un histórico — una orden puede tener
+    // mediaciones cerradas (resueltas a favor del comprador o vendedor) y
+    // ML las sigue listando. Una mediación está REALMENTE abierta sólo si
+    // NO hay cancel_detail todavía. Cuando ML resuelve la mediación con
+    // cancelación de la compra, popula cancel_detail con el motivo y la
+    // orden pasa a status=cancelled — eso ya NO es "en mediación", es
+    // "cancelada por X".
     const tags: string[] = Array.isArray(data.tags) ? data.tags : []
-    const hasMediations = Array.isArray(data.mediations) && data.mediations.length > 0
+    const hasMediationsRaw = Array.isArray(data.mediations) && data.mediations.length > 0
+    const hasCancelDetail = data.cancel_detail && typeof data.cancel_detail === 'object'
+    // ML deja `mediations: [...]` como histórico aun cuando ya están cerradas.
+    // El verdadero indicador de "mediación abierta" es:
+    //   - tags incluye 'mediations' o 'mediation' (ML marca explícitamente la
+    //     orden como en mediación), Y
+    //   - no hay cancel_detail (si lo hay, la mediación se resolvió cancelando
+    //     y la orden ya está cancelada formalmente).
+    // Usar solo `mediations.length > 0` da falsos positivos para órdenes que
+    // tuvieron mediación pero terminaron entregadas o sin cancelación.
+    const hasMediationTag = tags.includes('mediations') || tags.includes('mediation')
+    const hasMediations = hasMediationsRaw && hasMediationTag && !hasCancelDetail
+
+    // Caso "no_shipping": el seller envía por su cuenta y ML no rastrea la
+    // entrega — la orden queda eternamente con tag `not_delivered` por API.
+    // Cuando el seller deja feedback (data.feedback.seller.id presente), eso
+    // es la señal que ML usa internamente para considerarla cumplida. Lo
+    // exponemos como statusDetail='delivered_no_shipping' para que la UI
+    // pueda diferenciar "no entregado real" de "entregado por seller propio".
+    const isNoShipping = tags.includes('no_shipping')
+    const sellerLeftFeedback = !!data.feedback?.seller?.id
+    const fulfilledByNoShipping =
+      isNoShipping && data.status === 'paid' && !hasCancelDetail && sellerLeftFeedback
+
+    // Si la cancelación viene con cancel_detail, derivamos un statusDetail
+    // legible que la UI puede mapear ("buyer" → cancelada por comprador,
+    // "seller" → por vendedor, "ml" → por Mercado Libre, etc.). Si no hay
+    // cancel_detail pero el status es cancelled, queda en null y la UI cae
+    // al label genérico.
+    let derivedStatusDetail: string | undefined = data.status_detail || undefined
+    if (!derivedStatusDetail && hasCancelDetail) {
+      const group = String(data.cancel_detail.group || '').toLowerCase()
+      const requestedBy = String(data.cancel_detail.requested_by || '').toLowerCase()
+      // ML usa varios "groups": buyer, seller, ml/mercadolibre, delivery
+      // (problemas de envío). Para `delivery` el requested_by indica quién
+      // disparó la baja: si es "seller" (vendedor reportó etiqueta ilegible
+      // o similar), lo tratamos como cancelación por vendedor para la UI.
+      if (group === 'buyer') derivedStatusDetail = 'cancelled_by_buyer'
+      else if (group === 'seller') derivedStatusDetail = 'cancelled_by_seller'
+      else if (group === 'ml' || group === 'mercadolibre') derivedStatusDetail = 'cancelled_by_ml'
+      else if (group === 'delivery') {
+        if (requestedBy === 'seller') derivedStatusDetail = 'cancelled_by_seller'
+        else if (requestedBy === 'buyer') derivedStatusDetail = 'cancelled_by_buyer'
+        else derivedStatusDetail = 'cancelled_by_delivery'
+      } else if (group) derivedStatusDetail = `cancelled_by_${group}`
+    }
+    if (!derivedStatusDetail && fulfilledByNoShipping) {
+      derivedStatusDetail = 'delivered_no_shipping'
+    }
 
     return {
       externalId: String(data.id),
       externalOrderNumber: String(data.id),
       packId: data.pack_id ? String(data.pack_id) : undefined,
       status: data.status,
-      statusDetail: data.status_detail || undefined,
+      statusDetail: derivedStatusDetail,
       tags,
       hasMediations,
       buyerName,

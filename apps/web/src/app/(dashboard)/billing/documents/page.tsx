@@ -29,9 +29,9 @@ const TYPE_LABEL: Record<string, { label: string; tone: 'cyan' | 'low' | 'err' }
 // Deriva la "situación" del marketplace para una sale a partir de las orders
 // que la componen. Hoy solo Mercado Libre llena metadata.tags / statusDetail /
 // hasMediations (ver sync.service.ts buildOrderMetadata). Si cualquier order
-// tiene mediación, gana — esa es la señal más urgente para el operador.
-// Devuelve null si no hay situación especial (o sea, cancelación limpia /
-// orden normal).
+// tiene mediación abierta, gana — esa es la señal más urgente. Si no, mostramos
+// el motivo de cancelación (comprador/vendedor/ML) cuando ML lo expone.
+// Devuelve null si no hay situación destacable.
 function deriveSaleSituation(
   sale: any,
 ): { label: string; tone: 'warn' | 'err' } | null {
@@ -40,19 +40,30 @@ function deriveSaleSituation(
   let claim = false
   let notDelivered = false
   let returned = false
+  let anyCancelled = false
+  let cancelledBy: 'buyer' | 'seller' | 'ml' | 'delivery' | null = null
   for (const o of orders) {
     const meta = (o.metadata || {}) as { statusDetail?: string; tags?: string[]; hasMediations?: boolean }
     const tags = Array.isArray(meta.tags) ? meta.tags : []
     const detail = meta.statusDetail || ''
-    if (meta.hasMediations || tags.includes('mediations') || detail === 'mediation_open') mediation = true
+    if (meta.hasMediations || detail === 'mediation_open') mediation = true
     if (tags.includes('claim_opened') || tags.includes('claim')) claim = true
     if (tags.includes('not_delivered') || detail === 'not_delivered') notDelivered = true
     if (tags.includes('return') || tags.includes('returned') || detail === 'returned') returned = true
+    if (o.status === 'cancelled') anyCancelled = true
+    if (detail === 'cancelled_by_buyer' && !cancelledBy) cancelledBy = 'buyer'
+    else if (detail === 'cancelled_by_seller' && !cancelledBy) cancelledBy = 'seller'
+    else if (detail === 'cancelled_by_ml' && !cancelledBy) cancelledBy = 'ml'
+    else if (detail === 'cancelled_by_delivery' && !cancelledBy) cancelledBy = 'delivery'
   }
   if (mediation) return { label: 'En mediación', tone: 'warn' }
   if (claim) return { label: 'Con reclamo', tone: 'warn' }
-  if (notDelivered) return { label: 'No entregado', tone: 'warn' }
   if (returned) return { label: 'Devuelto', tone: 'err' }
+  if (cancelledBy === 'buyer') return { label: 'Cancelada por comprador', tone: 'err' }
+  if (cancelledBy === 'seller') return { label: 'Cancelada por vendedor', tone: 'err' }
+  if (cancelledBy === 'ml') return { label: 'Cancelada por ML', tone: 'err' }
+  if (cancelledBy === 'delivery') return { label: 'Cancelada por logística', tone: 'err' }
+  if (notDelivered && !anyCancelled) return { label: 'No entregado', tone: 'warn' }
   return null
 }
 

@@ -25,8 +25,9 @@ const CHANNEL_STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low'
 }
 
 // Estado a mostrar al usuario:
-// - Si el marketplace marca mediación/reclamo abierto, gana por sobre todo.
-// - Sino, cancelada gana (la orden ya no es accionable).
+// - Si el marketplace marca mediación abierta (sin cancel_detail aún), gana.
+// - Sino, si la cancelación tiene autor (comprador / vendedor / ML), lo mostramos.
+// - Sino, cancelada genérica.
 // - Sino, mira paymentStatus.
 // Hoy solo Mercado Libre llena statusDetail/tags/hasMediations en metadata;
 // otros drivers caen al fallback básico.
@@ -36,20 +37,39 @@ function deriveOrderStatus(order: any): { label: string; tone: 'ok' | 'warn' | '
   const detail = meta.statusDetail || ''
 
   // Mediación abierta — la prioridad es alertar al operador.
-  if (meta.hasMediations || tags.includes('mediations') || detail === 'mediation_open') {
+  // (hasMediations en local ya descuenta las cerradas por cancel_detail.)
+  if (meta.hasMediations || detail === 'mediation_open') {
     return { label: 'En mediación', tone: 'warn' }
   }
   // Reclamo del comprador (claim distinto de mediación).
   if (tags.includes('claim_opened') || tags.includes('claim')) {
     return { label: 'Con reclamo', tone: 'warn' }
   }
-  // No entregado: el envío falló pero la orden no necesariamente está cancelada todavía.
-  if (tags.includes('not_delivered') || detail === 'not_delivered') {
-    return { label: 'No entregado', tone: 'warn' }
-  }
   // Devolución del comprador.
   if (tags.includes('return') || tags.includes('returned') || detail === 'returned') {
     return { label: 'Devuelta', tone: 'err' }
+  }
+
+  // Cancelaciones con autor identificado (cancel_detail.group de ML).
+  if (detail === 'cancelled_by_buyer') return { label: 'Cancelada por comprador', tone: 'err' }
+  if (detail === 'cancelled_by_seller') return { label: 'Cancelada por vendedor', tone: 'err' }
+  if (detail === 'cancelled_by_ml') return { label: 'Cancelada por ML', tone: 'err' }
+  if (detail === 'cancelled_by_delivery') return { label: 'Cancelada por logística', tone: 'err' }
+
+  // Caso no_shipping (envío directo del seller): ML no rastrea la entrega
+  // por API y queda con tag not_delivered, pero si el seller dejó feedback
+  // ya está cumplida. Mostramos "Entregado".
+  if (detail === 'delivered_no_shipping') return { label: 'Entregado', tone: 'ok' }
+
+  // No entregado: el envío falló pero la orden puede o no estar cancelada.
+  // Lo mostramos solo si NO está cancelada (si está cancelada, ya gana el
+  // motivo de cancelación arriba). Si pasa hasta acá con not_delivered, es
+  // que no hay cancelación formal y queremos alertar.
+  if (
+    (tags.includes('not_delivered') || detail === 'not_delivered') &&
+    order.status !== 'cancelled'
+  ) {
+    return { label: 'No entregado', tone: 'warn' }
   }
 
   if (order.internalStatus === 'cancelled_internal' || order.status === 'cancelled') {

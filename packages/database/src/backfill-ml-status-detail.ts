@@ -22,18 +22,26 @@ async function run() {
     return res.json()
   }
 
+  // Por defecto procesa cancelled. Pasar --paid para procesar también las
+  // pagadas (necesario para detectar delivered_no_shipping en órdenes paid
+  // antiguas marcadas no_delivered en metadata).
+  const INCLUDE_PAID = process.argv.includes('--paid')
   const orders = await prisma.order.findMany({
-    where: { source: 'mercadolibre', status: 'cancelled' },
+    where: {
+      source: 'mercadolibre',
+      status: INCLUDE_PAID ? { in: ['cancelled', 'paid', 'confirmed'] } : 'cancelled',
+    },
     select: { id: true, externalOrderId: true, metadata: true },
     orderBy: { placedAt: 'desc' },
   })
-  console.log(`Cancelled ML orders: ${orders.length}`)
+  console.log(`ML orders to revisit: ${orders.length}`)
 
   const counts = {
     mediation: 0,
     claim: 0,
     notDelivered: 0,
     returned: 0,
+    deliveredNoShipping: 0,
     plain: 0,
     failed: 0,
   }
@@ -51,13 +59,46 @@ async function run() {
       continue
     }
     const tags: string[] = Array.isArray(data.tags) ? data.tags : []
-    const statusDetail: string | null = data.status_detail || null
-    const hasMediations = Array.isArray(data.mediations) && data.mediations.length > 0
+    let statusDetail: string | null = data.status_detail || null
+    const hasMediationsRaw = Array.isArray(data.mediations) && data.mediations.length > 0
+    const hasCancelDetail = data.cancel_detail && typeof data.cancel_detail === 'object'
+    // mediación realmente abierta: array no vacío + tag 'mediations'/'mediation'
+    // + sin cancel_detail. Si falta el tag, la mediación está cerrada aunque
+    // el array siga listándola (caso reso. a favor del seller, retiro del comprador).
+    const hasMediationTag = tags.includes('mediations') || tags.includes('mediation')
+    const hasMediations = hasMediationsRaw && hasMediationTag && !hasCancelDetail
+    if (!statusDetail && hasCancelDetail) {
+      const group = String(data.cancel_detail.group || '').toLowerCase()
+      const requestedBy = String(data.cancel_detail.requested_by || '').toLowerCase()
+      if (group === 'buyer') statusDetail = 'cancelled_by_buyer'
+      else if (group === 'seller') statusDetail = 'cancelled_by_seller'
+      else if (group === 'ml' || group === 'mercadolibre') statusDetail = 'cancelled_by_ml'
+      else if (group === 'delivery') {
+        if (requestedBy === 'seller') statusDetail = 'cancelled_by_seller'
+        else if (requestedBy === 'buyer') statusDetail = 'cancelled_by_buyer'
+        else statusDetail = 'cancelled_by_delivery'
+      } else if (group) statusDetail = `cancelled_by_${group}`
+    }
+    // Caso no_shipping cumplido: si el seller dejó feedback, ML lo da por
+    // entregado aunque el tag not_delivered siga.
+    const isNoShipping = tags.includes('no_shipping')
+    const sellerLeftFeedback = !!data.feedback?.seller?.id
+    if (
+      !statusDetail &&
+      isNoShipping &&
+      data.status === 'paid' &&
+      !hasCancelDetail &&
+      sellerLeftFeedback
+    ) {
+      statusDetail = 'delivered_no_shipping'
+    }
 
-    if (hasMediations || tags.includes('mediations') || statusDetail === 'mediation_open') counts.mediation++
+    if (hasMediations || statusDetail === 'mediation_open') counts.mediation++
     else if (tags.includes('claim_opened') || tags.includes('claim')) counts.claim++
-    else if (tags.includes('not_delivered') || statusDetail === 'not_delivered') counts.notDelivered++
     else if (tags.includes('return') || tags.includes('returned') || statusDetail === 'returned') counts.returned++
+    else if (statusDetail === 'delivered_no_shipping') counts.deliveredNoShipping++
+    else if (statusDetail?.startsWith('cancelled_by_')) counts.plain++
+    else if (tags.includes('not_delivered') || statusDetail === 'not_delivered') counts.notDelivered++
     else counts.plain++
 
     if (APPLY) {
@@ -73,12 +114,13 @@ async function run() {
   }
   console.log()
   console.log('Resumen:')
-  console.log(`  Mediación:     ${counts.mediation}`)
-  console.log(`  Reclamo:       ${counts.claim}`)
-  console.log(`  No entregado:  ${counts.notDelivered}`)
-  console.log(`  Devolución:    ${counts.returned}`)
-  console.log(`  Sin marcas:    ${counts.plain}`)
-  console.log(`  ML 4xx/5xx:    ${counts.failed}`)
+  console.log(`  Mediación:           ${counts.mediation}`)
+  console.log(`  Reclamo:             ${counts.claim}`)
+  console.log(`  No entregado:        ${counts.notDelivered}`)
+  console.log(`  Devolución:          ${counts.returned}`)
+  console.log(`  Entregado no_shipping: ${counts.deliveredNoShipping}`)
+  console.log(`  Sin marcas:          ${counts.plain}`)
+  console.log(`  ML 4xx/5xx:          ${counts.failed}`)
   if (!APPLY) console.log('\nDRY-RUN. Para escribir: pasar --apply')
 
   await prisma.$disconnect()

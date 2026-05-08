@@ -89,6 +89,7 @@ export class TaxDocumentsService {
     // menos una de las orders de la sale tiene mediación / no entregada / etc.
     // Debe ir al inicio de where.AND para que los demás filtros se compongan.
     if (situation === 'mediation') {
+      // hasMediations en metadata ya descuenta mediaciones cerradas.
       where.AND = [
         ...(where.AND || []),
         {
@@ -99,7 +100,6 @@ export class TaxDocumentsService {
                   OR: [
                     { metadata: { path: ['hasMediations'], equals: true } },
                     { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
-                    { metadata: { path: ['tags'], array_contains: ['mediations'] } },
                   ],
                 },
               },
@@ -115,9 +115,14 @@ export class TaxDocumentsService {
             is: {
               orders: {
                 some: {
-                  OR: [
-                    { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
-                    { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
+                  AND: [
+                    { NOT: { status: 'cancelled' } },
+                    {
+                      OR: [
+                        { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
+                        { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
+                      ],
+                    },
                   ],
                 },
               },
@@ -126,9 +131,8 @@ export class TaxDocumentsService {
         },
       ]
     } else if (situation === 'cancelled_clean') {
-      // Sale cuyas orders están todas cancelled pero ninguna en mediación / no
-      // entregada — la cancelación "limpia". Útil para identificar las que sí
-      // deberían terminar en NC.
+      // Sale cuyas orders están todas cancelled pero ninguna en mediación
+      // abierta — la cancelación "limpia".
       where.AND = [
         ...(where.AND || []),
         {
@@ -140,9 +144,6 @@ export class TaxDocumentsService {
                   OR: [
                     { metadata: { path: ['hasMediations'], equals: true } },
                     { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
-                    { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
-                    { metadata: { path: ['tags'], array_contains: ['mediations'] } },
-                    { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
                   ],
                 },
               },

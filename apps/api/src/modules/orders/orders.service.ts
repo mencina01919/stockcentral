@@ -72,19 +72,23 @@ export class OrdersService {
     // Situaciones especiales del marketplace (hoy solo ML llena metadata).
     // Requieren JSON path filters de Prisma: metadata.tags array_contains, etc.
     if (situation === 'mediation') {
+      // hasMediations en metadata ya descuenta mediaciones cerradas (las que
+      // tienen cancel_detail). Por eso no usamos tags.array_contains aquí.
       where.AND = [
         ...(where.AND || []),
         {
           OR: [
             { metadata: { path: ['hasMediations'], equals: true } },
             { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
-            { metadata: { path: ['tags'], array_contains: ['mediations'] } },
           ],
         },
       ]
     } else if (situation === 'not_delivered') {
+      // No entregado solo cuando la orden no está cancelada (si está
+      // cancelada, gana el motivo de cancelación).
       where.AND = [
         ...(where.AND || []),
+        { NOT: { status: 'cancelled' } },
         {
           OR: [
             { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
@@ -93,7 +97,7 @@ export class OrdersService {
         },
       ]
     } else if (situation === 'cancelled_clean') {
-      // Cancelada sin mediación / reclamo / no-entrega — la cancelación "limpia".
+      // Cancelada sin mediación abierta y sin marca de no-entrega activa.
       where.status = 'cancelled'
       where.AND = [
         ...(where.AND || []),
@@ -102,9 +106,6 @@ export class OrdersService {
             OR: [
               { metadata: { path: ['hasMediations'], equals: true } },
               { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
-              { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
-              { metadata: { path: ['tags'], array_contains: ['mediations'] } },
-              { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
             ],
           },
         },
