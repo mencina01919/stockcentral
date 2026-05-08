@@ -2,7 +2,8 @@
 
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, FileText, Loader2, Eye, RefreshCw, Upload, ExternalLink, Layers } from 'lucide-react'
+import { Search, FileText, Loader2, Eye, RefreshCw, Upload, ExternalLink, Layers, Download } from 'lucide-react'
+import { DatePicker } from '@/components/sc/date-picker'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Panel, Chip, StatusBadge, MonoLabel } from '@/components/sc/ui'
@@ -31,17 +32,46 @@ export default function TaxDocumentsPage() {
   const [page, setPage] = useState(1)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [placedFrom, setPlacedFrom] = useState('')
+  const [placedTo, setPlacedTo] = useState('')
 
   const buildParams = () => {
     const p: Record<string, any> = { search, page, limit: 20 }
     if (filter !== 'all') p.status = filter
+    if (placedFrom) p.placedFrom = placedFrom
+    if (placedTo) p.placedTo = placedTo
     return p
   }
 
   const { data, isLoading } = useQuery({
-    queryKey: ['tax-documents', search, filter, page],
+    queryKey: ['tax-documents', search, filter, page, placedFrom, placedTo],
     queryFn: () => api.get('/tax-documents', { params: buildParams() }).then((r) => r.data),
   })
+
+  const handleExportCsv = async () => {
+    const params = new URLSearchParams()
+    if (search) params.set('search', search)
+    if (filter !== 'all') params.set('status', filter)
+    if (placedFrom) params.set('placedFrom', placedFrom)
+    if (placedTo) params.set('placedTo', placedTo)
+    try {
+      const res = await api.get(`/tax-documents/export.csv?${params.toString()}`, {
+        responseType: 'blob',
+      })
+      const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `tax-documents-${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      toast.success('CSV descargado')
+    } catch (err: any) {
+      toast.error('Error al exportar')
+    }
+  }
 
   const retryMutation = useMutation({
     mutationFn: (id: string) => api.post(`/tax-documents/${id}/retry`),
@@ -74,20 +104,33 @@ export default function TaxDocumentsPage() {
             : 'Boletas, facturas y notas de crédito emitidas'
         }
         actions={
-          <button
-            onClick={() => setUploadOpen(true)}
-            className="sc-btn-ghost"
-            style={{ padding: '8px 14px', fontSize: 12 }}
-          >
-            <Upload className="w-3.5 h-3.5" /> Subir manual
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleExportCsv}
+              className="sc-btn-ghost"
+              style={{ padding: '8px 14px', fontSize: 12 }}
+              title="Descargar CSV con los filtros actuales"
+            >
+              <Download className="w-3.5 h-3.5" /> Exportar CSV
+            </button>
+            <button
+              onClick={() => setUploadOpen(true)}
+              className="sc-btn-ghost"
+              style={{ padding: '8px 14px', fontSize: 12 }}
+            >
+              <Upload className="w-3.5 h-3.5" /> Subir manual
+            </button>
+          </div>
         }
       />
 
       <div className="flex-1 px-7 py-6 overflow-auto">
         <Panel className="overflow-hidden">
-          <div style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}>
-            <div className="relative max-w-sm">
+          <div
+            className="flex flex-wrap items-center gap-3"
+            style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}
+          >
+            <div className="relative" style={{ minWidth: 280, flex: '1 1 280px' }}>
               <Search
                 className="w-3.5 h-3.5 absolute"
                 style={{ left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--sc-text-low)' }}
@@ -99,6 +142,41 @@ export default function TaxDocumentsPage() {
                 className="sc-input"
                 style={{ paddingLeft: 38 }}
               />
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="sc-mono uppercase"
+                style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-low)' }}
+              >
+                Venta desde
+              </span>
+              <DatePicker
+                value={placedFrom}
+                onChange={(v) => { setPlacedFrom(v); setPage(1) }}
+                className="sc-input"
+                style={{ width: 160 }}
+              />
+              <span
+                className="sc-mono uppercase"
+                style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-low)' }}
+              >
+                Hasta
+              </span>
+              <DatePicker
+                value={placedTo}
+                onChange={(v) => { setPlacedTo(v); setPage(1) }}
+                className="sc-input"
+                style={{ width: 160 }}
+              />
+              {(placedFrom || placedTo) && (
+                <button
+                  onClick={() => { setPlacedFrom(''); setPlacedTo(''); setPage(1) }}
+                  className="sc-btn-ghost"
+                  style={{ padding: '6px 10px', fontSize: 11 }}
+                >
+                  Limpiar
+                </button>
+              )}
             </div>
           </div>
 
@@ -222,17 +300,12 @@ export default function TaxDocumentsPage() {
                             : '—'}
                         </td>
                         <td
-                          className="sc-mono"
                           style={{
                             padding: '13px 16px',
-                            fontSize: 11,
-                            color: 'var(--sc-text-low)',
                             borderBottom: '1px solid var(--sc-line-faint)',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.1em',
                           }}
                         >
-                          {doc.emitter}
+                          <EmitterBadge emitter={doc.emitter} />
                         </td>
                         <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
                           <StatusBadge tone={statusInfo.tone}>{statusInfo.label}</StatusBadge>
@@ -411,9 +484,12 @@ function DocDetailModal({ id, onClose }: { id: string; onClose: () => void }) {
               </h2>
               <StatusBadge tone={statusInfo.tone}>{statusInfo.label}</StatusBadge>
             </div>
-            <p className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', marginTop: 4 }}>
-              Emisor: {doc.emitter} · {doc.emittedAt ? formatDate(doc.emittedAt) : 'no emitido'}
-            </p>
+            <div className="flex items-center gap-2 mt-1.5">
+              <EmitterBadge emitter={doc.emitter} />
+              <span className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)' }}>
+                {doc.emittedAt ? formatDate(doc.emittedAt) : 'no emitido'}
+              </span>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -756,5 +832,28 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       </label>
       {children}
     </div>
+  )
+}
+
+// Distingue visualmente el origen del documento:
+//   - bsale: emitido desde StockCentral con Bsale (sistema interno).
+//   - manual: subido por el operador a mano (PDF de fuera del sistema).
+//   - ml-external: existía ya en ML cuando importamos el histórico.
+//   - otros: muestra el nombre tal cual.
+function EmitterBadge({ emitter }: { emitter: string }) {
+  const meta: Record<string, { label: string; tone: 'ok' | 'low' | 'warn' | 'cyan'; title?: string }> = {
+    bsale: { label: 'Bsale', tone: 'ok', title: 'Emitido desde StockCentral con Bsale' },
+    manual: { label: 'Manual', tone: 'cyan', title: 'PDF subido manualmente al sistema' },
+    'ml-external': {
+      label: 'Cargado por otro medio',
+      tone: 'warn',
+      title: 'Existe en Mercado Libre pero NO fue emitido por StockCentral. Se importó del histórico.',
+    },
+  }
+  const m = meta[emitter] || { label: emitter, tone: 'low' as const }
+  return (
+    <span title={m.title}>
+      <Chip tone={m.tone}>{m.label}</Chip>
+    </span>
   )
 }

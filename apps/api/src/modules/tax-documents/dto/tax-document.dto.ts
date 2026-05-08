@@ -13,6 +13,9 @@ export class TaxDocumentQueryDto {
   @IsOptional() emitter?: string
   @IsOptional() saleId?: string
   @IsOptional() orderId?: string
+  // Rango por fecha real de la venta (sale.placedAt). ISO 8601.
+  @IsOptional() placedFrom?: string
+  @IsOptional() placedTo?: string
   @IsOptional() sortBy?: string = 'createdAt'
   @IsOptional() sortOrder?: 'asc' | 'desc' = 'desc'
 }
@@ -31,6 +34,18 @@ export class CreditNoteDto {
   @IsOptional()
   @IsString()
   motive?: string
+}
+
+// Marca ventas como "cargada por otro medio" (DTE emitido fuera del sistema).
+// NO interactúa con Bsale ni con el marketplace — solo crea un TaxDocument
+// local con emitter='ml-external' para que la venta deje de aparecer en
+// "Por facturar".
+export class MarkExternalDto {
+  @ApiProperty({ type: [String], description: 'IDs de Sale a marcar' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  saleIds: string[]
 }
 
 export class EmitBulkDto {

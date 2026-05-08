@@ -11,12 +11,22 @@ import {
   type TaxClientInput,
   type TaxDocumentLineInput,
 } from '@stockcentral/integrations'
+// Escapa un valor para CSV: si contiene coma, comilla doble o salto de
+// línea, lo envuelve en comillas y duplica las comillas internas. RFC 4180.
+function csvEscape(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return ''
+  const s = String(value)
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+  return s
+}
+
 import {
   TaxDocumentQueryDto,
   EmitTaxDocumentDto,
   CreditNoteDto,
   UploadManualDocumentDto,
   EmitBulkDto,
+  MarkExternalDto,
 } from './dto/tax-document.dto'
 import { BillingListener } from '../billing/billing.listener'
 
@@ -61,6 +71,8 @@ export class TaxDocumentsService {
       emitter,
       saleId,
       orderId,
+      placedFrom,
+      placedTo,
       sortBy = 'createdAt',
       sortOrder = 'desc',
     } = query
@@ -77,6 +89,27 @@ export class TaxDocumentsService {
         { externalId: { contains: search, mode: 'insensitive' } },
       ]
     }
+    // Filtro por fecha real de la venta (sale.placedAt). Caemos a sale.createdAt
+    // si placedAt es null (caso legacy).
+    if (placedFrom || placedTo) {
+      const range: Record<string, Date> = {}
+      if (placedFrom) range.gte = new Date(placedFrom)
+      if (placedTo) {
+        const to = new Date(placedTo)
+        if (placedTo.length <= 10) to.setUTCHours(23, 59, 59, 999)
+        range.lte = to
+      }
+      where.AND = [
+        ...(where.AND || []),
+        {
+          sale: {
+            is: {
+              OR: [{ placedAt: range }, { AND: [{ placedAt: null }, { createdAt: range }] }],
+            },
+          },
+        },
+      ]
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.taxDocument.findMany({
@@ -85,7 +118,16 @@ export class TaxDocumentsService {
         take: limit,
         orderBy: { [sortBy]: sortOrder },
         include: {
-          sale: { select: { id: true, saleNumber: true, customerName: true, total: true } },
+          sale: {
+            select: {
+              id: true,
+              saleNumber: true,
+              customerName: true,
+              total: true,
+              placedAt: true,
+              source: true,
+            },
+          },
           lines: true,
         },
       }),
@@ -533,6 +575,165 @@ export class TaxDocumentsService {
       skipped: skipped.length,
       notFound: notFound.length,
       details: { queued, skipped, notFound },
+    }
+  }
+
+  // ─── Export CSV para reportes ────────────────────────────────────────────
+  // Genera CSV con todos los TaxDocuments que matchen los filtros.
+  // Sin paginación — usa los mismos filtros que findAll pero devuelve TODO.
+  // Útil para preparar reportes mensuales/anuales en Excel/Sheets.
+  async exportCsv(tenantId: string, query: TaxDocumentQueryDto): Promise<string> {
+    const { search, status, type, emitter, saleId, orderId, placedFrom, placedTo } = query
+    const where: any = { tenantId }
+    if (status) where.status = status
+    if (type) where.type = type
+    if (emitter) where.emitter = emitter
+    if (saleId) where.saleId = saleId
+    if (orderId) where.orderId = orderId
+    if (search) {
+      where.OR = [
+        { folio: { contains: search, mode: 'insensitive' } },
+        { externalId: { contains: search, mode: 'insensitive' } },
+      ]
+    }
+    if (placedFrom || placedTo) {
+      const range: Record<string, Date> = {}
+      if (placedFrom) range.gte = new Date(placedFrom)
+      if (placedTo) {
+        const to = new Date(placedTo)
+        if (placedTo.length <= 10) to.setUTCHours(23, 59, 59, 999)
+        range.lte = to
+      }
+      where.AND = [
+        ...(where.AND || []),
+        {
+          sale: {
+            is: {
+              OR: [{ placedAt: range }, { AND: [{ placedAt: null }, { createdAt: range }] }],
+            },
+          },
+        },
+      ]
+    }
+
+    const docs = await this.prisma.taxDocument.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        sale: {
+          select: {
+            saleNumber: true,
+            customerName: true,
+            customerDocNumber: true,
+            billingName: true,
+            billingDocNumber: true,
+            total: true,
+            currency: true,
+            source: true,
+            placedAt: true,
+            createdAt: true,
+            orders: { select: { externalOrderId: true }, take: 5 },
+          },
+        },
+      },
+    })
+
+    const headers = [
+      'Tipo',
+      'Folio',
+      'Estado',
+      'Emisor',
+      'Venta',
+      'Marketplace',
+      'Order ID externo',
+      'Fecha venta',
+      'Fecha emisión',
+      'Cliente',
+      'RUT cliente',
+      'Razón social',
+      'RUT facturación',
+      'Total',
+      'Moneda',
+      'PDF',
+      'XML',
+    ]
+    const rows: string[][] = [headers]
+    for (const d of docs) {
+      const sale = d.sale as any
+      const fechaVenta = sale?.placedAt || sale?.createdAt
+      const orderIds = (sale?.orders || []).map((o: any) => o.externalOrderId).filter(Boolean).join('; ')
+      rows.push([
+        d.type,
+        d.folio || '',
+        d.status,
+        d.emitter,
+        sale?.saleNumber || '',
+        sale?.source || '',
+        orderIds,
+        fechaVenta ? new Date(fechaVenta).toISOString() : '',
+        d.emittedAt ? d.emittedAt.toISOString() : '',
+        sale?.customerName || '',
+        sale?.customerDocNumber || '',
+        sale?.billingName || '',
+        sale?.billingDocNumber || '',
+        sale?.total?.toString() || '',
+        sale?.currency || '',
+        d.pdfUrl || '',
+        d.xmlUrl || '',
+      ])
+    }
+    return rows.map((r) => r.map(csvEscape).join(',')).join('\n')
+  }
+
+  // ─── Marcar cargada por otro medio (sin tocar Bsale) ─────────────────────
+  // Crea un TaxDocument local con emitter='ml-external' para que la venta
+  // deje de aparecer en "Por facturar" y muestre el badge "Cargado por otro
+  // medio". NO interactúa con Bsale ni con el marketplace. Idempotente: si
+  // la sale ya tiene doc issued/pending, salta.
+  async markExternal(tenantId: string, dto: MarkExternalDto) {
+    const sales = await this.prisma.sale.findMany({
+      where: { id: { in: dto.saleIds }, tenantId },
+      include: {
+        taxDocuments: {
+          where: { type: { in: ['boleta', 'factura'] }, status: { in: ['issued', 'pending'] } },
+          select: { id: true },
+        },
+      },
+    })
+
+    const marked: string[] = []
+    const skipped: Array<{ saleId: string; reason: string }> = []
+    const notFound: string[] = []
+    const foundIds = new Set(sales.map((s) => s.id))
+    for (const id of dto.saleIds) if (!foundIds.has(id)) notFound.push(id)
+
+    for (const sale of sales) {
+      if (sale.taxDocuments.length > 0) {
+        skipped.push({ saleId: sale.id, reason: 'ya tiene documento' })
+        continue
+      }
+      const type = sale.invoiceType === 'factura' ? 'factura' : 'boleta'
+      await this.prisma.taxDocument.create({
+        data: {
+          tenantId,
+          saleId: sale.id,
+          type,
+          status: 'issued',
+          emitter: 'ml-external',
+          emittedAt: new Date(),
+          attempts: 1,
+          metadata: { source: 'manual-mark', markedAt: new Date().toISOString() } as any,
+        },
+      })
+      marked.push(sale.id)
+    }
+
+    return {
+      requested: dto.saleIds.length,
+      marked: marked.length,
+      skipped: skipped.length,
+      notFound: notFound.length,
+      details: { marked, skipped, notFound },
     }
   }
 

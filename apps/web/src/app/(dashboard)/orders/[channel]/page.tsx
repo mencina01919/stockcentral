@@ -6,6 +6,7 @@ import { Search, ShoppingCart, Loader2, Eye, Package, MapPin, CreditCard, Extern
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Panel, StatusBadge, MonoLabel } from '@/components/sc/ui'
+import { DatePicker } from '@/components/sc/date-picker'
 import {
   formatCurrency,
   formatDate,
@@ -40,9 +41,11 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
   const [internalStatus, setInternalStatus] = useState('all')
   const [page, setPage] = useState(1)
   const [selectedOrder, setSelectedOrder] = useState<any>(null)
+  const [placedFrom, setPlacedFrom] = useState('')
+  const [placedTo, setPlacedTo] = useState('')
 
   const { data, isLoading } = useQuery({
-    queryKey: ['orders', channel, search, internalStatus, page],
+    queryKey: ['orders', channel, search, internalStatus, page, placedFrom, placedTo],
     queryFn: () =>
       api.get('/orders', {
         params: {
@@ -51,6 +54,8 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
           source: sourceFilter,
           page,
           limit: 20,
+          ...(placedFrom ? { placedFrom } : {}),
+          ...(placedTo ? { placedTo } : {}),
         },
       }).then((r) => r.data),
   })
@@ -76,8 +81,11 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
 
       <div className="flex-1 px-7 py-6 overflow-auto">
         <Panel className="overflow-hidden">
-          <div style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}>
-            <div className="relative max-w-sm">
+          <div
+            className="flex flex-wrap items-center gap-3"
+            style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}
+          >
+            <div className="relative" style={{ minWidth: 280, flex: '1 1 280px' }}>
               <Search
                 className="w-3.5 h-3.5 absolute"
                 style={{ left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--sc-text-low)' }}
@@ -89,6 +97,42 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                 className="sc-input"
                 style={{ paddingLeft: 38 }}
               />
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="sc-mono uppercase"
+                style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-low)' }}
+              >
+                Desde
+              </span>
+              <DatePicker
+                value={placedFrom}
+                onChange={(v) => { setPlacedFrom(v); setPage(1) }}
+                className="sc-input"
+                style={{ width: 160 }}
+              />
+              <span
+                className="sc-mono uppercase"
+                style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-low)' }}
+              >
+                Hasta
+              </span>
+              <DatePicker
+                value={placedTo}
+                onChange={(v) => { setPlacedTo(v); setPage(1) }}
+                className="sc-input"
+                style={{ width: 160 }}
+              />
+              {(placedFrom || placedTo) && (
+                <button
+                  onClick={() => { setPlacedFrom(''); setPlacedTo(''); setPage(1) }}
+                  className="sc-btn-ghost"
+                  style={{ padding: '6px 10px', fontSize: 11 }}
+                  title="Limpiar fechas"
+                >
+                  Limpiar
+                </button>
+              )}
             </div>
           </div>
 

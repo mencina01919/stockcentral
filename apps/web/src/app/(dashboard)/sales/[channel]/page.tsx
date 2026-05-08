@@ -6,6 +6,7 @@ import { Search, Receipt, Loader2, Eye, Package, MapPin, CreditCard, Layers, Fil
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Panel, Chip } from '@/components/sc/ui'
+import { DatePicker } from '@/components/sc/date-picker'
 import { formatCurrency, formatDate, ORDER_STATUS_LABELS, PROVIDER_LABELS } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -22,6 +23,8 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
   const [filter, setFilter] = useState<FilterKey>('pending_payment')
   const [page, setPage] = useState(1)
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null)
+  const [placedFrom, setPlacedFrom] = useState('')
+  const [placedTo, setPlacedTo] = useState('')
   // IDs de Sale seleccionadas para emisión masiva.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
@@ -33,11 +36,13 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
     if (filter === 'cancelled') p.status = 'cancelled'
     if (filter === 'packs') p.multiOrder = 'true'
     if (filter === 'facturas') p.invoiceType = 'factura'
+    if (placedFrom) p.placedFrom = placedFrom
+    if (placedTo) p.placedTo = placedTo
     return p
   }
 
   const { data, isLoading } = useQuery({
-    queryKey: ['sales', channel, search, filter, page],
+    queryKey: ['sales', channel, search, filter, page, placedFrom, placedTo],
     queryFn: () => api.get('/sales', { params: buildParams() }).then((r) => r.data),
   })
 
@@ -71,6 +76,37 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
     },
     onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al emitir bulk'),
   })
+
+  // Mutación: marcar como cargada por otro medio (no toca Bsale).
+  const markExternal = useMutation({
+    mutationFn: (ids: string[]) =>
+      api.post('/tax-documents/mark-external', { saleIds: ids }).then((r) => r.data),
+    onSuccess: (res: any) => {
+      const msg = `Marcadas: ${res.marked}/${res.requested}` +
+        (res.skipped > 0 ? ` · ya tenían doc: ${res.skipped}` : '')
+      toast.success(msg)
+      setSelectedIds(new Set())
+      queryClient.invalidateQueries({ queryKey: ['sales'] })
+      queryClient.invalidateQueries({ queryKey: ['tax-documents'] })
+    },
+    onError: (err: any) =>
+      toast.error(err?.response?.data?.message || 'Error al marcar'),
+  })
+
+  const handleMarkSelected = () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    if (ids.length > 10) {
+      const ok = confirm(
+        `Vas a marcar ${ids.length} ventas como "Cargadas por otro medio". No se emitirá nada en Bsale ni en ML, solo se registrará localmente. ¿Continuar?`,
+      )
+      if (!ok) return
+    }
+    markExternal.mutate(ids)
+  }
+  const handleMarkOne = (id: string) => {
+    markExternal.mutate([id])
+  }
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -147,6 +183,16 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                 Limpiar
               </button>
               <button
+                onClick={handleMarkSelected}
+                disabled={markExternal.isPending}
+                className="sc-btn-ghost"
+                style={{ padding: '6px 14px', fontSize: 12 }}
+                title="Crea un registro local 'cargado por otro medio'. No emite en Bsale ni en ML."
+              >
+                {markExternal.isPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Marcar como cargadas por otro medio
+              </button>
+              <button
                 onClick={handleEmitSelected}
                 disabled={emitBulk.isPending}
                 className="sc-btn-primary"
@@ -162,8 +208,11 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
 
       <div className="flex-1 px-7 py-6 overflow-auto">
         <Panel className="overflow-hidden">
-          <div style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}>
-            <div className="relative max-w-sm">
+          <div
+            className="flex flex-wrap items-center gap-3"
+            style={{ padding: 16, borderBottom: '1px solid var(--sc-line-soft)' }}
+          >
+            <div className="relative" style={{ minWidth: 280, flex: '1 1 280px' }}>
               <Search
                 className="w-3.5 h-3.5 absolute"
                 style={{ left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--sc-text-low)' }}
@@ -175,6 +224,42 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                 className="sc-input"
                 style={{ paddingLeft: 38 }}
               />
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="sc-mono uppercase"
+                style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-low)' }}
+              >
+                Desde
+              </span>
+              <DatePicker
+                value={placedFrom}
+                onChange={(v) => { setPlacedFrom(v); setPage(1) }}
+                className="sc-input"
+                style={{ width: 160 }}
+              />
+              <span
+                className="sc-mono uppercase"
+                style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-low)' }}
+              >
+                Hasta
+              </span>
+              <DatePicker
+                value={placedTo}
+                onChange={(v) => { setPlacedTo(v); setPage(1) }}
+                className="sc-input"
+                style={{ width: 160 }}
+              />
+              {(placedFrom || placedTo) && (
+                <button
+                  onClick={() => { setPlacedFrom(''); setPlacedTo(''); setPage(1) }}
+                  className="sc-btn-ghost"
+                  style={{ padding: '6px 10px', fontSize: 11 }}
+                  title="Limpiar fechas"
+                >
+                  Limpiar
+                </button>
+              )}
             </div>
           </div>
 
@@ -432,28 +517,58 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                               <Eye className="w-3.5 h-3.5" />
                             </button>
                             {canEmit && (
-                              <button
-                                onClick={() => emitOne.mutate(sale.id)}
-                                disabled={emitOne.isPending && emitOne.variables === sale.id}
-                                style={{
-                                  padding: '5px 10px',
-                                  fontSize: 11,
-                                  color: 'var(--sc-blue-600)',
-                                  borderRadius: 6,
-                                  background: 'transparent',
-                                  border: '1px solid rgba(37,99,235,0.20)',
-                                  cursor: 'pointer',
-                                  whiteSpace: 'nowrap',
-                                }}
-                                title="Emitir DTE para esta venta"
-                              >
-                                {emitOne.isPending && emitOne.variables === sale.id ? (
-                                  <Loader2 className="w-3 h-3 inline animate-spin" />
-                                ) : (
-                                  <Send className="w-3 h-3 inline" />
-                                )}{' '}
-                                Emitir
-                              </button>
+                              <>
+                                <button
+                                  onClick={() => emitOne.mutate(sale.id)}
+                                  disabled={emitOne.isPending && emitOne.variables === sale.id}
+                                  style={{
+                                    padding: '5px 10px',
+                                    fontSize: 11,
+                                    color: 'var(--sc-blue-600)',
+                                    borderRadius: 6,
+                                    background: 'transparent',
+                                    border: '1px solid rgba(37,99,235,0.20)',
+                                    cursor: 'pointer',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                  title="Emitir DTE para esta venta"
+                                >
+                                  {emitOne.isPending && emitOne.variables === sale.id ? (
+                                    <Loader2 className="w-3 h-3 inline animate-spin" />
+                                  ) : (
+                                    <Send className="w-3 h-3 inline" />
+                                  )}{' '}
+                                  Emitir
+                                </button>
+                                <button
+                                  onClick={() => handleMarkOne(sale.id)}
+                                  disabled={
+                                    markExternal.isPending &&
+                                    Array.isArray(markExternal.variables) &&
+                                    markExternal.variables.length === 1 &&
+                                    markExternal.variables[0] === sale.id
+                                  }
+                                  style={{
+                                    padding: '5px 10px',
+                                    fontSize: 11,
+                                    color: 'var(--sc-warn)',
+                                    borderRadius: 6,
+                                    background: 'transparent',
+                                    border: '1px solid rgba(217,119,6,0.20)',
+                                    cursor: 'pointer',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                  title="Marcar como cargada por otro medio (no toca Bsale)"
+                                >
+                                  {markExternal.isPending &&
+                                  Array.isArray(markExternal.variables) &&
+                                  markExternal.variables.length === 1 &&
+                                  markExternal.variables[0] === sale.id ? (
+                                    <Loader2 className="w-3 h-3 inline animate-spin" />
+                                  ) : null}{' '}
+                                  Marcar externa
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>

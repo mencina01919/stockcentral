@@ -63,6 +63,9 @@ export class OrderQueryDto {
   @IsOptional() internalStatus?: string
   @IsOptional() source?: string
   @IsOptional() sourceChannel?: string
+  // Rango de fecha real (placedAt). ISO 8601. Inclusivos.
+  @IsOptional() placedFrom?: string
+  @IsOptional() placedTo?: string
   @IsOptional() sortBy?: string = 'createdAt'
   @IsOptional() sortOrder?: 'asc' | 'desc' = 'desc'
 }

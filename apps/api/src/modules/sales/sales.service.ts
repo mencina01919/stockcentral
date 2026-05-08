@@ -17,7 +17,12 @@ export class SalesService {
       paymentStatus,
       multiOrder,
       pendingBilling,
-      sortBy = 'createdAt',
+      placedFrom,
+      placedTo,
+      // Por defecto ordenamos por la fecha real del marketplace (placedAt).
+      // Para registros legacy sin placedAt, Prisma con `nulls: 'last'` los
+      // pone al final. Si el caller pide otra cosa, se respeta.
+      sortBy = 'placedAt',
       sortOrder = 'desc',
     } = query
     const skip = (page - 1) * limit
@@ -46,6 +51,32 @@ export class SalesService {
         },
       }
     }
+    // Filtro por fecha real del marketplace. Caemos a `createdAt` como
+    // fallback para sales legacy que aún no tienen placedAt seteado.
+    if (placedFrom || placedTo) {
+      const range: Record<string, Date> = {}
+      if (placedFrom) range.gte = new Date(placedFrom)
+      if (placedTo) {
+        // Si solo viene la fecha sin hora, incluir todo el día final.
+        const to = new Date(placedTo)
+        if (placedTo.length <= 10) {
+          to.setUTCHours(23, 59, 59, 999)
+        }
+        range.lte = to
+      }
+      // AND con un OR interno: filtra placedAt si existe, o createdAt si la
+      // sale es legacy (placedAt null). Usar AND evita colisión con el OR
+      // de búsqueda más abajo.
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { placedAt: range },
+            { AND: [{ placedAt: null }, { createdAt: range }] },
+          ],
+        },
+      ]
+    }
     if (search) {
       where.OR = [
         { saleNumber: { contains: search, mode: 'insensitive' } },
@@ -56,12 +87,20 @@ export class SalesService {
       ]
     }
 
+    // Para sortBy=placedAt (default) usamos `nulls: 'last'` para que las
+    // ventas legacy sin placedAt queden al final del listado, no al principio.
+    // Para otros campos no-nullables, sortOrder simple.
+    const orderBy: any =
+      sortBy === 'placedAt'
+        ? { placedAt: { sort: sortOrder, nulls: 'last' } }
+        : { [sortBy]: sortOrder }
+
     let [data, total] = await Promise.all([
       this.prisma.sale.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { [sortBy]: sortOrder },
+        orderBy,
         include: {
           orders: {
             select: {

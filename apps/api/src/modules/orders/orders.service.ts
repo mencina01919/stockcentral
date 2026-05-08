@@ -31,7 +31,10 @@ export class OrdersService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(tenantId: string, query: OrderQueryDto) {
-    const { page = 1, limit = 20, search, status, internalStatus, source, sourceChannel, sortBy = 'createdAt', sortOrder = 'desc' } = query
+    // Default: ordenar por la fecha real del marketplace (placedAt). Para
+    // órdenes legacy sin placedAt, Prisma con `nulls: 'last'` las pone al
+    // final.
+    const { page = 1, limit = 20, search, status, internalStatus, source, sourceChannel, placedFrom, placedTo, sortBy = 'placedAt', sortOrder = 'desc' } = query
     const skip = (page - 1) * limit
     const where: any = { tenantId }
 
@@ -46,13 +49,40 @@ export class OrdersService {
         { customerEmail: { contains: search, mode: 'insensitive' } },
       ]
     }
+    // Filtro por fecha real del marketplace (placedAt). Fallback a createdAt
+    // para órdenes legacy sin placedAt.
+    if (placedFrom || placedTo) {
+      const range: Record<string, Date> = {}
+      if (placedFrom) range.gte = new Date(placedFrom)
+      if (placedTo) {
+        const to = new Date(placedTo)
+        if (placedTo.length <= 10) {
+          to.setUTCHours(23, 59, 59, 999)
+        }
+        range.lte = to
+      }
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { placedAt: range },
+            { AND: [{ placedAt: null }, { createdAt: range }] },
+          ],
+        },
+      ]
+    }
+
+    const orderBy: any =
+      sortBy === 'placedAt'
+        ? { placedAt: { sort: sortOrder, nulls: 'last' } }
+        : { [sortBy]: sortOrder }
 
     const [data, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { [sortBy]: sortOrder },
+        orderBy,
         include: { items: true },
       }),
       this.prisma.order.count({ where }),

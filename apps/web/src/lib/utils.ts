@@ -13,14 +13,27 @@ export function formatCurrency(amount: number, currency = 'CLP', locale = 'es-CL
   }).format(amount)
 }
 
-export function formatDate(date: Date | string, locale = 'es-CL') {
-  return new Intl.DateTimeFormat(locale, {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(date))
+// Formato consistente dd/mm/yyyy HH:mm en toda la plataforma. Construido a
+// mano (no via Intl) porque locale es-CL devuelve guiones según el browser.
+export function formatDate(date: Date | string) {
+  const d = new Date(date)
+  if (Number.isNaN(d.getTime())) return ''
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yyyy = d.getFullYear()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `${dd}/${mm}/${yyyy} ${hh}:${mi}`
+}
+
+// Variante solo fecha (sin hora) — útil para columnas compactas.
+export function formatDateOnly(date: Date | string) {
+  const d = new Date(date)
+  if (Number.isNaN(d.getTime())) return ''
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yyyy = d.getFullYear()
+  return `${dd}/${mm}/${yyyy}`
 }
 
 export function formatRelativeDate(date: Date | string) {

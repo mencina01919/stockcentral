@@ -20,6 +20,7 @@ import {
   CreditNoteDto,
   UploadManualDocumentDto,
   EmitBulkDto,
+  MarkExternalDto,
 } from './dto/tax-document.dto'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
 import { Public } from '../../common/decorators/public.decorator'
@@ -46,6 +47,22 @@ export class TaxDocumentsController {
   @ApiOperation({ summary: 'Listar documentos tributarios emitidos' })
   findAll(@TenantId() tenantId: string, @Query() query: TaxDocumentQueryDto) {
     return this.service.findAll(tenantId, query)
+  }
+
+  @ApiBearerAuth()
+  @Get('export.csv')
+  @ApiOperation({ summary: 'Exportar TaxDocuments como CSV (sin paginación)' })
+  async exportCsv(
+    @TenantId() tenantId: string,
+    @Query() query: TaxDocumentQueryDto,
+    @Res() res: Response,
+  ) {
+    const csv = await this.service.exportCsv(tenantId, query)
+    const filename = `tax-documents-${new Date().toISOString().slice(0, 10)}.csv`
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    // BOM para que Excel detecte UTF-8 correctamente.
+    res.send('﻿' + csv)
   }
 
   @ApiBearerAuth()
@@ -108,6 +125,15 @@ export class TaxDocumentsController {
   @ApiOperation({ summary: 'Emitir DTE para múltiples ventas (encola con throttle)' })
   emitBulk(@TenantId() tenantId: string, @Body() dto: EmitBulkDto) {
     return this.service.emitBulk(tenantId, dto)
+  }
+
+  @ApiBearerAuth()
+  @Post('mark-external')
+  @ApiOperation({
+    summary: 'Marcar ventas como cargadas por otro medio (sin tocar Bsale)',
+  })
+  markExternal(@TenantId() tenantId: string, @Body() dto: MarkExternalDto) {
+    return this.service.markExternal(tenantId, dto)
   }
 
   @ApiBearerAuth()
