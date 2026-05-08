@@ -27,15 +27,75 @@ const SITE_BY_COUNTRY: Record<string, string> = {
   VE: 'MLV',
 }
 
+// Callback que provee el caller cuando quiere que el driver pueda
+// auto-refrescar el token al toparse un 401. Devuelve el nuevo accessToken
+// (y opcionalmente refreshToken) tras refrescar contra api.mercadolibre.com.
+// El driver lo usa una sola vez por request: si tras refrescar y reintentar
+// vuelve a fallar 401, propaga el error.
+type RefreshTokenCallback = () => Promise<{ accessToken: string }>
+
 export class MercadoLibreDriver implements IMarketplaceDriver {
   readonly provider = 'mercadolibre'
 
+  // Callback que el caller (sync.service) setea en cada operación que
+  // requiere auto-refresh. Si está presente, las llamadas con 401 tratan de
+  // refrescar y reintentar una vez. Volvemos a null al terminar la
+  // operación para no contaminar otras instancias.
+  private onTokenRefresh?: RefreshTokenCallback
+
+  // Permite que el caller registre un callback para auto-refresh. Devuelve
+  // un dispose() para limpiarlo al final.
+  setRefreshHandler(cb: RefreshTokenCallback | undefined): () => void {
+    this.onTokenRefresh = cb
+    return () => {
+      this.onTokenRefresh = undefined
+    }
+  }
+
+  // Construye el cliente axios con auto-refresh on-401 si hay handler
+  // registrado. Si una llamada falla con 401, intenta refrescar el token
+  // una vez vía `onTokenRefresh` y reintenta el request. Si el reintento
+  // vuelve a fallar, propaga el error.
+  // Un mismo flujo (ej. getOrders + fetchOrderDetail por cada item) comparte
+  // el token nuevo gracias a `client.defaults.headers.Authorization`.
   private buildClient(accessToken: string): AxiosInstance {
-    return axios.create({
+    const client = axios.create({
       baseURL: ML_API,
       headers: { Authorization: `Bearer ${accessToken}` },
       timeout: 15000,
     })
+
+    if (!this.onTokenRefresh) return client
+
+    let refreshing: Promise<string> | null = null
+    const refreshHandler = this.onTokenRefresh
+
+    client.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const status = error?.response?.status
+        const config = error?.config as any
+        if (status !== 401 || !config || config._retried) {
+          return Promise.reject(error)
+        }
+        config._retried = true
+        try {
+          // Coalescing: varios 401 simultáneos comparten una sola promesa.
+          if (!refreshing) {
+            refreshing = refreshHandler()
+              .then((r) => r.accessToken)
+              .finally(() => { refreshing = null })
+          }
+          const newToken = await refreshing
+          config.headers = { ...(config.headers || {}), Authorization: `Bearer ${newToken}` }
+          ;(client.defaults.headers as any).Authorization = `Bearer ${newToken}`
+          return client.request(config)
+        } catch (refreshErr) {
+          return Promise.reject(refreshErr)
+        }
+      },
+    )
+    return client
   }
 
   getAuthUrl(config: DriverConfig): string {

@@ -379,12 +379,18 @@ export class SyncService {
     const credentials = connection.credentials as Record<string, string>
     const config = connection.config as Record<string, unknown> | undefined
 
+    // Registrar callback de auto-refresh para drivers que lo soportan
+    // (hoy: MercadoLibre). Si el driver responde 401, refresca el token y
+    // reintenta. dispose() se llama al final para no contaminar otros flujos.
+    const dispose = this.attachRefreshHandler(driver, tenantId, connectionId)
+
     let offset = 0
     const limit = 50
     let created = 0
     let errors = 0
     const startTime = Date.now()
 
+    try {
     while (true) {
       const result = await driver.getOrders(credentials, config, since, offset, limit)
 
@@ -439,6 +445,9 @@ export class SyncService {
                 paymentStatus: nextPaymentStatus,
                 shipmentStatus: this.mapShipmentStatus(marketOrder.status),
                 internalStatus: nextInternalStatus,
+                // Solo seteamos placedAt si la orden no lo tiene aún. La fecha
+                // del marketplace no debería cambiar en updates futuros.
+                placedAt: existing.placedAt ?? marketOrder.createdAt,
               },
             })
             await this.recalculateSale(targetSaleId)
@@ -492,6 +501,8 @@ export class SyncService {
               paymentStatus: initialPaymentStatus,
               shipmentStatus: this.mapShipmentStatus(marketOrder.status),
               internalStatus: initialInternalStatus,
+              // Fecha real en que el pedido se creó en el marketplace.
+              placedAt: marketOrder.createdAt,
               shippingAddress: marketOrder.shippingAddress as any,
               billingAddress: marketOrder.billingAddress as any,
               items: {
@@ -538,6 +549,38 @@ export class SyncService {
     })
 
     return { created, errors }
+    } finally {
+      dispose()
+    }
+  }
+
+  // Si el driver soporta callback de auto-refresh (hoy solo el de ML),
+  // registra una función que refresca el token usando los métodos del propio
+  // driver y persiste los nuevos credentials en DB. Devuelve dispose() para
+  // limpiar el handler al final del flujo.
+  private attachRefreshHandler(
+    driver: any,
+    tenantId: string,
+    connectionId: string,
+  ): () => void {
+    if (typeof driver.setRefreshHandler !== 'function') return () => {}
+    return driver.setRefreshHandler(async () => {
+      this.logger.warn(
+        `[${driver.provider}] 401 detectado — refrescando token (connection ${connectionId})`,
+      )
+      // refreshOAuthToken lee la connection actual, llama al refreshToken
+      // del driver y persiste credentials + tokenExpiresAt.
+      await this.refreshOAuthToken(tenantId, connectionId)
+      const updated = await this.prisma.connection.findUnique({
+        where: { id: connectionId },
+        select: { credentials: true },
+      })
+      const accessToken = (updated?.credentials as any)?.accessToken
+      if (!accessToken) {
+        throw new Error('Refresh OK pero no hay accessToken nuevo en DB')
+      }
+      return { accessToken }
+    })
   }
 
   async syncSingleStock(
@@ -932,6 +975,16 @@ export class SyncService {
     // for customer/billing fields on the Sale.
     const canonical = orders.find((o) => o.customerName && o.customerName !== 'Unknown') || orders[0]
 
+    // Sale.placedAt = la fecha real más temprana de sus orders.
+    // Si ninguna order tiene placedAt aún (legacy), dejamos null y caemos a
+    // createdAt en la UI.
+    const placedAtCandidates = orders
+      .map((o) => o.placedAt)
+      .filter((d): d is Date => !!d)
+    const earliestPlacedAt = placedAtCandidates.length > 0
+      ? new Date(Math.min(...placedAtCandidates.map((d) => d.getTime())))
+      : null
+
     await this.prisma.sale.update({
       where: { id: saleId },
       data: {
@@ -940,6 +993,7 @@ export class SyncService {
         tax: sum('tax'),
         discount: sum('discount'),
         total: sum('total'),
+        placedAt: earliestPlacedAt,
         status: this.aggregateStatus(orders.map((o) => o.status)),
         paymentStatus: this.aggregateStatus(orders.map((o) => o.paymentStatus)),
         shipmentStatus: this.aggregateStatus(orders.map((o) => o.shipmentStatus)),

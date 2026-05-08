@@ -280,6 +280,11 @@ model Sale {
   notes    String?
   metadata Json?
 
+  // Fecha real en que la venta ocurrió en el marketplace. Distinto de
+  // `createdAt` que es cuando el sync la insertó en StockCentral.
+  // Se calcula como min(orders.placedAt) en recalculateSale.
+  placedAt DateTime?
+
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   orders       Order[]
   taxDocuments TaxDocument[]
@@ -292,6 +297,7 @@ model Sale {
   @@index([tenantId])
   @@index([status])
   @@index([createdAt])
+  @@index([placedAt])
 }
 
 model Order {
@@ -340,6 +346,11 @@ model Order {
   notes    String?
   metadata Json?
 
+  // Fecha real en que el pedido se creó en el marketplace (`date_created`
+  // de ML, `CreatedAt` de Falabella, `orderDate` de Lider, etc.). Distinto
+  // de `createdAt` que es cuando el sync la insertó en StockCentral.
+  placedAt DateTime?
+
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sale         Sale?         @relation(fields: [saleId], references: [id], onDelete: Cascade)
   items        OrderItem[]
@@ -353,6 +364,7 @@ model Order {
   @@index([saleId])
   @@index([status])
   @@index([internalStatus])
+  @@index([placedAt])
   @@index([sourceChannel])
   @@index([createdAt])
   @@index([tenantId, packId])

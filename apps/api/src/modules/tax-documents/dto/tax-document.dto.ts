@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator'
+import { IsOptional, IsString, IsArray, ArrayNotEmpty } from 'class-validator'
 import { Type } from 'class-transformer'
 import { ApiProperty } from '@nestjs/swagger'
 
@@ -35,6 +35,9 @@ export class CreditNoteDto {
 
 export class EmitBulkDto {
   @ApiProperty({ type: [String], description: 'IDs de Sale a facturar' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
   saleIds: string[]
 
   @ApiProperty({ required: false, enum: ['boleta', 'factura'] })

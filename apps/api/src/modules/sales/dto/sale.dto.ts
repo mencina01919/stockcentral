@@ -11,6 +11,9 @@ export class SaleQueryDto {
   @IsOptional() paymentStatus?: string
   // 'true' para devolver sólo ventas con más de una orden agrupada (packs)
   @IsOptional() multiOrder?: string
+  // 'true' para tab "Por facturar": ventas pagadas que aún no tienen
+  // documento tributario emitido o pendiente.
+  @IsOptional() pendingBilling?: string
   @IsOptional() sortBy?: string = 'createdAt'
   @IsOptional() sortOrder?: 'asc' | 'desc' = 'desc'
 }

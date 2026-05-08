@@ -260,7 +260,7 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {formatDate(order.createdAt)}
+                          {formatDate(order.placedAt || order.createdAt)}
                         </td>
                         <td
                           style={{
@@ -368,7 +368,7 @@ function OrderDetailModal({
               </span>
             </div>
             <p className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)', marginTop: 4 }}>
-              {formatDate(order.createdAt)}
+              {formatDate(order.placedAt || order.createdAt)}
             </p>
           </div>
           <button

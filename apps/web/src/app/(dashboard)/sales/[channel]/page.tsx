@@ -27,7 +27,8 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
 
   const buildParams = () => {
     const p: Record<string, any> = { search, source: sourceFilter, page, limit: 20 }
-    if (filter === 'pending_payment') p.paymentStatus = 'pending'
+    // Tab "Por facturar" = ventas pagadas SIN documento tributario emitido aún.
+    if (filter === 'pending_payment') p.pendingBilling = 'true'
     if (filter === 'paid') p.paymentStatus = 'paid'
     if (filter === 'cancelled') p.status = 'cancelled'
     if (filter === 'packs') p.multiOrder = 'true'
@@ -393,11 +394,20 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                           style={{
                             padding: '13px 16px',
                             fontSize: 12,
-                            color: sale.paymentStatus === 'paid' ? 'var(--sc-ok)' : 'var(--sc-warn)',
+                            color:
+                              ['cancelled', 'canceled', 'failed'].includes(sale.status)
+                                ? 'var(--sc-err)'
+                                : sale.paymentStatus === 'paid'
+                                ? 'var(--sc-ok)'
+                                : 'var(--sc-warn)',
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          {sale.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente'}
+                          {['cancelled', 'canceled', 'failed'].includes(sale.status)
+                            ? 'Cancelada'
+                            : sale.paymentStatus === 'paid'
+                            ? 'Pagado'
+                            : 'Pendiente'}
                         </td>
                         <td
                           className="sc-mono"
@@ -409,7 +419,7 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {formatDate(sale.createdAt)}
+                          {formatDate(sale.placedAt || sale.createdAt)}
                         </td>
                         <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
                           <div className="flex items-center gap-1">
@@ -525,15 +535,21 @@ function SaleDetailModal({ saleId, onClose }: { saleId: string; onClose: () => v
                   Boleta
                 </span>
               )}
-              <span
-                className={`px-2 py-1 rounded-full text-xs font-medium ${
-                  sale.paymentStatus === 'paid'
-                    ? 'bg-green-100 text-green-700'
-                    : 'bg-amber-100 text-amber-700'
-                }`}
-              >
-                {sale.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente de pago'}
-              </span>
+              {['cancelled', 'canceled', 'failed'].includes(sale.status) ? (
+                <span className="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                  Cancelada
+                </span>
+              ) : (
+                <span
+                  className={`px-2 py-1 rounded-full text-xs font-medium ${
+                    sale.paymentStatus === 'paid'
+                      ? 'bg-green-100 text-green-700'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}
+                >
+                  {sale.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente de pago'}
+                </span>
+              )}
               {orders.length > 1 && (
                 <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-50 text-amber-700 text-xs font-semibold">
                   <Layers className="w-3.5 h-3.5" /> {orders.length} órdenes agrupadas
@@ -541,7 +557,7 @@ function SaleDetailModal({ saleId, onClose }: { saleId: string; onClose: () => v
               )}
             </div>
             <p className="text-xs text-gray-400 mt-1">
-              {formatDate(sale.createdAt)}
+              {formatDate(sale.placedAt || sale.createdAt)}
               {sale.externalGroupId && <> · pack <code className="font-mono">{sale.externalGroupId}</code></>}
             </p>
           </div>
@@ -572,8 +588,20 @@ function SaleDetailModal({ saleId, onClose }: { saleId: string; onClose: () => v
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Pago total</p>
               </div>
               <p className="text-lg font-semibold text-gray-900">{formatCurrency(Number(sale.total), sale.currency)}</p>
-              <p className={`text-xs mt-0.5 ${sale.paymentStatus === 'paid' ? 'text-green-600' : 'text-amber-600'}`}>
-                {sale.paymentStatus === 'paid' ? 'Pagado' : 'Pendiente de pago'}
+              <p
+                className={`text-xs mt-0.5 ${
+                  ['cancelled', 'canceled', 'failed'].includes(sale.status)
+                    ? 'text-red-600'
+                    : sale.paymentStatus === 'paid'
+                    ? 'text-green-600'
+                    : 'text-amber-600'
+                }`}
+              >
+                {['cancelled', 'canceled', 'failed'].includes(sale.status)
+                  ? 'Cancelada'
+                  : sale.paymentStatus === 'paid'
+                  ? 'Pagado'
+                  : 'Pendiente de pago'}
               </p>
               <p className="text-xs text-gray-500 mt-1 capitalize">
                 Canal: {PROVIDER_LABELS[sale.source] || sale.source}

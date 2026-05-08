@@ -53,18 +53,47 @@ export function Sidebar() {
     .map((c: any) => c.provider)
   const uniqueProviders = Array.from(new Set(providers))
 
+  // Solo marketplaces generan órdenes/ventas. Filtramos providers de tipo
+  // 'ecommerce' (catálogo, no vende — ej. eylstore) y 'billing' (facturador,
+  // no transacciona — ej. bsale). Hacemos el filtro mirando el `type` de
+  // cada connection.
+  const orderProviders: string[] = Array.from(
+    new Set(
+      (connections || [])
+        .filter(
+          (c: any) =>
+            (c.status === 'connected' || c.status === 'disconnected') &&
+            c.type === 'marketplace',
+        )
+        .map((c: any) => c.provider),
+    ),
+  )
+
   const channelLeaves = (basePath: string): NavLeaf[] => [
     { type: 'leaf', href: `${basePath}/all`, label: 'Todas' },
-    ...uniqueProviders.map((p) => ({
+    ...orderProviders.map((p) => ({
       type: 'leaf' as const,
       href: `${basePath}/${p}`,
       label: PROVIDER_LABELS[p] || p,
     })),
   ]
 
+  // Productos vienen del catálogo maestro (ecommerce, ej. eylstore) y de
+  // marketplaces. Excluimos billing (bsale) que no maneja productos.
+  const productProviders: string[] = Array.from(
+    new Set(
+      (connections || [])
+        .filter(
+          (c: any) =>
+            (c.status === 'connected' || c.status === 'disconnected') &&
+            (c.type === 'marketplace' || c.type === 'ecommerce'),
+        )
+        .map((c: any) => c.provider),
+    ),
+  )
   const productsLeaves: NavLeaf[] = [
     { type: 'leaf', href: '/products/master', label: 'Maestro' },
-    ...uniqueProviders.map((p) => ({
+    ...productProviders.map((p) => ({
       type: 'leaf' as const,
       href: `/products/${p}`,
       label: PROVIDER_LABELS[p] || p,

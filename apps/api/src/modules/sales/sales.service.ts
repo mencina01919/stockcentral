@@ -16,6 +16,7 @@ export class SalesService {
       invoiceType,
       paymentStatus,
       multiOrder,
+      pendingBilling,
       sortBy = 'createdAt',
       sortOrder = 'desc',
     } = query
@@ -25,19 +26,25 @@ export class SalesService {
     if (status) where.status = status
     if (source) where.source = source
     if (invoiceType) where.invoiceType = invoiceType
-    if (paymentStatus) {
-      where.paymentStatus = paymentStatus
-      // Si se filtra por paymentStatus="pending" (tab "Por facturar"),
-      // excluir explícitamente ventas canceladas u órdenes en estado terminal
-      // de cancelación. Defensa en profundidad: aunque el mapeo del sync
-      // marque bien `paymentStatus`, una venta cancelada NUNCA debe verse
-      // como "por facturar".
-      if (paymentStatus === 'pending') {
-        where.status = { notIn: ['cancelled', 'canceled', 'failed'] }
-      }
-    }
+    if (paymentStatus) where.paymentStatus = paymentStatus
     if (multiOrder === 'true') {
       where.orders = { some: {} }
+    }
+
+    // Tab "Por facturar": ventas pagadas que aún NO tienen un documento
+    // tributario emitido o en proceso. Excluye canceladas, huérfanas y
+    // total=0 (defensa en profundidad — pueden venir mal del sync).
+    if (pendingBilling === 'true') {
+      where.paymentStatus = 'paid'
+      where.status = { notIn: ['cancelled', 'canceled', 'failed'] }
+      where.orders = { some: {} }
+      where.total = { gt: 0 }
+      where.taxDocuments = {
+        none: {
+          type: { in: ['boleta', 'factura'] },
+          status: { in: ['issued', 'pending'] },
+        },
+      }
     }
     if (search) {
       where.OR = [
@@ -102,6 +109,23 @@ export class SalesService {
         orders: {
           include: { items: true },
           orderBy: { createdAt: 'asc' },
+        },
+        // Incluimos los documentos tributarios para que el modal de detalle
+        // pueda mostrar acciones contextuales (emitir, convertir, NC, links).
+        taxDocuments: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            type: true,
+            status: true,
+            folio: true,
+            externalId: true,
+            pdfUrl: true,
+            xmlUrl: true,
+            emittedAt: true,
+            lastError: true,
+            metadata: true,
+          },
         },
       },
     })
