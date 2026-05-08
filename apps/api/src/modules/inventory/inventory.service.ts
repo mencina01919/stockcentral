@@ -42,12 +42,10 @@ export class InventoryService {
 
   private async totalStockForProduct(tenantId: string, productId: string): Promise<number> {
     const agg = await this.prisma.inventory.aggregate({
-      where: { tenantId, productId, warehouse: { type: 'physical' } },
-      _sum: { quantity: true, reservedQuantity: true },
+      where: { tenantId, productId, warehouse: { warehouseType: { in: ['online', 'store'] } } },
+      _sum: { quantity: true },
     })
-    const qty = agg._sum.quantity || 0
-    const reserved = agg._sum.reservedQuantity || 0
-    return Math.max(0, qty - reserved)
+    return agg._sum.quantity || 0
   }
 
   async findAll(tenantId: string, query: InventoryQueryDto) {

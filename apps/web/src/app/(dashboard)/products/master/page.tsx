@@ -205,7 +205,10 @@ export default function ProductsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {products.map((product: any) => {
-                    const totalStock = product.inventory?.reduce((sum: number, inv: any) => sum + inv.quantity, 0) || 0
+                    const totalStock = product.inventory?.reduce((sum: number, inv: any) => {
+                      const wt = inv.warehouse?.warehouseType
+                      return wt === 'online' || wt === 'store' ? sum + inv.quantity : sum
+                    }, 0) || 0
                     const images = product.images as string[] | null
                     return (
                       <tr key={product.id} className="hover:bg-gray-50 transition-colors">
