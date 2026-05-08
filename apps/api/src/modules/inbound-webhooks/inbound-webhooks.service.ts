@@ -105,12 +105,29 @@ export class InboundWebhooksService {
       },
     })
 
-    // Procesamiento: encolamos un sync inbound del provider con ventana
-    // reciente. Esto hidratará la(s) orden(es) afectadas y dispara el
-    // BillingListener si hay transición.
+    // Procesamiento. Estrategia:
+    //  - Si el webhook trae externalResourceId + topic de orden, refrescamos
+    //    esa orden puntual con GET /orders/{id}. Esto SÍ funciona para órdenes
+    //    viejas que cambiaron de estado (mediación, no-entrega, claim).
+    //  - Para topics que no son de orden directa (claims, messages, shipments)
+    //    o cuando el resource no es identificable, caemos al sync por ventana
+    //    como antes.
     try {
-      const since = new Date(Date.now() - RECENT_SYNC_WINDOW_MS)
-      await this.sync.enqueueOrdersInbound(tenantId, connection.id, since)
+      const isOrderResource =
+        externalResourceId && this.isOrderTopic(provider, topic)
+      if (isOrderResource) {
+        await this.sync.refreshSingleOrder(tenantId, connection.id, externalResourceId!)
+      } else if (provider === 'mercadolibre' && topic && topic.startsWith('claims') && externalResourceId) {
+        // Claims de ML no traen el order_id directo, pero sí el claim_id.
+        // Para mantenerlo simple, en vez de llamar al endpoint de claims
+        // hacemos sync por ventana. Mejorable a futuro: GET /claims/{id} →
+        // resource_id (la orden).
+        const since = new Date(Date.now() - RECENT_SYNC_WINDOW_MS)
+        await this.sync.enqueueOrdersInbound(tenantId, connection.id, since)
+      } else {
+        const since = new Date(Date.now() - RECENT_SYNC_WINDOW_MS)
+        await this.sync.enqueueOrdersInbound(tenantId, connection.id, since)
+      }
       await this.prisma.marketplaceWebhookEvent.update({
         where: { id: event.id },
         data: { status: 'processed', processedAt: new Date() },
@@ -193,6 +210,17 @@ export class InboundWebhooksService {
       this.headerValue(headers, 'x-event-id') || this.headerValue(headers, 'x-message-id')
     if (idHeader) return idHeader
     return body?.id ? String(body.id) : undefined
+  }
+
+  // Indica si el topic + provider apuntan a una orden concreta. ML manda
+  // "orders_v2", "orders" cuando cambia una orden; "claims" / "messages" usan
+  // otro tipo de resource y se manejan como fallback (sync por ventana).
+  private isOrderTopic(provider: string, topic?: string): boolean {
+    if (!topic) return false
+    if (provider === 'mercadolibre') return topic === 'orders_v2' || topic === 'orders'
+    // Para Falabella / Paris / Lider hoy no hay distinción granular: si llega
+    // un webhook con resource numérico, lo tratamos como orden.
+    return true
   }
 
   private extractResourceId(provider: string, body: any): string | undefined {

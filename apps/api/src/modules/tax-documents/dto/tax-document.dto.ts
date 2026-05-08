@@ -13,6 +13,9 @@ export class TaxDocumentQueryDto {
   @IsOptional() emitter?: string
   @IsOptional() saleId?: string
   @IsOptional() orderId?: string
+  // 'mediation' | 'not_delivered' | 'cancelled_clean' — filtro derivado de
+  // metadata de las orders que componen la sale (sale.orders[].metadata).
+  @IsOptional() situation?: string
   // Rango por fecha real de la venta (sale.placedAt). ISO 8601.
   @IsOptional() placedFrom?: string
   @IsOptional() placedTo?: string

@@ -71,9 +71,10 @@ export class TaxDocumentsService {
       emitter,
       saleId,
       orderId,
+      situation,
       placedFrom,
       placedTo,
-      sortBy = 'createdAt',
+      sortBy = 'placedAt',
       sortOrder = 'desc',
     } = query
     const skip = (page - 1) * limit
@@ -83,6 +84,73 @@ export class TaxDocumentsService {
     if (emitter) where.emitter = emitter
     if (saleId) where.saleId = saleId
     if (orderId) where.orderId = orderId
+
+    // Filtro por situación del marketplace (sólo ML hoy). Coincide cuando al
+    // menos una de las orders de la sale tiene mediación / no entregada / etc.
+    // Debe ir al inicio de where.AND para que los demás filtros se compongan.
+    if (situation === 'mediation') {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          sale: {
+            is: {
+              orders: {
+                some: {
+                  OR: [
+                    { metadata: { path: ['hasMediations'], equals: true } },
+                    { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
+                    { metadata: { path: ['tags'], array_contains: ['mediations'] } },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      ]
+    } else if (situation === 'not_delivered') {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          sale: {
+            is: {
+              orders: {
+                some: {
+                  OR: [
+                    { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
+                    { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      ]
+    } else if (situation === 'cancelled_clean') {
+      // Sale cuyas orders están todas cancelled pero ninguna en mediación / no
+      // entregada — la cancelación "limpia". Útil para identificar las que sí
+      // deberían terminar en NC.
+      where.AND = [
+        ...(where.AND || []),
+        {
+          sale: {
+            is: {
+              orders: {
+                every: { status: 'cancelled' },
+                none: {
+                  OR: [
+                    { metadata: { path: ['hasMediations'], equals: true } },
+                    { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
+                    { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
+                    { metadata: { path: ['tags'], array_contains: ['mediations'] } },
+                    { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      ]
+    }
     if (search) {
       where.OR = [
         { folio: { contains: search, mode: 'insensitive' } },
@@ -111,12 +179,26 @@ export class TaxDocumentsService {
       ]
     }
 
+    // orderBy: cuando sortBy=placedAt, ordenamos por sale.placedAt con nulls
+    // al final y como tiebreaker la fecha de creación del TaxDoc. Esto evita
+    // que los TaxDocuments importados en bulk (mismo createdAt) se vean
+    // mezclados — cada fila se ancla a la fecha real de la venta.
+    let orderBy: any
+    if (sortBy === 'placedAt') {
+      orderBy = [
+        { sale: { placedAt: { sort: sortOrder, nulls: 'last' } } },
+        { createdAt: sortOrder },
+      ]
+    } else {
+      orderBy = { [sortBy]: sortOrder }
+    }
+
     const [data, total] = await Promise.all([
       this.prisma.taxDocument.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { [sortBy]: sortOrder },
+        orderBy,
         include: {
           sale: {
             select: {
@@ -125,7 +207,13 @@ export class TaxDocumentsService {
               customerName: true,
               total: true,
               placedAt: true,
+              createdAt: true,
               source: true,
+              // Sólo el metadata + status de cada order: la UI deriva
+              // mediación/reclamo/no-entregado de ahí (ver deriveSaleSituation).
+              orders: {
+                select: { status: true, internalStatus: true, metadata: true },
+              },
             },
           },
           lines: true,
@@ -151,7 +239,15 @@ export class TaxDocumentsService {
     const doc = await this.prisma.taxDocument.findFirst({
       where: { id, tenantId },
       include: {
-        sale: true,
+        sale: {
+          // Las orders permiten derivar la "situación" del marketplace
+          // (mediación, no entregada, etc.) en el modal de detalle.
+          include: {
+            orders: {
+              select: { status: true, internalStatus: true, metadata: true },
+            },
+          },
+        },
         order: true,
         lines: true,
         reference: true,
@@ -618,7 +714,10 @@ export class TaxDocumentsService {
 
     const docs = await this.prisma.taxDocument.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [
+        { sale: { placedAt: { sort: 'desc', nulls: 'last' } } },
+        { createdAt: 'desc' },
+      ],
       include: {
         sale: {
           select: {

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, Receipt, Loader2, Eye, Package, MapPin, CreditCard, Layers, FileText, IdCard, Send } from 'lucide-react'
+import { Search, Receipt, Loader2, Eye, Package, MapPin, CreditCard, Layers, FileText, IdCard, Send, ExternalLink } from 'lucide-react'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Panel, Chip } from '@/components/sc/ui'
@@ -516,6 +516,19 @@ export default function SalesPage({ params }: { params: { channel: string } }) {
                             >
                               <Eye className="w-3.5 h-3.5" />
                             </button>
+                            {issuedDoc?.pdfUrl && (
+                              <a
+                                href={issuedDoc.pdfUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="sc-btn-ghost"
+                                style={{ padding: 6 }}
+                                title={`Abrir ${issuedDoc.type === 'factura' ? 'factura' : 'boleta'} folio ${issuedDoc.folio || ''}`}
+                                aria-label="Abrir documento tributario"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            )}
                             {canEmit && (
                               <>
                                 <button

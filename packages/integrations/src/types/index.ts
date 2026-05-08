@@ -25,6 +25,13 @@ export interface MarketplaceOrder {
   externalOrderNumber?: string
   packId?: string
   status: string
+  // Sub-estado del marketplace cuando lo expone (ML: status_detail).
+  // Útil para distinguir "cancelled" por mediación, no entregado, devolución, etc.
+  statusDetail?: string
+  // Tags del marketplace (ML: tags). Ej: ['mediations','not_delivered','claim'].
+  tags?: string[]
+  // Si la orden tiene mediaciones/reclamos abiertos en el marketplace.
+  hasMediations?: boolean
   buyerName: string
   buyerEmail?: string
   buyerPhone?: string

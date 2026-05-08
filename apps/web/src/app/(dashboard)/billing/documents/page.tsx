@@ -11,6 +11,7 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 import { toast } from 'sonner'
 
 type Filter = 'all' | 'issued' | 'pending' | 'failed' | 'cancelled'
+type Situation = 'all' | 'mediation' | 'not_delivered' | 'cancelled_clean'
 
 const STATUS_LABEL: Record<string, { label: string; tone: 'ok' | 'warn' | 'err' | 'low' | 'blue' }> = {
   issued: { label: 'Emitido', tone: 'ok' },
@@ -25,10 +26,41 @@ const TYPE_LABEL: Record<string, { label: string; tone: 'cyan' | 'low' | 'err' }
   nota_credito: { label: 'NC', tone: 'err' },
 }
 
+// Deriva la "situación" del marketplace para una sale a partir de las orders
+// que la componen. Hoy solo Mercado Libre llena metadata.tags / statusDetail /
+// hasMediations (ver sync.service.ts buildOrderMetadata). Si cualquier order
+// tiene mediación, gana — esa es la señal más urgente para el operador.
+// Devuelve null si no hay situación especial (o sea, cancelación limpia /
+// orden normal).
+function deriveSaleSituation(
+  sale: any,
+): { label: string; tone: 'warn' | 'err' } | null {
+  const orders = Array.isArray(sale?.orders) ? sale.orders : []
+  let mediation = false
+  let claim = false
+  let notDelivered = false
+  let returned = false
+  for (const o of orders) {
+    const meta = (o.metadata || {}) as { statusDetail?: string; tags?: string[]; hasMediations?: boolean }
+    const tags = Array.isArray(meta.tags) ? meta.tags : []
+    const detail = meta.statusDetail || ''
+    if (meta.hasMediations || tags.includes('mediations') || detail === 'mediation_open') mediation = true
+    if (tags.includes('claim_opened') || tags.includes('claim')) claim = true
+    if (tags.includes('not_delivered') || detail === 'not_delivered') notDelivered = true
+    if (tags.includes('return') || tags.includes('returned') || detail === 'returned') returned = true
+  }
+  if (mediation) return { label: 'En mediación', tone: 'warn' }
+  if (claim) return { label: 'Con reclamo', tone: 'warn' }
+  if (notDelivered) return { label: 'No entregado', tone: 'warn' }
+  if (returned) return { label: 'Devuelto', tone: 'err' }
+  return null
+}
+
 export default function TaxDocumentsPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
+  const [situation, setSituation] = useState<Situation>('all')
   const [page, setPage] = useState(1)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
@@ -38,13 +70,14 @@ export default function TaxDocumentsPage() {
   const buildParams = () => {
     const p: Record<string, any> = { search, page, limit: 20 }
     if (filter !== 'all') p.status = filter
+    if (situation !== 'all') p.situation = situation
     if (placedFrom) p.placedFrom = placedFrom
     if (placedTo) p.placedTo = placedTo
     return p
   }
 
   const { data, isLoading } = useQuery({
-    queryKey: ['tax-documents', search, filter, page, placedFrom, placedTo],
+    queryKey: ['tax-documents', search, filter, situation, page, placedFrom, placedTo],
     queryFn: () => api.get('/tax-documents', { params: buildParams() }).then((r) => r.data),
   })
 
@@ -52,6 +85,7 @@ export default function TaxDocumentsPage() {
     const params = new URLSearchParams()
     if (search) params.set('search', search)
     if (filter !== 'all') params.set('status', filter)
+    if (situation !== 'all') params.set('situation', situation)
     if (placedFrom) params.set('placedFrom', placedFrom)
     if (placedTo) params.set('placedTo', placedTo)
     try {
@@ -178,6 +212,25 @@ export default function TaxDocumentsPage() {
                 </button>
               )}
             </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="sc-mono uppercase"
+                style={{ fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-low)' }}
+              >
+                Situación
+              </span>
+              <select
+                value={situation}
+                onChange={(e) => { setSituation(e.target.value as Situation); setPage(1) }}
+                className="sc-input"
+                style={{ width: 180, fontSize: 12 }}
+              >
+                <option value="all">Todas</option>
+                <option value="mediation">En mediación</option>
+                <option value="not_delivered">No entregadas</option>
+                <option value="cancelled_clean">Canceladas (limpias)</option>
+              </select>
+            </div>
           </div>
 
           <div
@@ -225,7 +278,7 @@ export default function TaxDocumentsPage() {
               <table className="w-full" style={{ fontSize: 13 }}>
                 <thead>
                   <tr>
-                    {['TIPO', 'FOLIO', 'VENTA', 'CLIENTE', 'TOTAL', 'EMISOR', 'ESTADO', 'EMITIDO', ''].map((h, i) => (
+                    {['TIPO', 'FOLIO', 'VENTA', 'CLIENTE', 'TOTAL', 'EMISOR', 'ESTADO', 'FECHA VENTA', ''].map((h, i) => (
                       <th
                         key={i}
                         className="sc-mono text-left"
@@ -283,7 +336,15 @@ export default function TaxDocumentsPage() {
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          {doc.sale?.customerName || '—'}
+                          <div>{doc.sale?.customerName || '—'}</div>
+                          {(() => {
+                            const sit = deriveSaleSituation(doc.sale)
+                            return sit ? (
+                              <div style={{ marginTop: 3 }}>
+                                <Chip tone={sit.tone}>{sit.label}</Chip>
+                              </div>
+                            ) : null
+                          })()}
                         </td>
                         <td
                           className="sc-mono"
@@ -328,7 +389,13 @@ export default function TaxDocumentsPage() {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {doc.emittedAt ? formatDate(doc.emittedAt) : '—'}
+                          {doc.sale?.placedAt
+                            ? formatDate(doc.sale.placedAt)
+                            : doc.sale?.createdAt
+                              ? formatDate(doc.sale.createdAt)
+                              : doc.emittedAt
+                                ? formatDate(doc.emittedAt)
+                                : '—'}
                         </td>
                         <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
                           <div className="flex items-center gap-1">
@@ -516,6 +583,14 @@ function DocDetailModal({ id, onClose }: { id: string; onClose: () => void }) {
               <p style={{ fontSize: 13, color: 'var(--sc-text-mid)', marginTop: 2 }}>
                 {doc.sale.customerName}
               </p>
+              {(() => {
+                const sit = deriveSaleSituation(doc.sale)
+                return sit ? (
+                  <div style={{ marginTop: 6 }}>
+                    <Chip tone={sit.tone}>{sit.label}</Chip>
+                  </div>
+                ) : null
+              })()}
               {doc.sale.total && (
                 <p className="sc-mono" style={{ fontSize: 13, color: 'var(--sc-text-hi)', fontWeight: 600, marginTop: 4 }}>
                   {formatCurrency(Number(doc.sale.total), doc.sale.currency || 'CLP')}

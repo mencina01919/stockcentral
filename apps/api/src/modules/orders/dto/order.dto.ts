@@ -61,6 +61,12 @@ export class OrderQueryDto {
   @IsOptional() search?: string
   @IsOptional() status?: string
   @IsOptional() internalStatus?: string
+  // 'paid' | 'pending' — filtro derivado de Order.paymentStatus.
+  @IsOptional() paymentStatus?: string
+  // 'mediation' | 'not_delivered' | 'cancelled_clean' — filtros derivados de
+  // metadata.tags / metadata.statusDetail / metadata.hasMediations. Se aplican
+  // sobre order.metadata (Json) por lo que requieren raw filters Prisma.
+  @IsOptional() situation?: string
   @IsOptional() source?: string
   @IsOptional() sourceChannel?: string
   // Rango de fecha real (placedAt). ISO 8601. Inclusivos.

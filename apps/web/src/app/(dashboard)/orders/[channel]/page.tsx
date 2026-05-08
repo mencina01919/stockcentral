@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Search, ShoppingCart, Loader2, Eye, Package, MapPin, CreditCard, ExternalLink } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Search, ShoppingCart, Loader2, Eye, Package, MapPin, CreditCard, ExternalLink, RefreshCw } from 'lucide-react'
+import { toast } from 'sonner'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { Panel, StatusBadge, MonoLabel } from '@/components/sc/ui'
@@ -11,16 +12,8 @@ import {
   formatCurrency,
   formatDate,
   ORDER_STATUS_LABELS,
-  INTERNAL_ORDER_STATUS_LABELS,
   PROVIDER_LABELS,
 } from '@/lib/utils'
-
-const INTERNAL_STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
-  new: 'warn',
-  in_preparation: 'blue',
-  ready_to_ship: 'ok',
-  cancelled_internal: 'err',
-}
 
 const CHANNEL_STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low' | 'cyan'> = {
   pending: 'warn',
@@ -31,44 +24,100 @@ const CHANNEL_STATUS_TONE: Record<string, 'ok' | 'warn' | 'err' | 'blue' | 'low'
   cancelled: 'err',
 }
 
+// Estado a mostrar al usuario:
+// - Si el marketplace marca mediación/reclamo abierto, gana por sobre todo.
+// - Sino, cancelada gana (la orden ya no es accionable).
+// - Sino, mira paymentStatus.
+// Hoy solo Mercado Libre llena statusDetail/tags/hasMediations en metadata;
+// otros drivers caen al fallback básico.
+function deriveOrderStatus(order: any): { label: string; tone: 'ok' | 'warn' | 'err' } {
+  const meta = (order.metadata || {}) as { statusDetail?: string; tags?: string[]; hasMediations?: boolean }
+  const tags = Array.isArray(meta.tags) ? meta.tags : []
+  const detail = meta.statusDetail || ''
+
+  // Mediación abierta — la prioridad es alertar al operador.
+  if (meta.hasMediations || tags.includes('mediations') || detail === 'mediation_open') {
+    return { label: 'En mediación', tone: 'warn' }
+  }
+  // Reclamo del comprador (claim distinto de mediación).
+  if (tags.includes('claim_opened') || tags.includes('claim')) {
+    return { label: 'Con reclamo', tone: 'warn' }
+  }
+  // No entregado: el envío falló pero la orden no necesariamente está cancelada todavía.
+  if (tags.includes('not_delivered') || detail === 'not_delivered') {
+    return { label: 'No entregado', tone: 'warn' }
+  }
+  // Devolución del comprador.
+  if (tags.includes('return') || tags.includes('returned') || detail === 'returned') {
+    return { label: 'Devuelta', tone: 'err' }
+  }
+
+  if (order.internalStatus === 'cancelled_internal' || order.status === 'cancelled') {
+    return { label: 'Cancelada', tone: 'err' }
+  }
+  if (order.paymentStatus === 'paid') return { label: 'Pagado', tone: 'ok' }
+  return { label: 'Pendiente pago', tone: 'warn' }
+}
+
 export default function OrdersPage({ params }: { params: { channel: string } }) {
   const channel = params.channel
   const sourceFilter = channel === 'all' ? undefined : channel
   const channelLabel =
     channel === 'all' ? 'todos los canales' : PROVIDER_LABELS[channel] || channel
 
+  const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
-  const [internalStatus, setInternalStatus] = useState('all')
+  type StatusKey = 'all' | 'paid' | 'pending' | 'mediation' | 'not_delivered' | 'cancelled'
+  const [statusFilter, setStatusFilter] = useState<StatusKey>('all')
   const [page, setPage] = useState(1)
   const [selectedOrder, setSelectedOrder] = useState<any>(null)
   const [placedFrom, setPlacedFrom] = useState('')
   const [placedTo, setPlacedTo] = useState('')
 
+  // Refresca una orden contra el marketplace (GET /orders/{id}). Útil cuando
+  // el operador sospecha que el estado está stale (mediación recién abierta,
+  // etc.) y no quiere esperar al webhook o al cron.
+  const refreshOrder = useMutation({
+    mutationFn: (id: string) => api.post(`/orders/${id}/refresh`).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] })
+      toast.success('Estado actualizado desde el marketplace')
+    },
+    onError: (err: any) =>
+      toast.error(err?.response?.data?.message || 'No se pudo refrescar la orden'),
+  })
+
   const { data, isLoading } = useQuery({
-    queryKey: ['orders', channel, search, internalStatus, page, placedFrom, placedTo],
-    queryFn: () =>
-      api.get('/orders', {
-        params: {
-          search,
-          internalStatus: internalStatus === 'all' ? undefined : internalStatus,
-          source: sourceFilter,
-          page,
-          limit: 20,
-          ...(placedFrom ? { placedFrom } : {}),
-          ...(placedTo ? { placedTo } : {}),
-        },
-      }).then((r) => r.data),
+    queryKey: ['orders', channel, search, statusFilter, page, placedFrom, placedTo],
+    queryFn: () => {
+      // Mapeamos el filtro simplificado a los params reales del backend.
+      const params: Record<string, any> = {
+        search,
+        source: sourceFilter,
+        page,
+        limit: 20,
+      }
+      if (statusFilter === 'paid') params.paymentStatus = 'paid'
+      else if (statusFilter === 'pending') params.paymentStatus = 'pending'
+      else if (statusFilter === 'mediation') params.situation = 'mediation'
+      else if (statusFilter === 'not_delivered') params.situation = 'not_delivered'
+      else if (statusFilter === 'cancelled') params.situation = 'cancelled_clean'
+      if (placedFrom) params.placedFrom = placedFrom
+      if (placedTo) params.placedTo = placedTo
+      return api.get('/orders', { params }).then((r) => r.data)
+    },
   })
 
   const orders = data?.data || []
   const meta = data?.meta
 
-  const statusTabs = [
+  const statusTabs: { key: StatusKey; label: string }[] = [
     { key: 'all', label: 'Todas' },
-    { key: 'new', label: 'Nuevas' },
-    { key: 'in_preparation', label: 'En preparación' },
-    { key: 'ready_to_ship', label: 'Listas p/ despacho' },
-    { key: 'cancelled_internal', label: 'Canceladas' },
+    { key: 'paid', label: 'Pagadas' },
+    { key: 'pending', label: 'Pendiente pago' },
+    { key: 'mediation', label: 'En mediación' },
+    { key: 'not_delivered', label: 'No entregadas' },
+    { key: 'cancelled', label: 'Canceladas' },
   ]
 
   return (
@@ -141,11 +190,11 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
             style={{ padding: '0 16px', borderBottom: '1px solid var(--sc-line-soft)' }}
           >
             {statusTabs.map((tab) => {
-              const active = internalStatus === tab.key
+              const active = statusFilter === tab.key
               return (
                 <button
                   key={tab.key}
-                  onClick={() => { setInternalStatus(tab.key); setPage(1) }}
+                  onClick={() => { setStatusFilter(tab.key); setPage(1) }}
                   style={{
                     padding: '13px 16px',
                     fontSize: 13,
@@ -182,7 +231,7 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
               <table className="w-full" style={{ fontSize: 13 }}>
                 <thead>
                   <tr>
-                    {['#ORDEN', 'CLIENTE', 'CANAL', 'ITEMS', 'TOTAL', 'ESTADO INTERNO', 'CANAL ESTADO', 'FECHA', ''].map((h, i) => (
+                    {['#ORDEN', 'CLIENTE', 'CANAL', 'ITEMS', 'TOTAL', 'ESTADO', 'CANAL ESTADO', 'FECHA', ''].map((h, i) => (
                       <th
                         key={i}
                         className="sc-mono text-left"
@@ -204,9 +253,8 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                 </thead>
                 <tbody>
                   {orders.map((order: any) => {
-                    const internal = INTERNAL_ORDER_STATUS_LABELS[order.internalStatus] || { label: order.internalStatus }
+                    const derived = deriveOrderStatus(order)
                     const channelStatus = ORDER_STATUS_LABELS[order.status] || { label: order.status }
-                    const internalTone = INTERNAL_STATUS_TONE[order.internalStatus] || 'low'
                     return (
                       <tr key={order.id} className="sc-row">
                         <td
@@ -271,7 +319,7 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          <StatusBadge tone={internalTone}>{internal.label}</StatusBadge>
+                          <StatusBadge tone={derived.tone}>{derived.label}</StatusBadge>
                         </td>
                         <td
                           style={{
@@ -312,14 +360,32 @@ export default function OrdersPage({ params }: { params: { channel: string } }) 
                             borderBottom: '1px solid var(--sc-line-faint)',
                           }}
                         >
-                          <button
-                            onClick={() => setSelectedOrder(order)}
-                            className="sc-btn-ghost"
-                            style={{ padding: 6 }}
-                            aria-label="Ver detalle"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setSelectedOrder(order)}
+                              className="sc-btn-ghost"
+                              style={{ padding: 6 }}
+                              aria-label="Ver detalle"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                            {order.externalOrderId && (
+                              <button
+                                onClick={() => refreshOrder.mutate(order.id)}
+                                disabled={refreshOrder.isPending && refreshOrder.variables === order.id}
+                                className="sc-btn-ghost"
+                                style={{ padding: 6 }}
+                                title="Refrescar estado desde el marketplace"
+                                aria-label="Refrescar estado"
+                              >
+                                {refreshOrder.isPending && refreshOrder.variables === order.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     )
@@ -373,9 +439,8 @@ function OrderDetailModal({
   order: any
   onClose: () => void
 }) {
-  const internal = INTERNAL_ORDER_STATUS_LABELS[order.internalStatus] || { label: order.internalStatus }
+  const derived = deriveOrderStatus(order)
   const channelStatus = ORDER_STATUS_LABELS[order.status] || { label: order.status }
-  const internalTone = INTERNAL_STATUS_TONE[order.internalStatus] || 'low'
 
   return (
     <div
@@ -395,7 +460,7 @@ function OrderDetailModal({
               >
                 {order.orderNumber}
               </h2>
-              <StatusBadge tone={internalTone}>{internal.label}</StatusBadge>
+              <StatusBadge tone={derived.tone}>{derived.label}</StatusBadge>
               <span
                 className="sc-mono"
                 title="Estado en el marketplace (informativo)"

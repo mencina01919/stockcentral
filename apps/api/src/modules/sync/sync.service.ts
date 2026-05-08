@@ -396,141 +396,8 @@ export class SyncService {
 
       for (const marketOrder of result.items) {
         try {
-          const existing = await this.prisma.order.findFirst({
-            where: { tenantId, externalOrderId: marketOrder.externalId, source: connection.provider },
-          })
-          if (existing) {
-            // If the order already has a Sale and no packId is given, keep its current Sale.
-            // Only re-resolve when a packId arrived (potential regrouping) or when no Sale yet.
-            let targetSaleId: string
-            if (marketOrder.packId || !existing.saleId) {
-              const targetSale = await this.resolveSale(tenantId, connection.provider, marketOrder)
-              targetSaleId = targetSale.id
-            } else {
-              targetSaleId = existing.saleId
-            }
-            const previousSaleId = existing.saleId
-            const prevPaymentStatus = existing.paymentStatus
-            const prevInternalStatus = existing.internalStatus
-            // Si el internalStatus ya fue cancelado manualmente (cancelled_internal),
-            // o ya está en ready_to_ship, no lo retrocedemos al re-syncear; solo
-            // permitimos avances naturales o cancelación desde el marketplace.
-            const candidateInternal = this.mapInternalStatus(marketOrder.status)
-            const nextInternalStatus =
-              prevInternalStatus === 'cancelled_internal'
-                ? 'cancelled_internal'
-                : candidateInternal
-            const nextPaymentStatus = this.mapPaymentStatus(marketOrder.status)
-            await this.prisma.order.update({
-              where: { id: existing.id },
-              data: {
-                saleId: targetSaleId,
-                packId: marketOrder.packId || existing.packId,
-                customerName: marketOrder.buyerName,
-                customerEmail: marketOrder.buyerEmail || null,
-                customerPhone: marketOrder.buyerPhone || null,
-                customerDocType: marketOrder.buyerDocType || null,
-                customerDocNumber: marketOrder.buyerDocNumber || null,
-                invoiceType: marketOrder.billing?.invoiceType || 'boleta',
-                billingName: marketOrder.billing?.name || null,
-                billingDocType: marketOrder.billing?.docType || null,
-                billingDocNumber: marketOrder.billing?.docNumber || null,
-                billingEmail: marketOrder.billing?.email || null,
-                billingPhone: marketOrder.billing?.phone || null,
-                economicActivity: marketOrder.billing?.economicActivity || null,
-                taxContributor: marketOrder.billing?.taxContributor || null,
-                shippingAddress: (marketOrder.shippingAddress as any) ?? undefined,
-                billingAddress: (marketOrder.billingAddress as any) ?? undefined,
-                status: this.mapMarketplaceOrderStatus(marketOrder.status),
-                paymentStatus: nextPaymentStatus,
-                shipmentStatus: this.mapShipmentStatus(marketOrder.status),
-                internalStatus: nextInternalStatus,
-                // Solo seteamos placedAt si la orden no lo tiene aún. La fecha
-                // del marketplace no debería cambiar en updates futuros.
-                placedAt: existing.placedAt ?? marketOrder.createdAt,
-              },
-            })
-            await this.recalculateSale(targetSaleId)
-            if (previousSaleId && previousSaleId !== targetSaleId) {
-              await this.cleanupSaleIfEmpty(previousSaleId)
-            }
-            await this.billing.onOrderTransition({
-              tenantId,
-              orderId: existing.id,
-              saleId: targetSaleId,
-              prev: { paymentStatus: prevPaymentStatus, internalStatus: prevInternalStatus },
-              next: { paymentStatus: nextPaymentStatus, internalStatus: nextInternalStatus },
-            })
-            continue
-          }
-
-          const orderNumber = `${connection.provider.toUpperCase()}-${marketOrder.externalOrderNumber || marketOrder.externalId}`
-          const sale = await this.resolveSale(tenantId, connection.provider, marketOrder)
-          const initialPaymentStatus = this.mapPaymentStatus(marketOrder.status)
-          const initialInternalStatus = this.mapInternalStatus(marketOrder.status)
-
-          const newOrder = await this.prisma.order.create({
-            data: {
-              tenantId,
-              saleId: sale.id,
-              orderNumber,
-              source: connection.provider,
-              sourceChannel: connection.name,
-              externalOrderId: marketOrder.externalId,
-              packId: marketOrder.packId || null,
-              customerName: marketOrder.buyerName,
-              customerEmail: marketOrder.buyerEmail || null,
-              customerPhone: marketOrder.buyerPhone || null,
-              customerDocType: marketOrder.buyerDocType || null,
-              customerDocNumber: marketOrder.buyerDocNumber || null,
-              invoiceType: marketOrder.billing?.invoiceType || 'boleta',
-              billingName: marketOrder.billing?.name || null,
-              billingDocType: marketOrder.billing?.docType || null,
-              billingDocNumber: marketOrder.billing?.docNumber || null,
-              billingEmail: marketOrder.billing?.email || null,
-              billingPhone: marketOrder.billing?.phone || null,
-              economicActivity: marketOrder.billing?.economicActivity || null,
-              taxContributor: marketOrder.billing?.taxContributor || null,
-              subtotal: marketOrder.subtotal,
-              shippingCost: marketOrder.shippingCost,
-              tax: 0,
-              discount: 0,
-              total: marketOrder.total,
-              currency: marketOrder.currency,
-              status: this.mapMarketplaceOrderStatus(marketOrder.status),
-              paymentStatus: initialPaymentStatus,
-              shipmentStatus: this.mapShipmentStatus(marketOrder.status),
-              internalStatus: initialInternalStatus,
-              // Fecha real en que el pedido se creó en el marketplace.
-              placedAt: marketOrder.createdAt,
-              shippingAddress: marketOrder.shippingAddress as any,
-              billingAddress: marketOrder.billingAddress as any,
-              items: {
-                create: marketOrder.items.map((item) => ({
-                  sku: item.sku,
-                  name: item.title,
-                  quantity: item.quantity,
-                  unitPrice: item.unitPrice,
-                  totalPrice: item.totalPrice,
-                })),
-              },
-            },
-          })
-          await this.recalculateSale(sale.id)
-          await this.billing.onOrderTransition({
-            tenantId,
-            orderId: newOrder.id,
-            saleId: sale.id,
-            // Para órdenes nuevas: previo es "pending/new" (default Prisma).
-            // Si el marketplace ya entrega la orden pagada, esto dispara la
-            // emisión inmediatamente.
-            prev: { paymentStatus: 'pending', internalStatus: 'new' },
-            next: {
-              paymentStatus: initialPaymentStatus,
-              internalStatus: initialInternalStatus,
-            },
-          })
-          created++
+          const r = await this.upsertOrderFromMarketplace(tenantId, connection, marketOrder)
+          if (r.created) created++
         } catch (err: any) {
           this.logger.error(`Error creating order ${marketOrder.externalId}: ${err.message}`)
           errors++
@@ -877,6 +744,189 @@ export class SyncService {
     if (ready.includes(s)) return 'ready_to_ship'
     if (inPrep.includes(s)) return 'in_preparation'
     return 'new'
+  }
+
+  // Mezcla la metadata existente con los campos marketplace-specific que nos
+  // sirven para distinguir cancelaciones reales de mediaciones / reclamos /
+  // no-entregados. Solo guardamos lo que el driver expone — los drivers que
+  // no llenen statusDetail/tags simplemente no escriben esas keys.
+  private buildOrderMetadata(
+    existing: any,
+    marketOrder: import('@stockcentral/integrations').MarketplaceOrder,
+  ): any {
+    const base = (existing && typeof existing === 'object' ? existing : {}) as Record<string, unknown>
+    return {
+      ...base,
+      statusDetail: marketOrder.statusDetail ?? null,
+      tags: marketOrder.tags ?? [],
+      hasMediations: !!marketOrder.hasMediations,
+    }
+  }
+
+  // Upsert de una MarketplaceOrder en DB. Reemplaza bloque inline duplicado
+  // dentro de syncOrdersInbound y permite reusar la misma persistencia desde
+  // refreshSingleOrder (webhooks por orden). Devuelve created=true cuando creó
+  // una orden nueva.
+  private async upsertOrderFromMarketplace(
+    tenantId: string,
+    connection: any,
+    marketOrder: import('@stockcentral/integrations').MarketplaceOrder,
+  ): Promise<{ created: boolean; orderId: string }> {
+    const existing = await this.prisma.order.findFirst({
+      where: { tenantId, externalOrderId: marketOrder.externalId, source: connection.provider },
+    })
+    if (existing) {
+      let targetSaleId: string
+      if (marketOrder.packId || !existing.saleId) {
+        const targetSale = await this.resolveSale(tenantId, connection.provider, marketOrder)
+        targetSaleId = targetSale.id
+      } else {
+        targetSaleId = existing.saleId
+      }
+      const previousSaleId = existing.saleId
+      const prevPaymentStatus = existing.paymentStatus
+      const prevInternalStatus = existing.internalStatus
+      const candidateInternal = this.mapInternalStatus(marketOrder.status)
+      const nextInternalStatus =
+        prevInternalStatus === 'cancelled_internal' ? 'cancelled_internal' : candidateInternal
+      const nextPaymentStatus = this.mapPaymentStatus(marketOrder.status)
+      await this.prisma.order.update({
+        where: { id: existing.id },
+        data: {
+          saleId: targetSaleId,
+          packId: marketOrder.packId || existing.packId,
+          customerName: marketOrder.buyerName,
+          customerEmail: marketOrder.buyerEmail || null,
+          customerPhone: marketOrder.buyerPhone || null,
+          customerDocType: marketOrder.buyerDocType || null,
+          customerDocNumber: marketOrder.buyerDocNumber || null,
+          invoiceType: marketOrder.billing?.invoiceType || 'boleta',
+          billingName: marketOrder.billing?.name || null,
+          billingDocType: marketOrder.billing?.docType || null,
+          billingDocNumber: marketOrder.billing?.docNumber || null,
+          billingEmail: marketOrder.billing?.email || null,
+          billingPhone: marketOrder.billing?.phone || null,
+          economicActivity: marketOrder.billing?.economicActivity || null,
+          taxContributor: marketOrder.billing?.taxContributor || null,
+          shippingAddress: (marketOrder.shippingAddress as any) ?? undefined,
+          billingAddress: (marketOrder.billingAddress as any) ?? undefined,
+          status: this.mapMarketplaceOrderStatus(marketOrder.status),
+          paymentStatus: nextPaymentStatus,
+          shipmentStatus: this.mapShipmentStatus(marketOrder.status),
+          internalStatus: nextInternalStatus,
+          placedAt: existing.placedAt ?? marketOrder.createdAt,
+          metadata: this.buildOrderMetadata(existing.metadata, marketOrder),
+        },
+      })
+      await this.recalculateSale(targetSaleId)
+      if (previousSaleId && previousSaleId !== targetSaleId) {
+        await this.cleanupSaleIfEmpty(previousSaleId)
+      }
+      await this.billing.onOrderTransition({
+        tenantId,
+        orderId: existing.id,
+        saleId: targetSaleId,
+        prev: { paymentStatus: prevPaymentStatus, internalStatus: prevInternalStatus },
+        next: { paymentStatus: nextPaymentStatus, internalStatus: nextInternalStatus },
+      })
+      return { created: false, orderId: existing.id }
+    }
+
+    const orderNumber = `${connection.provider.toUpperCase()}-${marketOrder.externalOrderNumber || marketOrder.externalId}`
+    const sale = await this.resolveSale(tenantId, connection.provider, marketOrder)
+    const initialPaymentStatus = this.mapPaymentStatus(marketOrder.status)
+    const initialInternalStatus = this.mapInternalStatus(marketOrder.status)
+
+    const newOrder = await this.prisma.order.create({
+      data: {
+        tenantId,
+        saleId: sale.id,
+        orderNumber,
+        source: connection.provider,
+        sourceChannel: connection.name,
+        externalOrderId: marketOrder.externalId,
+        packId: marketOrder.packId || null,
+        customerName: marketOrder.buyerName,
+        customerEmail: marketOrder.buyerEmail || null,
+        customerPhone: marketOrder.buyerPhone || null,
+        customerDocType: marketOrder.buyerDocType || null,
+        customerDocNumber: marketOrder.buyerDocNumber || null,
+        invoiceType: marketOrder.billing?.invoiceType || 'boleta',
+        billingName: marketOrder.billing?.name || null,
+        billingDocType: marketOrder.billing?.docType || null,
+        billingDocNumber: marketOrder.billing?.docNumber || null,
+        billingEmail: marketOrder.billing?.email || null,
+        billingPhone: marketOrder.billing?.phone || null,
+        economicActivity: marketOrder.billing?.economicActivity || null,
+        taxContributor: marketOrder.billing?.taxContributor || null,
+        subtotal: marketOrder.subtotal,
+        shippingCost: marketOrder.shippingCost,
+        tax: 0,
+        discount: 0,
+        total: marketOrder.total,
+        currency: marketOrder.currency,
+        status: this.mapMarketplaceOrderStatus(marketOrder.status),
+        paymentStatus: initialPaymentStatus,
+        shipmentStatus: this.mapShipmentStatus(marketOrder.status),
+        internalStatus: initialInternalStatus,
+        placedAt: marketOrder.createdAt,
+        metadata: this.buildOrderMetadata(null, marketOrder),
+        shippingAddress: marketOrder.shippingAddress as any,
+        billingAddress: marketOrder.billingAddress as any,
+        items: {
+          create: marketOrder.items.map((item) => ({
+            sku: item.sku,
+            name: item.title,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice,
+          })),
+        },
+      },
+    })
+    await this.recalculateSale(sale.id)
+    await this.billing.onOrderTransition({
+      tenantId,
+      orderId: newOrder.id,
+      saleId: sale.id,
+      prev: { paymentStatus: 'pending', internalStatus: 'new' },
+      next: {
+        paymentStatus: initialPaymentStatus,
+        internalStatus: initialInternalStatus,
+      },
+    })
+    return { created: true, orderId: newOrder.id }
+  }
+
+  // Refresca una sola orden de un marketplace usando el endpoint /orders/{id}
+  // del driver. Lo dispara el webhook handler cuando llega resource=/orders/X
+  // y también el botón manual "Refrescar estado" en la UI. A diferencia del
+  // sync periódico (filtra por date_created.from), este path sí actualiza
+  // órdenes viejas que cambiaron de estado (mediación, no entrega, etc.).
+  async refreshSingleOrder(
+    tenantId: string,
+    connectionId: string,
+    externalOrderId: string,
+  ): Promise<{ updated: boolean; created: boolean }> {
+    const connection = await this.getConnection(tenantId, connectionId)
+    const driver = getDriver(connection.provider)
+    const credentials = connection.credentials as Record<string, string>
+    const config = connection.config as Record<string, unknown> | undefined
+
+    const dispose = this.attachRefreshHandler(driver, tenantId, connectionId)
+    try {
+      const marketOrder = await driver.getOrder(credentials, externalOrderId, config)
+      if (!marketOrder) {
+        this.logger.warn(
+          `refreshSingleOrder: ${connection.provider}/${externalOrderId} no devolvió datos`,
+        )
+        return { updated: false, created: false }
+      }
+      const r = await this.upsertOrderFromMarketplace(tenantId, connection, marketOrder)
+      return { updated: true, created: r.created }
+    } finally {
+      dispose()
+    }
   }
 
   // ─── Sale helpers ─────────────────────────────────────────────────────────

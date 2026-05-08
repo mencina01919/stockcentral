@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
 import { PrismaService } from '../../prisma/prisma.service'
+import { SyncService } from '../sync/sync.service'
 import {
   CreateOrderDto,
   UpdateOrderStatusDto,
@@ -28,20 +29,87 @@ const VALID_INTERNAL_TRANSITIONS: Record<string, string[]> = {
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private sync: SyncService,
+  ) {}
+
+  // Refresca una orden puntual desde el marketplace correspondiente. Usa
+  // GET /orders/{id} del driver y persiste status / paymentStatus / metadata
+  // (mediación, no entrega, etc.). A diferencia del cron de sync (filtra por
+  // date_created.from), este path sí actualiza órdenes viejas que cambiaron
+  // de estado en el marketplace.
+  async refreshFromMarketplace(tenantId: string, id: string) {
+    const order = await this.findOne(tenantId, id)
+    if (!order.externalOrderId) {
+      throw new BadRequestException('Esta orden no tiene externalOrderId — no se puede refrescar desde el marketplace')
+    }
+    // Buscamos la conexión por provider; preferimos la marketplace pero
+    // aceptamos cualquier type para tolerar conexiones legacy sin type setteado.
+    const connection = await this.prisma.connection.findFirst({
+      where: { tenantId, provider: order.source },
+    })
+    if (!connection) {
+      throw new NotFoundException(`No hay conexión "${order.source}" configurada para refrescar`)
+    }
+    return this.sync.refreshSingleOrder(tenantId, connection.id, order.externalOrderId)
+  }
 
   async findAll(tenantId: string, query: OrderQueryDto) {
     // Default: ordenar por la fecha real del marketplace (placedAt). Para
     // órdenes legacy sin placedAt, Prisma con `nulls: 'last'` las pone al
     // final.
-    const { page = 1, limit = 20, search, status, internalStatus, source, sourceChannel, placedFrom, placedTo, sortBy = 'placedAt', sortOrder = 'desc' } = query
+    const { page = 1, limit = 20, search, status, internalStatus, paymentStatus, situation, source, sourceChannel, placedFrom, placedTo, sortBy = 'placedAt', sortOrder = 'desc' } = query
     const skip = (page - 1) * limit
     const where: any = { tenantId }
 
     if (status) where.status = status
     if (internalStatus) where.internalStatus = internalStatus
+    if (paymentStatus) where.paymentStatus = paymentStatus
     if (source) where.source = source
     if (sourceChannel) where.sourceChannel = sourceChannel
+
+    // Situaciones especiales del marketplace (hoy solo ML llena metadata).
+    // Requieren JSON path filters de Prisma: metadata.tags array_contains, etc.
+    if (situation === 'mediation') {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { metadata: { path: ['hasMediations'], equals: true } },
+            { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
+            { metadata: { path: ['tags'], array_contains: ['mediations'] } },
+          ],
+        },
+      ]
+    } else if (situation === 'not_delivered') {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
+            { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
+          ],
+        },
+      ]
+    } else if (situation === 'cancelled_clean') {
+      // Cancelada sin mediación / reclamo / no-entrega — la cancelación "limpia".
+      where.status = 'cancelled'
+      where.AND = [
+        ...(where.AND || []),
+        {
+          NOT: {
+            OR: [
+              { metadata: { path: ['hasMediations'], equals: true } },
+              { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
+              { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
+              { metadata: { path: ['tags'], array_contains: ['mediations'] } },
+              { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
+            ],
+          },
+        },
+      ]
+    }
     if (search) {
       where.OR = [
         { orderNumber: { contains: search, mode: 'insensitive' } },

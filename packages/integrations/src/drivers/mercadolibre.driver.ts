@@ -568,11 +568,20 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
         ? `${buyer.phone.area_code || ''}${buyer.phone.number}`.trim()
         : undefined)
 
+    // ML expone el motivo de cancelación / situaciones especiales en
+    // status_detail + tags. Lo capturamos para distinguir "cancelled por
+    // mediación" vs "cancelled normal" en la UI.
+    const tags: string[] = Array.isArray(data.tags) ? data.tags : []
+    const hasMediations = Array.isArray(data.mediations) && data.mediations.length > 0
+
     return {
       externalId: String(data.id),
       externalOrderNumber: String(data.id),
       packId: data.pack_id ? String(data.pack_id) : undefined,
       status: data.status,
+      statusDetail: data.status_detail || undefined,
+      tags,
+      hasMediations,
       buyerName,
       buyerEmail: buyer.email || shipment.receiver_email,
       buyerPhone,

@@ -76,4 +76,13 @@ export class OrdersController {
   advanceInternal(@TenantId() tenantId: string, @Param('id') id: string) {
     return this.ordersService.advanceInternal(tenantId, id)
   }
+
+  @Post(':id/refresh')
+  @ApiOperation({
+    summary:
+      'Refrescar estado desde el marketplace (mediación, no entrega, etc.). Usa GET /orders/{id} del driver.',
+  })
+  refresh(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.ordersService.refreshFromMarketplace(tenantId, id)
+  }
 }
