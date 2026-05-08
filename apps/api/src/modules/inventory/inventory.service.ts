@@ -20,7 +20,7 @@ export class InventoryService {
         productId,
         syncStatus: 'connected',
         marketplaceProductId: { not: null },
-        connection: { syncEnabled: true, status: 'connected' },
+        connection: { syncEnabled: true, status: 'connected', isCatalogSource: false },
       },
       include: { connection: true },
     })

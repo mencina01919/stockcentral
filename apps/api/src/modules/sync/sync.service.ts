@@ -576,15 +576,24 @@ export class SyncService {
     const stock = product.inventory[0]?.quantity ?? 0
     const images = (product.images as string[] | null) || []
     const results: any[] = []
+    const pricing = (product as any).marketplacePricing as Record<string, any> | null
 
     for (const mapping of product.marketplaceMappings) {
       const connection = mapping.connection as any
       if (connection.status !== 'connected') continue
+      if (connection.isCatalogSource) continue
 
       const driver = getDriver(connection.provider)
       const credentials = connection.credentials as Record<string, string>
       const config = connection.config as Record<string, unknown> | undefined
       const externalId = mapping.marketplaceProductId || product.sku
+
+      // Use marketplace-specific calculated price (commission + margin + shipping)
+      // when configured; fall back to basePrice.
+      const providerPricing = pricing?.[connection.provider]
+      const price = providerPricing?.calculatedPrice
+        ? Number(providerPricing.calculatedPrice)
+        : Number(product.basePrice)
 
       try {
         // Update product fields
@@ -592,7 +601,7 @@ export class SyncService {
           sku: product.sku,
           title: product.name,
           description: product.description || undefined,
-          price: Number(product.basePrice),
+          price,
           stock,
           images,
         }, config)
