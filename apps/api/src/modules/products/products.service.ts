@@ -145,7 +145,7 @@ export class ProductsService {
   async update(tenantId: string, id: string, dto: UpdateProductDto) {
     await this.findOne(tenantId, id)
 
-    const { stockOnline, stockWarehouse, stockStore, ...productFields } = dto
+    const { stockOnline, stockWarehouse, stockStore, saleStartDate, saleEndDate, ...productFields } = dto
 
     const margin = productFields.targetMargin !== undefined
       ? productFields.targetMargin
@@ -163,7 +163,13 @@ export class ProductsService {
 
     await this.prisma.product.update({
       where: { id },
-      data: { ...productFields, targetMargin: margin, barcode: barcode as any },
+      data: {
+        ...productFields,
+        targetMargin: margin,
+        barcode: barcode as any,
+        ...(saleStartDate !== undefined ? { saleStartDate: saleStartDate ? new Date(saleStartDate) : null } : {}),
+        ...(saleEndDate !== undefined ? { saleEndDate: saleEndDate ? new Date(saleEndDate) : null } : {}),
+      },
     })
 
     const stockUpdates: Record<string, number | undefined> = {

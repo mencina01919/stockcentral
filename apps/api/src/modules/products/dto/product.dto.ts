@@ -1,4 +1,4 @@
-import { IsString, IsNumber, IsOptional, IsArray, IsEnum, Min } from 'class-validator'
+import { IsString, IsNumber, IsOptional, IsArray, IsEnum, IsISO8601, Min } from 'class-validator'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 import { Type } from 'class-transformer'
 
@@ -66,6 +66,16 @@ export class CreateProductDto {
   @Type(() => Number)
   salePrice?: number
 
+  @ApiPropertyOptional({ description: 'Fecha inicio de la oferta (ISO 8601)' })
+  @IsOptional()
+  @IsISO8601()
+  saleStartDate?: string
+
+  @ApiPropertyOptional({ description: 'Fecha fin de la oferta (ISO 8601)' })
+  @IsOptional()
+  @IsISO8601()
+  saleEndDate?: string
+
   @ApiPropertyOptional({ description: 'Margen deseado en %. Se calcula automáticamente si se omite.' })
   @IsOptional()
   @IsNumber()
@@ -126,6 +136,8 @@ export class UpdateProductDto {
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) costPrice?: number
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) transferPrice?: number
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) salePrice?: number
+  @IsOptional() @IsISO8601() saleStartDate?: string
+  @IsOptional() @IsISO8601() saleEndDate?: string
   @IsOptional() @IsNumber() @Type(() => Number) targetMargin?: number
   @IsOptional() @IsNumber() @Min(0) @Type(() => Number) weight?: number
   @IsOptional() @IsArray() tags?: string[]

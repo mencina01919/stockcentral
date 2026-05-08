@@ -92,6 +92,8 @@ model Product {
   costPrice        Decimal? @db.Decimal(12, 2)
   transferPrice    Decimal? @db.Decimal(12, 2)
   salePrice        Decimal? @db.Decimal(12, 2)
+  saleStartDate    DateTime?
+  saleEndDate      DateTime?
   targetMargin     Decimal? @db.Decimal(5, 2)
   weight           Decimal? @db.Decimal(10, 3)
   dimensions       Json?
