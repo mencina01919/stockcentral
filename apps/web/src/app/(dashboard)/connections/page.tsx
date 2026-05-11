@@ -204,14 +204,71 @@ export default function ConnectionsPage() {
     queryFn: () => api.get('/connections').then((r) => r.data),
   })
 
-  const syncMutation = useMutation({
-    mutationFn: (id: string) => api.post(`/connections/${id}/sync`),
-    onSuccess: () => {
+  // Set de conexiones en sincronización activa. Cubre encolado + procesamiento
+  // de los jobs (no solo el POST inicial). El botón muestra spinner mientras
+  // la conexión esté en este set. Lo manejamos fuera del isPending de la
+  // mutation porque la mutation termina apenas se encolan los jobs.
+  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
+
+  const triggerSyncWithPolling = async (connectionId: string) => {
+    setSyncingIds((prev) => new Set(prev).add(connectionId))
+    const toastId = toast.loading('Sincronización en progreso…')
+    try {
+      const res = await api.post(`/connections/${connectionId}/sync`)
+      const jobs = res.data?.jobs as Record<string, string> | undefined
+      const jobIds = jobs ? Object.values(jobs).filter(Boolean) : []
+      if (jobIds.length === 0) {
+        toast.success('Sincronización completada', { id: toastId })
+        queryClient.invalidateQueries({ queryKey: ['connections'] })
+        return
+      }
+      // Poll cada 3s. Backstop de 5 min para evitar quedar atascado si Bull
+      // pierde el job o el worker crashea.
+      const startedAt = Date.now()
+      const MAX_WAIT_MS = 5 * 60 * 1000
+      while (Date.now() - startedAt < MAX_WAIT_MS) {
+        await new Promise((r) => setTimeout(r, 3000))
+        const progress = await api
+          .get(`/connections/${connectionId}/sync-progress`, {
+            params: { jobs: jobIds.join(',') },
+          })
+          .then((r) => r.data)
+        if (progress?.done) {
+          // Resumen: cuento por estado.
+          const counts = { completed: 0, failed: 0 }
+          for (const j of progress.jobs || []) {
+            if (j.state === 'completed') counts.completed++
+            else if (j.state === 'failed') counts.failed++
+          }
+          if (counts.failed > 0) {
+            toast.error(
+              `Sincronización terminada con errores (${counts.failed} fallidos, ${counts.completed} ok)`,
+              { id: toastId },
+            )
+          } else {
+            toast.success('Sincronización completada', { id: toastId })
+          }
+          queryClient.invalidateQueries({ queryKey: ['connections'] })
+          queryClient.invalidateQueries({ queryKey: ['connection-status', connectionId] })
+          return
+        }
+      }
+      // Timeout sin ver done — no es necesariamente error, pero avisamos.
+      toast.warning(
+        'La sincronización sigue corriendo en segundo plano. Revisa el panel de estado.',
+        { id: toastId },
+      )
       queryClient.invalidateQueries({ queryKey: ['connections'] })
-      toast.success('Sincronización encolada')
-    },
-    onError: (e: any) => toast.error(e?.response?.data?.message || 'Error al sincronizar'),
-  })
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Error al sincronizar', { id: toastId })
+    } finally {
+      setSyncingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(connectionId)
+        return next
+      })
+    }
+  }
 
   const testMutation = useMutation({
     mutationFn: (id: string) => api.post(`/connections/${id}/test`).then((r) => r.data),
@@ -321,9 +378,9 @@ export default function ConnectionsPage() {
                       <ConnectionCard
                         key={conn.id}
                         conn={conn}
-                        syncing={syncMutation.isPending && syncMutation.variables === conn.id}
+                        syncing={syncingIds.has(conn.id)}
                         testing={testMutation.isPending && testMutation.variables === conn.id}
-                        onSync={() => syncMutation.mutate(conn.id)}
+                        onSync={() => triggerSyncWithPolling(conn.id)}
                         onTest={() => testMutation.mutate(conn.id)}
                         onDelete={() => deleteMutation.mutate(conn.id)}
                         onEdit={() => setEditingConn(conn)}
@@ -343,9 +400,9 @@ export default function ConnectionsPage() {
                       <ConnectionCard
                         key={conn.id}
                         conn={conn}
-                        syncing={syncMutation.isPending && syncMutation.variables === conn.id}
+                        syncing={syncingIds.has(conn.id)}
                         testing={testMutation.isPending && testMutation.variables === conn.id}
-                        onSync={() => syncMutation.mutate(conn.id)}
+                        onSync={() => triggerSyncWithPolling(conn.id)}
                         onTest={() => testMutation.mutate(conn.id)}
                         onDelete={() => deleteMutation.mutate(conn.id)}
                         onEdit={() => setEditingConn(conn)}
@@ -365,9 +422,9 @@ export default function ConnectionsPage() {
                       <ConnectionCard
                         key={conn.id}
                         conn={conn}
-                        syncing={syncMutation.isPending && syncMutation.variables === conn.id}
+                        syncing={syncingIds.has(conn.id)}
                         testing={testMutation.isPending && testMutation.variables === conn.id}
-                        onSync={() => syncMutation.mutate(conn.id)}
+                        onSync={() => triggerSyncWithPolling(conn.id)}
                         onTest={() => testMutation.mutate(conn.id)}
                         onDelete={() => deleteMutation.mutate(conn.id)}
                         onEdit={() => setEditingConn(conn)}

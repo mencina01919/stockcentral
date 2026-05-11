@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { Fragment, useState, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, FileText, Loader2, Eye, RefreshCw, Upload, ExternalLink, Layers, Download } from 'lucide-react'
+import { Search, FileText, Loader2, Eye, RefreshCw, Upload, ExternalLink, Layers, Download, ChevronRight, History } from 'lucide-react'
 import { DatePicker } from '@/components/sc/date-picker'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
@@ -67,6 +67,74 @@ function deriveSaleSituation(
   return null
 }
 
+// Agrupa los TaxDocuments por sale para mostrar una fila por venta. Una sale
+// puede tener varios documentos a lo largo del tiempo (factura mal emitida
+// → NC → boleta correcta → NC por cancelación) y verlos como filas
+// independientes confunde al operador. Elegimos un "doc vigente" por venta
+// con la siguiente prioridad descendente:
+//   1) Boleta/factura issued más reciente (el "estado tributario activo")
+//   2) Boleta/factura pending
+//   3) Boleta/factura failed
+//   4) Boleta/factura cancelled más reciente (todos anulados)
+//   5) NC sola (caso raro: solo se importó la NC)
+// Las filas "huérfanas" sin saleId (manual uploads sin sale) quedan cada una
+// como su propio grupo.
+type DocRow = {
+  primary: any
+  all: any[]
+  saleNumber: string | null
+  saleId: string | null
+  hasHistory: boolean
+}
+function groupDocsBySale(docs: any[]): DocRow[] {
+  const groups = new Map<string, any[]>()
+  const orphans: any[] = []
+  for (const d of docs) {
+    const sid = d.saleId || d.sale?.id
+    if (!sid) { orphans.push(d); continue }
+    const arr = groups.get(sid) || []
+    arr.push(d)
+    groups.set(sid, arr)
+  }
+  const pickPrimary = (items: any[]): any => {
+    const sortByCreatedDesc = (a: any, b: any) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    const issued = items.filter((d) => (d.type === 'boleta' || d.type === 'factura') && d.status === 'issued').sort(sortByCreatedDesc)
+    if (issued.length > 0) return issued[0]
+    const pending = items.filter((d) => (d.type === 'boleta' || d.type === 'factura') && d.status === 'pending').sort(sortByCreatedDesc)
+    if (pending.length > 0) return pending[0]
+    const failed = items.filter((d) => (d.type === 'boleta' || d.type === 'factura') && d.status === 'failed').sort(sortByCreatedDesc)
+    if (failed.length > 0) return failed[0]
+    const cancelled = items.filter((d) => (d.type === 'boleta' || d.type === 'factura') && d.status === 'cancelled').sort(sortByCreatedDesc)
+    if (cancelled.length > 0) return cancelled[0]
+    return items.slice().sort(sortByCreatedDesc)[0]
+  }
+  const rows: DocRow[] = []
+  for (const [saleId, items] of groups) {
+    const sorted = items.slice().sort(
+      (a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    )
+    const primary = pickPrimary(items)
+    rows.push({
+      primary,
+      all: sorted,
+      saleNumber: primary?.sale?.saleNumber || null,
+      saleId,
+      hasHistory: items.length > 1,
+    })
+  }
+  for (const d of orphans) {
+    rows.push({ primary: d, all: [d], saleNumber: null, saleId: null, hasHistory: false })
+  }
+  // Orden estable de las filas: por fecha del primary descendente (la API ya
+  // devuelve docs ordenados, pero al colapsar puede haber primary más viejo
+  // que algún otro de su grupo — re-ordenamos por createdAt del primary).
+  rows.sort((a, b) =>
+    new Date(b.primary.createdAt).getTime() - new Date(a.primary.createdAt).getTime(),
+  )
+  return rows
+}
+
 export default function TaxDocumentsPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
@@ -127,8 +195,33 @@ export default function TaxDocumentsPage() {
     onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al reintentar'),
   })
 
+  // Estado del modal de emisión de NC manual. Guardamos el doc completo para
+  // mostrar contexto al operador antes de confirmar (folio, tipo, monto).
+  const [ncTarget, setNcTarget] = useState<any | null>(null)
+  const creditNoteMutation = useMutation({
+    mutationFn: (vars: { saleId: string; motive: string }) =>
+      api.post(`/tax-documents/credit-note/sale/${vars.saleId}`, { motive: vars.motive }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tax-documents'] })
+      toast.success('Nota de crédito emitida')
+      setNcTarget(null)
+    },
+    onError: (err: any) =>
+      toast.error(err?.response?.data?.message || 'Error al emitir nota de crédito'),
+  })
+
   const docs = data?.data || []
   const meta = data?.meta
+  const rows = useMemo(() => groupDocsBySale(docs), [docs])
+  const [expandedSales, setExpandedSales] = useState(new Set<string>())
+  const toggleExpand = (saleId: string) => {
+    setExpandedSales((prev) => {
+      const next = new Set(prev)
+      if (next.has(saleId)) next.delete(saleId)
+      else next.add(saleId)
+      return next
+    })
+  }
 
   const tabs: { key: Filter; label: string }[] = [
     { key: 'all', label: 'Todos' },
@@ -145,7 +238,7 @@ export default function TaxDocumentsPage() {
         title="Documentos tributarios"
         subtitle={
           meta
-            ? `${meta.total} documentos · emisión automática vía Bsale`
+            ? `${rows.length} venta${rows.length === 1 ? '' : 's'} · ${meta.total} documento${meta.total === 1 ? '' : 's'} · agrupado por venta`
             : 'Boletas, facturas y notas de crédito emitidas'
         }
         actions={
@@ -183,7 +276,7 @@ export default function TaxDocumentsPage() {
               <input
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                placeholder="Buscar folio o ID externo…"
+                placeholder="Buscar por folio, venta, RUT, nombre, email u order ID…"
                 className="sc-input"
                 style={{ paddingLeft: 38 }}
               />
@@ -310,147 +403,293 @@ export default function TaxDocumentsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {docs.map((doc: any) => {
+                  {rows.map((row) => {
+                    const doc = row.primary
                     const typeInfo = TYPE_LABEL[doc.type] || { label: doc.type, tone: 'low' as const }
                     const statusInfo = STATUS_LABEL[doc.status] || { label: doc.status, tone: 'low' as const }
+                    const isExpanded = row.saleId ? expandedSales.has(row.saleId) : false
+                    const historyExtras = row.all.filter((d) => d.id !== doc.id)
+                    // El botón "Emitir NC" aparece cuando el doc vigente es
+                    // boleta/factura issued, el emisor es Bsale (los demás
+                    // ml-external/manual no soportan NC automática) y no hay
+                    // ya una NC issued/pending que apunte a este doc.
+                    const canEmitCreditNote =
+                      doc.emitter === 'bsale' &&
+                      (doc.type === 'boleta' || doc.type === 'factura') &&
+                      doc.status === 'issued' &&
+                      !row.all.some(
+                        (d) => d.type === 'nota_credito' &&
+                               (d.status === 'issued' || d.status === 'pending') &&
+                               d.referenceDocumentId === doc.id,
+                      )
                     return (
-                      <tr key={doc.id} className="sc-row">
-                        <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
-                          <Chip tone={typeInfo.tone}>{typeInfo.label}</Chip>
-                        </td>
-                        <td
-                          className="sc-mono"
-                          style={{
-                            padding: '13px 16px',
-                            color: 'var(--sc-text-hi)',
-                            fontWeight: 500,
-                            borderBottom: '1px solid var(--sc-line-faint)',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {doc.folio || <span style={{ color: 'var(--sc-text-faint)' }}>—</span>}
-                        </td>
-                        <td
-                          className="sc-mono"
-                          style={{
-                            padding: '13px 16px',
-                            color: 'var(--sc-blue-600)',
-                            borderBottom: '1px solid var(--sc-line-faint)',
-                          }}
-                        >
-                          {doc.sale?.saleNumber || '—'}
-                        </td>
-                        <td
-                          style={{
-                            padding: '13px 16px',
-                            color: 'var(--sc-text-mid)',
-                            borderBottom: '1px solid var(--sc-line-faint)',
-                          }}
-                        >
-                          <div>{doc.sale?.customerName || '—'}</div>
-                          {(() => {
-                            const sit = deriveSaleSituation(doc.sale)
-                            return sit ? (
-                              <div style={{ marginTop: 3 }}>
-                                <Chip tone={sit.tone}>{sit.label}</Chip>
-                              </div>
-                            ) : null
-                          })()}
-                        </td>
-                        <td
-                          className="sc-mono"
-                          style={{
-                            padding: '13px 16px',
-                            fontWeight: 600,
-                            color: 'var(--sc-text-hi)',
-                            borderBottom: '1px solid var(--sc-line-faint)',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {doc.sale?.total
-                            ? formatCurrency(Number(doc.sale.total), 'CLP')
-                            : '—'}
-                        </td>
-                        <td
-                          style={{
-                            padding: '13px 16px',
-                            borderBottom: '1px solid var(--sc-line-faint)',
-                          }}
-                        >
-                          <EmitterBadge emitter={doc.emitter} />
-                        </td>
-                        <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
-                          <StatusBadge tone={statusInfo.tone}>{statusInfo.label}</StatusBadge>
-                          {doc.status === 'failed' && doc.attempts && (
-                            <p
-                              className="sc-mono"
-                              style={{ fontSize: 10, color: 'var(--sc-text-faint)', marginTop: 2 }}
-                            >
-                              {doc.attempts} intento{doc.attempts === 1 ? '' : 's'}
-                            </p>
-                          )}
-                        </td>
-                        <td
-                          className="sc-mono"
-                          style={{
-                            padding: '13px 16px',
-                            fontSize: 11,
-                            color: 'var(--sc-text-low)',
-                            borderBottom: '1px solid var(--sc-line-faint)',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {doc.sale?.placedAt
-                            ? formatDate(doc.sale.placedAt)
-                            : doc.sale?.createdAt
-                              ? formatDate(doc.sale.createdAt)
-                              : doc.emittedAt
-                                ? formatDate(doc.emittedAt)
-                                : '—'}
-                        </td>
-                        <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => setSelectedId(doc.id)}
-                              className="sc-btn-ghost"
-                              style={{ padding: 6 }}
-                              aria-label="Ver detalle"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
-                            {doc.pdfUrl && (
-                              <a
-                                href={doc.pdfUrl}
-                                target="_blank"
-                                rel="noreferrer"
+                      <Fragment key={row.saleId || doc.id}>
+                        <tr className="sc-row">
+                          <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                            <div className="flex items-center gap-2">
+                              {row.hasHistory && row.saleId ? (
+                                <button
+                                  onClick={() => toggleExpand(row.saleId!)}
+                                  aria-label={isExpanded ? 'Colapsar historial' : 'Ver historial'}
+                                  title={`Ver los ${row.all.length} movimientos de esta venta`}
+                                  style={{
+                                    padding: 2,
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: 'var(--sc-text-low)',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                  }}
+                                >
+                                  <ChevronRight
+                                    className="w-3.5 h-3.5"
+                                    style={{
+                                      transform: isExpanded ? 'rotate(90deg)' : 'none',
+                                      transition: 'transform .15s',
+                                    }}
+                                  />
+                                </button>
+                              ) : (
+                                <span style={{ width: 14, display: 'inline-block' }} />
+                              )}
+                              <Chip tone={typeInfo.tone}>{typeInfo.label}</Chip>
+                              {row.hasHistory && (
+                                <span
+                                  title={`Con ${row.all.length - 1} movimiento${row.all.length === 2 ? '' : 's'} adicional${row.all.length === 2 ? '' : 'es'}`}
+                                  className="sc-mono"
+                                  style={{
+                                    fontSize: 10,
+                                    padding: '2px 6px',
+                                    borderRadius: 999,
+                                    background: 'rgba(245,158,11,0.10)',
+                                    color: '#b45309',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 3,
+                                  }}
+                                >
+                                  <History className="w-2.5 h-2.5" />{row.all.length}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td
+                            className="sc-mono"
+                            style={{
+                              padding: '13px 16px',
+                              color: 'var(--sc-text-hi)',
+                              fontWeight: 500,
+                              borderBottom: '1px solid var(--sc-line-faint)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {doc.folio || <span style={{ color: 'var(--sc-text-faint)' }}>—</span>}
+                          </td>
+                          <td
+                            className="sc-mono"
+                            style={{
+                              padding: '13px 16px',
+                              color: 'var(--sc-blue-600)',
+                              borderBottom: '1px solid var(--sc-line-faint)',
+                            }}
+                          >
+                            {doc.sale?.saleNumber || '—'}
+                          </td>
+                          <td
+                            style={{
+                              padding: '13px 16px',
+                              color: 'var(--sc-text-mid)',
+                              borderBottom: '1px solid var(--sc-line-faint)',
+                            }}
+                          >
+                            <div>{doc.sale?.customerName || '—'}</div>
+                            {(() => {
+                              const sit = deriveSaleSituation(doc.sale)
+                              return sit ? (
+                                <div style={{ marginTop: 3 }}>
+                                  <Chip tone={sit.tone}>{sit.label}</Chip>
+                                </div>
+                              ) : null
+                            })()}
+                          </td>
+                          <td
+                            className="sc-mono"
+                            style={{
+                              padding: '13px 16px',
+                              fontWeight: 600,
+                              color: 'var(--sc-text-hi)',
+                              borderBottom: '1px solid var(--sc-line-faint)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {doc.sale?.total
+                              ? formatCurrency(Number(doc.sale.total), 'CLP')
+                              : '—'}
+                          </td>
+                          <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                            <EmitterBadge emitter={doc.emitter} />
+                          </td>
+                          <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                            <StatusBadge tone={statusInfo.tone}>{statusInfo.label}</StatusBadge>
+                            {doc.status === 'failed' && doc.attempts && (
+                              <p
+                                className="sc-mono"
+                                style={{ fontSize: 10, color: 'var(--sc-text-faint)', marginTop: 2 }}
+                              >
+                                {doc.attempts} intento{doc.attempts === 1 ? '' : 's'}
+                              </p>
+                            )}
+                          </td>
+                          <td
+                            className="sc-mono"
+                            style={{
+                              padding: '13px 16px',
+                              fontSize: 11,
+                              color: 'var(--sc-text-low)',
+                              borderBottom: '1px solid var(--sc-line-faint)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {doc.sale?.placedAt
+                              ? formatDate(doc.sale.placedAt)
+                              : doc.sale?.createdAt
+                                ? formatDate(doc.sale.createdAt)
+                                : doc.emittedAt
+                                  ? formatDate(doc.emittedAt)
+                                  : '—'}
+                          </td>
+                          <td style={{ padding: '13px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => setSelectedId(doc.id)}
                                 className="sc-btn-ghost"
                                 style={{ padding: 6 }}
-                                aria-label="Ver PDF"
+                                aria-label="Ver detalle"
                               >
-                                <ExternalLink className="w-3.5 h-3.5" />
-                              </a>
-                            )}
-                            {doc.status === 'failed' && (
-                              <button
-                                onClick={() => retryMutation.mutate(doc.id)}
-                                disabled={retryMutation.isPending}
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+                              {doc.pdfUrl && (
+                                <a
+                                  href={doc.pdfUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="sc-btn-ghost"
+                                  style={{ padding: 6 }}
+                                  aria-label="Ver PDF"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+                              {doc.status === 'failed' && (
+                                <button
+                                  onClick={() => retryMutation.mutate(doc.id)}
+                                  disabled={retryMutation.isPending}
+                                  style={{
+                                    padding: '5px 10px',
+                                    fontSize: 11,
+                                    color: 'var(--sc-blue-600)',
+                                    borderRadius: 6,
+                                    background: 'transparent',
+                                    border: '1px solid rgba(37,99,235,0.20)',
+                                    cursor: 'pointer',
+                                    transition: 'background .15s',
+                                  }}
+                                >
+                                  <RefreshCw className="w-3 h-3 inline mr-1" /> Reintentar
+                                </button>
+                              )}
+                              {canEmitCreditNote && (
+                                <button
+                                  onClick={() => setNcTarget(doc)}
+                                  title="Emitir nota de crédito total que anula este documento en Bsale + SII"
+                                  style={{
+                                    padding: '5px 10px',
+                                    fontSize: 11,
+                                    color: '#b91c1c',
+                                    borderRadius: 6,
+                                    background: 'transparent',
+                                    border: '1px solid rgba(220,38,38,0.20)',
+                                    cursor: 'pointer',
+                                    transition: 'background .15s',
+                                  }}
+                                >
+                                  Emitir NC
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                        {isExpanded && historyExtras.map((h: any) => {
+                          const hType = TYPE_LABEL[h.type] || { label: h.type, tone: 'low' as const }
+                          const hStatus = STATUS_LABEL[h.status] || { label: h.status, tone: 'low' as const }
+                          return (
+                            <tr
+                              key={h.id}
+                              style={{ background: 'rgba(243,244,246,0.45)' }}
+                            >
+                              <td style={{ padding: '10px 16px 10px 42px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                                <Chip tone={hType.tone}>{hType.label}</Chip>
+                              </td>
+                              <td
+                                className="sc-mono"
                                 style={{
-                                  padding: '5px 10px',
-                                  fontSize: 11,
-                                  color: 'var(--sc-blue-600)',
-                                  borderRadius: 6,
-                                  background: 'transparent',
-                                  border: '1px solid rgba(37,99,235,0.20)',
-                                  cursor: 'pointer',
-                                  transition: 'background .15s',
+                                  padding: '10px 16px',
+                                  color: 'var(--sc-text-mid)',
+                                  borderBottom: '1px solid var(--sc-line-faint)',
+                                  whiteSpace: 'nowrap',
                                 }}
                               >
-                                <RefreshCw className="w-3 h-3 inline mr-1" /> Reintentar
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
+                                {h.folio || <span style={{ color: 'var(--sc-text-faint)' }}>—</span>}
+                              </td>
+                              <td style={{ borderBottom: '1px solid var(--sc-line-faint)' }} />
+                              <td style={{ borderBottom: '1px solid var(--sc-line-faint)' }} />
+                              <td style={{ borderBottom: '1px solid var(--sc-line-faint)' }} />
+                              <td style={{ padding: '10px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                                <EmitterBadge emitter={h.emitter} />
+                              </td>
+                              <td style={{ padding: '10px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                                <StatusBadge tone={hStatus.tone}>{hStatus.label}</StatusBadge>
+                              </td>
+                              <td
+                                className="sc-mono"
+                                style={{
+                                  padding: '10px 16px',
+                                  fontSize: 11,
+                                  color: 'var(--sc-text-low)',
+                                  borderBottom: '1px solid var(--sc-line-faint)',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {h.createdAt ? formatDate(h.createdAt) : '—'}
+                              </td>
+                              <td style={{ padding: '10px 16px', borderBottom: '1px solid var(--sc-line-faint)' }}>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => setSelectedId(h.id)}
+                                    className="sc-btn-ghost"
+                                    style={{ padding: 6 }}
+                                    aria-label="Ver detalle"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </button>
+                                  {h.pdfUrl && (
+                                    <a
+                                      href={h.pdfUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="sc-btn-ghost"
+                                      style={{ padding: 6 }}
+                                      aria-label="Ver PDF"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5" />
+                                    </a>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </Fragment>
                     )
                   })}
                 </tbody>
@@ -502,6 +741,116 @@ export default function TaxDocumentsPage() {
           }}
         />
       )}
+
+      {ncTarget && (
+        <CreditNoteModal
+          doc={ncTarget}
+          isPending={creditNoteMutation.isPending}
+          onCancel={() => setNcTarget(null)}
+          onConfirm={(motive) =>
+            creditNoteMutation.mutate({ saleId: ncTarget.saleId, motive })
+          }
+        />
+      )}
+    </div>
+  )
+}
+
+// Modal de confirmación de NC manual. Pide motivo (texto libre, requerido),
+// muestra el doc original y avisa que la NC anula totalmente el documento.
+function CreditNoteModal({
+  doc,
+  isPending,
+  onCancel,
+  onConfirm,
+}: {
+  doc: any
+  isPending: boolean
+  onCancel: () => void
+  onConfirm: (motive: string) => void
+}) {
+  const [motive, setMotive] = useState('Cancelación de la orden')
+  const typeLabel = doc.type === 'factura' ? 'factura' : 'boleta'
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <Panel style={{ width: '100%', maxWidth: 480 }}>
+        <div
+          className="flex items-center justify-between"
+          style={{ padding: '14px 20px', borderBottom: '1px solid var(--sc-line-soft)' }}
+        >
+          <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--sc-text-hi)' }}>
+            Emitir nota de crédito
+          </h2>
+          <button onClick={onCancel} className="sc-btn-ghost" style={{ padding: 4 }} aria-label="Cerrar">
+            <span style={{ fontSize: 18, lineHeight: 1 }}>×</span>
+          </button>
+        </div>
+        <div style={{ padding: 20 }}>
+          <div
+            style={{
+              padding: 12,
+              background: '#fef2f2',
+              border: '1px solid #fecaca',
+              borderRadius: 8,
+              marginBottom: 16,
+              fontSize: 12,
+              color: '#991b1b',
+            }}
+          >
+            Esto emite una <strong>NC total</strong> en Bsale sobre la {typeLabel}{' '}
+            <strong className="sc-mono">folio {doc.folio || '—'}</strong> de la venta{' '}
+            <strong className="sc-mono">{doc.sale?.saleNumber || '—'}</strong>. La NC se declara al SII y anula contablemente el documento. No se puede deshacer.
+          </div>
+
+          <label
+            className="sc-mono uppercase block"
+            style={{ fontSize: 10, letterSpacing: '0.16em', color: 'var(--sc-text-low)', marginBottom: 6 }}
+          >
+            Motivo
+          </label>
+          <textarea
+            value={motive}
+            onChange={(e) => setMotive(e.target.value)}
+            rows={3}
+            placeholder="Ej. Cancelación por comprador, producto no entregado, error en el monto…"
+            className="sc-input"
+            style={{ width: '100%', fontFamily: 'inherit' }}
+          />
+
+          <div className="flex justify-end gap-2" style={{ marginTop: 16 }}>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="sc-btn-ghost"
+              style={{ padding: '8px 14px', fontSize: 12 }}
+              disabled={isPending}
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => onConfirm(motive.trim() || 'Cancelación de la orden')}
+              disabled={isPending}
+              style={{
+                padding: '8px 14px',
+                fontSize: 12,
+                fontWeight: 500,
+                color: 'white',
+                background: '#dc2626',
+                borderRadius: 6,
+                border: 'none',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+            >
+              {isPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              Emitir NC
+            </button>
+          </div>
+        </div>
+      </Panel>
     </div>
   )
 }
