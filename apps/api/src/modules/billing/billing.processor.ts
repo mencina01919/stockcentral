@@ -73,7 +73,17 @@ export class BillingProcessor {
       return
     }
 
-    const wantsFactura = sale.invoiceType === 'factura' || !!sale.billingDocNumber
+    // SOLO `sale.invoiceType === 'factura'` es señal real de que el comprador
+    // pidió factura. El sync ya deriva eso de marcas explícitas del
+    // marketplace (en ML: presencia de BUSINESS_NAME o ECONOMIC_ACTIVITY en
+    // billing_info.additional_info; en Paris: businessInvoice; etc.).
+    //
+    // NO usar `!!sale.billingDocNumber` como señal: ML retorna el RUT del
+    // comprador en billing_info.doc_number por defecto, aunque la persona
+    // haya pedido BOLETA. Si tratáramos billingDocNumber como "quiere
+    // factura", todas las boletas a personas naturales se emitirían como
+    // facturas mal y habría que NC + re-emitir.
+    const wantsFactura = sale.invoiceType === 'factura'
     const hasFacturaData = !!sale.billingDocNumber && !!sale.billingName
     const elapsed = Date.now() - firstSeenAt
     const expired = elapsed >= FACTURA_WAIT_MS
@@ -138,6 +148,11 @@ export class BillingProcessor {
   async handleEmitCreditNote(job: Job<EmitCreditNoteJob>) {
     const { tenantId, saleId, attempt } = job.data
 
+    // Buscamos el DTE issued más reciente (boleta o factura) para esta sale.
+    // Una sale puede tener varios docs a lo largo del tiempo (ej. factura
+    // emitida por bug → NC → boleta correcta re-emitida). Tomamos el más
+    // reciente para que la NC referencie al doc vigente, no a uno histórico
+    // ya anulado.
     const original = await this.prisma.taxDocument.findFirst({
       where: {
         tenantId,
@@ -145,6 +160,7 @@ export class BillingProcessor {
         type: { in: ['boleta', 'factura'] },
         status: 'issued',
       },
+      orderBy: { createdAt: 'desc' },
     })
     if (!original) {
       // Cancelación antes de emitir: no hacer nada (regla del contrato).
@@ -152,11 +168,24 @@ export class BillingProcessor {
       return
     }
 
+    // Idempotencia por documento original, no por sale: una sale puede tener
+    // ya una NC vieja sobre un doc previo (ej. NC sobre factura emitida por
+    // bug) y aun así necesitar otra NC sobre el doc actual cuando el
+    // comprador cancela. Sin este filtro, el processor saltaría la nueva NC
+    // por encontrar la vieja.
     const existingNc = await this.prisma.taxDocument.findFirst({
-      where: { tenantId, saleId, type: 'nota_credito', status: { in: ['issued', 'pending'] } },
+      where: {
+        tenantId,
+        saleId,
+        type: 'nota_credito',
+        status: { in: ['issued', 'pending'] },
+        referenceDocumentId: original.id,
+      },
     })
     if (existingNc) {
-      this.logger.debug(`Sale ${saleId} ya tiene NC ${existingNc.status} — skip`)
+      this.logger.debug(
+        `Sale ${saleId} ya tiene NC ${existingNc.status} sobre doc ${original.id} — skip`,
+      )
       return
     }
 
