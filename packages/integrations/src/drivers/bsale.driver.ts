@@ -229,17 +229,33 @@ export class BsaleDriver implements ITaxDocumentEmitter {
     const c = this.client(credentials)
     const code = this.normalizeRut(client.rut)
 
-    // Si tenemos RUT, intentar buscar primero. Bsale no documenta GET por code,
-    // pero la API real soporta `?code=<rut>` como filtro. Si encontramos el
-    // cliente con datos faltantes que ahora sí tenemos (city/address), lo
-    // actualizamos: facturas en Chile exigen esos campos y un cliente creado
-    // antes con datos parciales bloquea la emisión.
+    // Si tenemos RUT, intentar buscar primero. OJO: `GET /clients.json?code=`
+    // en Bsale NO filtra estrictamente — la API hace match parcial / fuzzy y
+    // puede devolver el primer cliente de la cuenta aunque su `code` no sea
+    // el que buscamos. Por eso, validamos que el `code` del cliente devuelto
+    // sea EXACTAMENTE igual al RUT normalizado que queremos. Sin esta
+    // verificación, todas las boletas a consumidor final terminaban emitidas
+    // al primer cliente creado (síntoma: "todas las boletas salieron a nombre
+    // de la misma persona").
     if (code) {
       try {
-        const search = await c.get('/clients.json', { params: { code, limit: 1 } })
-        const found = search.data?.items?.[0]
+        const search = await c.get('/clients.json', { params: { code, limit: 50 } })
+        const items: any[] = search.data?.items || []
+        const found = items.find((it) => {
+          const itCode = this.normalizeRut(String(it.code || ''))
+          return itCode && itCode === code
+        })
         if (found?.id) {
           const patch: Record<string, unknown> = {}
+          // Si el nombre del cliente cambió, lo actualizamos. Esto cubre el
+          // caso histórico donde un cliente quedó creado con nombre genérico
+          // y queremos corregirlo con datos reales.
+          if (client.firstName && found.firstName !== client.firstName) {
+            patch.firstName = client.firstName
+          }
+          if (client.lastName != null && found.lastName !== client.lastName) {
+            patch.lastName = client.lastName
+          }
           if (!found.address && client.address) patch.address = client.address
           if (!found.city && client.city) patch.city = client.city
           if (!found.municipality && (client.municipality || client.city)) {
@@ -289,11 +305,17 @@ export class BsaleDriver implements ITaxDocumentEmitter {
       const res = await c.post('/clients.json', body)
       return { externalClientId: String(res.data.id), created: true }
     } catch (err: any) {
-      // 422 con mensaje de duplicado: re-buscar.
+      // 422 con mensaje de duplicado: re-buscar con verificación estricta de
+      // code (la API hace match parcial — sin verificar `code` exacto puede
+      // devolver un cliente distinto).
       const errorMsg: string = err?.response?.data?.error || ''
       if (code && /already|exist|duplic/i.test(errorMsg)) {
-        const search = await c.get('/clients.json', { params: { code, limit: 1 } })
-        const found = search.data?.items?.[0]
+        const search = await c.get('/clients.json', { params: { code, limit: 50 } })
+        const items: any[] = search.data?.items || []
+        const found = items.find((it) => {
+          const itCode = this.normalizeRut(String(it.code || ''))
+          return itCode && itCode === code
+        })
         if (found?.id) return { externalClientId: String(found.id), created: false }
       }
       throw new Error(`Bsale upsertClient failed: ${errorMsg || err?.message}`)

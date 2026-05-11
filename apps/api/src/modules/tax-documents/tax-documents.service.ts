@@ -61,6 +61,39 @@ export class TaxDocumentsService {
 
   // ─── Listado / lectura ────────────────────────────────────────────────────
 
+  // Buscador "amplio" del listado de documentos. El operador suele pegar lo
+  // que tenga a mano (folio Bsale, saleNumber StockCentral, ID/pack/order
+  // del marketplace, RUT, nombre del comprador, email…). Cubrimos todos esos
+  // campos con OR para que la búsqueda funcione sin que tenga que pensar en
+  // qué columna específica buscar.
+  private buildSearchOr(search: string) {
+    return [
+      { folio: { contains: search, mode: 'insensitive' as const } },
+      { externalId: { contains: search, mode: 'insensitive' as const } },
+      { sale: { is: { saleNumber: { contains: search, mode: 'insensitive' as const } } } },
+      { sale: { is: { customerName: { contains: search, mode: 'insensitive' as const } } } },
+      { sale: { is: { customerDocNumber: { contains: search, mode: 'insensitive' as const } } } },
+      { sale: { is: { billingName: { contains: search, mode: 'insensitive' as const } } } },
+      { sale: { is: { billingDocNumber: { contains: search, mode: 'insensitive' as const } } } },
+      { sale: { is: { customerEmail: { contains: search, mode: 'insensitive' as const } } } },
+      {
+        sale: {
+          is: {
+            orders: {
+              some: {
+                OR: [
+                  { externalOrderId: { contains: search, mode: 'insensitive' as const } },
+                  { orderNumber: { contains: search, mode: 'insensitive' as const } },
+                  { packId: { contains: search, mode: 'insensitive' as const } },
+                ],
+              },
+            },
+          },
+        },
+      },
+    ]
+  }
+
   async findAll(tenantId: string, query: TaxDocumentQueryDto) {
     const {
       page = 1,
@@ -152,12 +185,7 @@ export class TaxDocumentsService {
         },
       ]
     }
-    if (search) {
-      where.OR = [
-        { folio: { contains: search, mode: 'insensitive' } },
-        { externalId: { contains: search, mode: 'insensitive' } },
-      ]
-    }
+    if (search) where.OR = this.buildSearchOr(search)
     // Filtro por fecha real de la venta (sale.placedAt). Caemos a sale.createdAt
     // si placedAt es null (caso legacy).
     if (placedFrom || placedTo) {
@@ -415,11 +443,22 @@ export class TaxDocumentsService {
       throw new BadRequestException('El documento original no tiene externalId del emisor')
     }
 
+    // Idempotencia por documento original, no por sale. Una sale puede tener
+    // ya una NC vieja sobre un doc previo (ej. NC sobre factura emitida por
+    // bug del processor) y aun así necesitar otra NC sobre el doc vigente.
     const existingNc = await this.prisma.taxDocument.findFirst({
-      where: { tenantId, saleId, type: 'nota_credito', status: { in: ['issued', 'pending'] } },
+      where: {
+        tenantId,
+        saleId,
+        type: 'nota_credito',
+        status: { in: ['issued', 'pending'] },
+        referenceDocumentId: original.id,
+      },
     })
     if (existingNc) {
-      throw new BadRequestException('Ya existe una nota de crédito para esta venta')
+      throw new BadRequestException(
+        `Ya existe una nota de crédito sobre el documento ${original.type} (folio ${original.folio || '-'})`,
+      )
     }
 
     const { emitter, connection } = await this.resolveEmitter(tenantId, original.emitter)
@@ -560,18 +599,25 @@ export class TaxDocumentsService {
         isCompany: true,
       }
     }
-    // Boleta: si no hay nombre ni RUT, va como consumidor final con el RUT
-    // genérico del SII chileno (66.666.666-6). Esto permite emitir NC sobre
-    // boletas anónimas — el SII exige RUT identificado en la NC aunque la
-    // boleta original no lo tenga.
-    const fullName: string = sale.customerName || 'Consumidor final'
+    // Boleta: priorizamos los datos del billing_info de ML por sobre los del
+    // buyer. Razón: `/orders/search` de ML omite `buyer.identification` por
+    // privacidad y solo se obtiene RUT confiable vía `/orders/{id}/billing_info`,
+    // que el sync persiste en `billingDocNumber` / `billingName`. Si solo
+    // miramos `customerDocNumber` todas las boletas caen al RUT genérico y
+    // chocan al mismo cliente Bsale (síntoma: todas a nombre del primer
+    // cliente creado en la cuenta).
+    //
+    // Fallback `66666666-6` solo si TODOS los campos están vacíos. Esto
+    // permite emitir NC sobre boletas anónimas — el SII exige RUT
+    // identificado en la NC aunque la boleta original no lo tenga.
+    const fullName: string = sale.billingName || sale.customerName || 'Consumidor final'
     const [firstName, ...rest] = fullName.split(' ')
     return {
-      rut: sale.customerDocNumber || '66666666-6',
+      rut: sale.billingDocNumber || sale.customerDocNumber || '66666666-6',
       firstName: firstName || fullName,
       lastName: rest.join(' '),
-      email: sale.customerEmail,
-      phone: sale.customerPhone,
+      email: sale.billingEmail || sale.customerEmail,
+      phone: sale.billingPhone || sale.customerPhone,
       address,
       city: city || municipality,
       municipality: municipality || city,
@@ -687,12 +733,7 @@ export class TaxDocumentsService {
     if (emitter) where.emitter = emitter
     if (saleId) where.saleId = saleId
     if (orderId) where.orderId = orderId
-    if (search) {
-      where.OR = [
-        { folio: { contains: search, mode: 'insensitive' } },
-        { externalId: { contains: search, mode: 'insensitive' } },
-      ]
-    }
+    if (search) where.OR = this.buildSearchOr(search)
     if (placedFrom || placedTo) {
       const range: Record<string, Date> = {}
       if (placedFrom) range.gte = new Date(placedFrom)
