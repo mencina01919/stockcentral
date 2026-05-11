@@ -792,4 +792,66 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       return { success: false, error: `${status ? `[${status}] ` : ''}${msg}`, rawResponse: data }
     }
   }
+
+  // Lista los fiscal_documents subidos a un pack (o orden si no es parte de
+  // un pack). Útil antes de re-subir un DTE: ML devuelve 409 si el pack ya
+  // tiene un PDF, hay que borrarlo primero.
+  // Endpoint: GET /packs/{pack_id}/fiscal_documents
+  async listFiscalDocuments(
+    credentials: DriverCredentials,
+    packOrOrderId: string,
+  ): Promise<{ success: boolean; documents?: Array<{ id: string; filename?: string; type?: string; created?: string }>; error?: string }> {
+    const accessToken = credentials.accessToken
+    if (!accessToken) return { success: false, error: 'ML: accessToken faltante' }
+    try {
+      const url = `${ML_API}/packs/${packOrOrderId}/fiscal_documents`
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 15000,
+      })
+      // ML devuelve { fiscal_documents: [{ id, filename, content_type, ... }] }
+      const list = res.data?.fiscal_documents || res.data?.documents || res.data || []
+      const items = Array.isArray(list) ? list : []
+      return {
+        success: true,
+        documents: items.map((it: any) => ({
+          id: String(it.id ?? it.fiscal_document_id ?? it._id ?? ''),
+          filename: it.filename,
+          type: it.content_type || it.type,
+          created: it.date_created || it.created,
+        })).filter((it: any) => it.id),
+      }
+    } catch (err: any) {
+      const status = err?.response?.status
+      const data = err?.response?.data
+      const msg = data?.message || data?.error || err?.message || 'ML listFiscalDocuments: error'
+      return { success: false, error: `${status ? `[${status}] ` : ''}${msg}` }
+    }
+  }
+
+  // Elimina un fiscal_document previamente subido. Necesario porque ML
+  // responde 409 al re-subir si ya existe un PDF en el pack (rechaza
+  // reemplazos vía POST).
+  // Endpoint: DELETE /packs/{pack_id}/fiscal_documents/{fiscal_document_id}
+  async deleteFiscalDocument(
+    credentials: DriverCredentials,
+    packOrOrderId: string,
+    fiscalDocumentId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const accessToken = credentials.accessToken
+    if (!accessToken) return { success: false, error: 'ML: accessToken faltante' }
+    try {
+      const url = `${ML_API}/packs/${packOrOrderId}/fiscal_documents/${fiscalDocumentId}`
+      await axios.delete(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 15000,
+      })
+      return { success: true }
+    } catch (err: any) {
+      const status = err?.response?.status
+      const data = err?.response?.data
+      const msg = data?.message || data?.error || err?.message || 'ML deleteFiscalDocument: error'
+      return { success: false, error: `${status ? `[${status}] ` : ''}${msg}` }
+    }
+  }
 }

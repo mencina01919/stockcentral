@@ -88,6 +88,17 @@ export class ConnectionsController {
     return this.connectionsService.triggerSync(tenantId, id)
   }
 
+  @Get(':id/sync-progress')
+  @ApiOperation({ summary: 'Consultar progreso de jobs lanzados por /sync' })
+  @ApiQuery({ name: 'jobs', required: true, description: 'IDs de jobs separados por coma' })
+  syncProgress(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Query('jobs') jobs: string,
+  ) {
+    return this.connectionsService.getSyncProgress(tenantId, id, jobs)
+  }
+
   @Post(':id/test')
   @ApiOperation({ summary: 'Probar credenciales de la conexión' })
   testConnection(@TenantId() tenantId: string, @Param('id') id: string) {

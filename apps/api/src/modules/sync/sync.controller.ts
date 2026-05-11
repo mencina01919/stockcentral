@@ -60,4 +60,18 @@ export class SyncController {
   cleanupBogusMappings(@TenantId() tenantId: string) {
     return this.syncService.cleanupBogusMappings(tenantId)
   }
+
+  // Diagnóstico: ejecuta updateProduct + updateStock para un producto puntual
+  // y devuelve la respuesta cruda del marketplace. No actualiza mappings ni
+  // crea logs — sirve solo para inspeccionar el shape XML y la respuesta de
+  // la API externa cuando el sync "dice success" pero el precio no cambia.
+  @Post('connections/:id/diag-push/:productId')
+  @ApiOperation({ summary: 'Diagnóstico: push de un producto y devuelve respuesta cruda' })
+  diagPushProduct(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Param('productId') productId: string,
+  ) {
+    return this.syncService.diagPushSingle(tenantId, connectionId, productId)
+  }
 }

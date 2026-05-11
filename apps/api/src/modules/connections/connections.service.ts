@@ -230,6 +230,21 @@ export class ConnectionsService {
     return this.syncService.triggerFullSync(tenantId, id)
   }
 
+  // Devuelve el estado agregado de un conjunto de jobs. El frontend invoca
+  // este endpoint repetidamente con los IDs devueltos por triggerSync hasta
+  // recibir `done: true`, momento en el que muestra el toast de cierre.
+  async getSyncProgress(tenantId: string, id: string, jobsParam: string) {
+    await this.findOne(tenantId, id) // valida que la conexión existe en el tenant
+    const ids = (jobsParam || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (ids.length === 0) {
+      throw new BadRequestException('Parametro "jobs" vacío')
+    }
+    return this.syncService.getJobsStatus(ids)
+  }
+
   async testConnection(tenantId: string, id: string) {
     const connection = await this.findOne(tenantId, id)
     // Facturadores tienen su propia interfaz (ITaxDocumentEmitter) y no
