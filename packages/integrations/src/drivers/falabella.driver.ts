@@ -369,6 +369,12 @@ export class FalabellaDriver implements IMarketplaceDriver {
 
   // ProductUpdate — same shape as ProductCreate but with Action=ProductUpdate
   // Docs: https://developers.falabella.com/reference/productupdate
+  //
+  // OJO: Price/SalePrice/Stock NO van en la raíz de <Product>. Tienen que ir
+  // dentro de <BusinessUnits><BusinessUnit>...</BusinessUnit></BusinessUnits>.
+  // Si se envían en raíz, la API los descarta silenciosamente (acepta el
+  // request pero no actualiza el precio). Lo descubrimos porque el cron de
+  // outbound usaba Price en raíz y Falabella nunca reflejaba los cambios.
   async updateProduct(
     credentials: DriverCredentials,
     externalId: string,
@@ -377,17 +383,32 @@ export class FalabellaDriver implements IMarketplaceDriver {
   ): Promise<SyncResult> {
     try {
       const client = this.buildClient(credentials, config)
+      const cfg = (config || {}) as Record<string, unknown>
       const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-      const fields: string[] = [`<SellerSku>${esc(externalId)}</SellerSku>`]
-      if (product.title) fields.push(`<Name>${esc(product.title)}</Name>`)
-      if (product.description) fields.push(`<Description>${esc(product.description)}</Description>`)
+      // Raíz de <Product>: solo identificación y campos descriptivos.
+      const topFields: string[] = [`<SellerSku>${esc(externalId)}</SellerSku>`]
+      if (product.title) topFields.push(`<Name>${esc(product.title)}</Name>`)
+      if (product.description) topFields.push(`<Description>${esc(product.description)}</Description>`)
+
+      // BusinessUnits: precio y stock. Operador 'facl' = Falabella Chile por
+      // default; se sobreescribe vía config.operatorCode si la cuenta opera
+      // en Tottus/Sodimac/Linio.
+      const operatorCode = String(cfg.operatorCode || 'facl')
+      const buFields: string[] = [`<OperatorCode>${esc(operatorCode)}</OperatorCode>`]
       if (product.price !== undefined) {
-        fields.push(`<Price>${product.price.toFixed(2)}</Price>`)
-        fields.push(`<SalePrice>${product.price.toFixed(2)}</SalePrice>`)
+        buFields.push(`<Price>${product.price.toFixed(2)}</Price>`)
+        buFields.push(`<SalePrice>${product.price.toFixed(2)}</SalePrice>`)
+      }
+      if (product.stock !== undefined) {
+        buFields.push(`<Stock>${product.stock}</Stock>`)
       }
 
-      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?><Request><Product>${fields.join('')}</Product></Request>`
+      const xmlPayload =
+        `<?xml version="1.0" encoding="UTF-8"?><Request><Product>` +
+        topFields.join('') +
+        `<BusinessUnits><BusinessUnit>${buFields.join('')}</BusinessUnit></BusinessUnits>` +
+        `</Product></Request>`
       const params = this.buildParams(credentials, 'ProductUpdate')
 
       const res = await client.post('', xmlPayload, {
@@ -395,6 +416,15 @@ export class FalabellaDriver implements IMarketplaceDriver {
         headers: { 'Content-Type': 'text/xml; charset=UTF-8' },
       })
 
+      // Falabella devuelve 200 OK incluso cuando la operación falla — el
+      // error viene en `ErrorResponse` dentro del body. Sin inspeccionar este
+      // shape, marcábamos como success requests que Falabella había rechazado
+      // (ej. payloads duplicados durante reprocesamiento de feed).
+      const errResp = res.data?.ErrorResponse
+      if (errResp) {
+        const msg = errResp?.Head?.ErrorMessage || errResp?.Body?.ErrorMessage || 'Falabella ErrorResponse sin mensaje'
+        return { success: false, error: msg, rawResponse: res.data }
+      }
       return { success: true, externalId, rawResponse: res.data }
     } catch (err: any) {
       const msg =
@@ -447,8 +477,28 @@ export class FalabellaDriver implements IMarketplaceDriver {
     }
   }
 
-  // UpdateStock — dedicated action, different from ProductUpdate
+  // UpdateStock — action dedicada, body distinto a ProductUpdate.
   // Docs: https://developers.falabella.com/v500/reference/updatestock
+  //
+  // Shape REAL verificado contra la API (mayo 2026). La doc pública vieja
+  // muestra <Request><Product><SellerSku>...</SellerSku><Quantity>...</Quantity>
+  // </Product></Request> y eso provoca ErrorCode 101 "Entrada no válida".
+  // La cuenta actual exige el shape de Warehouse/Stock:
+  //
+  //   <Request>
+  //     <Warehouse>
+  //       <Stock>
+  //         <SellerWarehousesId>...</SellerWarehousesId>  (opcional según cuenta)
+  //         <GSCFacilityId>...</GSCFacilityId>             (opcional según cuenta)
+  //         <SellerSku>...</SellerSku>
+  //         <Quantity>...</Quantity>
+  //       </Stock>
+  //     </Warehouse>
+  //   </Request>
+  //
+  // Los IDs de bodega vienen de `config.sellerWarehousesId` y
+  // `config.gscFacilityId`; si están vacíos, se omiten (Falabella usa la
+  // bodega default del seller en ese caso).
   async updateStock(
     credentials: DriverCredentials,
     externalId: string,
@@ -458,13 +508,19 @@ export class FalabellaDriver implements IMarketplaceDriver {
     try {
       const client = this.buildClient(credentials, config)
       const cfg = (config || {}) as Record<string, unknown>
+      const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-      const fields = [`<SellerSku>${externalId}</SellerSku>`, `<Quantity>${stock}</Quantity>`]
-      if (cfg.sellerWarehouseId) {
-        fields.push(`<SellerWarehouseId>${cfg.sellerWarehouseId}</SellerWarehouseId>`)
-      }
+      const stockFields: string[] = []
+      // Acepta tanto sellerWarehousesId (nuevo, plural según doc) como
+      // sellerWarehouseId (singular, por compat con configs anteriores).
+      const swId = cfg.sellerWarehousesId ?? cfg.sellerWarehouseId
+      if (swId) stockFields.push(`<SellerWarehousesId>${esc(String(swId))}</SellerWarehousesId>`)
+      if (cfg.gscFacilityId) stockFields.push(`<GSCFacilityId>${esc(String(cfg.gscFacilityId))}</GSCFacilityId>`)
+      stockFields.push(`<SellerSku>${esc(externalId)}</SellerSku>`)
+      stockFields.push(`<Quantity>${stock}</Quantity>`)
 
-      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?><Request><Product>${fields.join('')}</Product></Request>`
+      const xmlPayload =
+        `<?xml version="1.0" encoding="UTF-8"?><Request><Warehouse><Stock>${stockFields.join('')}</Stock></Warehouse></Request>`
       const params = this.buildParams(credentials, 'UpdateStock')
 
       const res = await client.post('', xmlPayload, {
@@ -472,6 +528,11 @@ export class FalabellaDriver implements IMarketplaceDriver {
         headers: { 'Content-Type': 'text/xml; charset=UTF-8' },
       })
 
+      const errResp = res.data?.ErrorResponse
+      if (errResp) {
+        const msg = errResp?.Head?.ErrorMessage || errResp?.Body?.ErrorMessage || 'Falabella ErrorResponse sin mensaje'
+        return { success: false, error: msg, rawResponse: res.data }
+      }
       return { success: true, externalId, rawResponse: res.data }
     } catch (err: any) {
       const msg =

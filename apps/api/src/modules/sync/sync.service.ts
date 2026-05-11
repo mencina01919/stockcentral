@@ -167,6 +167,13 @@ export class SyncService {
       },
     })
 
+    // El cron usa el precio calculado por marketplace (comisión + margen +
+    // envío) si está configurado, y cae a basePrice si no. Esto debe ser
+    // consistente con pushProductToMarketplaces (push manual). Sin esto, el
+    // cron pushea siempre basePrice raw aunque el operador haya configurado
+    // un precio específico para el marketplace.
+    const providerKey = connection.provider
+
     let synced = 0
     let errors = 0
     let suspiciousSkipped = 0
@@ -202,17 +209,36 @@ export class SyncService {
       }
 
       const stock = product.inventory.reduce((s, i) => s + i.quantity, 0)
+      const pricing = (product as any).marketplacePricing as Record<string, any> | null
+      const providerPricing = pricing?.[providerKey]
+      const price = providerPricing?.calculatedPrice
+        ? Number(providerPricing.calculatedPrice)
+        : Number(product.basePrice)
       const syncInput = {
         sku: product.sku,
         title: product.name,
         description: product.description || undefined,
-        price: Number(product.basePrice),
+        price,
         stock,
         images: (product.images as string[] | null) || [],
       }
 
       try {
         const result = await driver.updateProduct(credentials, mapping.marketplaceProductId, syncInput, config)
+
+        // Stock se sincroniza por endpoint dedicado en drivers donde aplique
+        // (Falabella tiene UpdateStock separado; si el updateProduct también
+        // soporta stock — caso ML — la doble llamada es idempotente). Sin
+        // este paso el cron actualizaba precio pero no stock en Falabella.
+        if (result.success) {
+          try {
+            await driver.updateStock(credentials, mapping.marketplaceProductId, stock, config)
+          } catch (stockErr: any) {
+            this.logger.warn(
+              `Stock update failed for product ${product.id} on ${connection.provider}: ${stockErr?.message || stockErr}`,
+            )
+          }
+        }
 
         if (result.success) {
           consecutiveErrors = 0
@@ -640,6 +666,103 @@ export class SyncService {
       this.syncQueue.getFailedCount(),
     ])
     return { waiting, active, completed, failed }
+  }
+
+  // Diagnóstico puntual de push hacia un marketplace. Ejecuta updateProduct +
+  // updateStock SIN tocar mappings ni logs, y devuelve toda la respuesta
+  // cruda. Útil para depurar casos donde el cron dice success pero el
+  // marketplace no aplica el cambio.
+  async diagPushSingle(tenantId: string, connectionId: string, productId: string) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    const driver = getDriver(connection.provider)
+    const credentials = connection.credentials as Record<string, string>
+    const config = connection.config as Record<string, unknown> | undefined
+
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      include: {
+        inventory: {
+          where: { variantId: null, warehouse: { warehouseType: { in: ['online', 'store'] } } },
+        },
+        marketplaceMappings: { where: { connectionId } },
+      },
+    })
+    if (!product) throw new NotFoundException(`Producto ${productId} no encontrado`)
+
+    const mapping = product.marketplaceMappings[0]
+    if (!mapping?.marketplaceProductId) {
+      return {
+        ok: false,
+        reason: 'no_mapping',
+        message: 'El producto no tiene marketplaceProductId. Hay que publicarlo primero.',
+        product: { id: product.id, sku: product.sku, name: product.name },
+      }
+    }
+
+    const stock = product.inventory.reduce((s, i) => s + i.quantity, 0)
+    const pricing = (product as any).marketplacePricing as Record<string, any> | null
+    const providerPricing = pricing?.[connection.provider]
+    const price = providerPricing?.calculatedPrice
+      ? Number(providerPricing.calculatedPrice)
+      : Number(product.basePrice)
+
+    const updateRes = await driver.updateProduct(
+      credentials,
+      mapping.marketplaceProductId,
+      { sku: product.sku, title: product.name, description: product.description || undefined, price, stock },
+      config,
+    )
+    const stockRes = await driver.updateStock(
+      credentials,
+      mapping.marketplaceProductId,
+      stock,
+      config,
+    )
+
+    return {
+      ok: true,
+      product: { id: product.id, sku: product.sku, name: product.name, basePrice: product.basePrice },
+      mapping: {
+        marketplaceProductId: mapping.marketplaceProductId,
+        syncStatus: mapping.syncStatus,
+        lastSyncAt: mapping.lastSyncAt,
+        errorMessage: mapping.errorMessage,
+      },
+      payload: { price, stock, calculatedFrom: providerPricing?.calculatedPrice ? 'marketplacePricing.calculatedPrice' : 'basePrice' },
+      updateProduct: updateRes,
+      updateStock: stockRes,
+    }
+  }
+
+  // Estado de jobs específicos lanzados por triggerFullSync. El frontend hace
+  // poll a este endpoint con los jobIds que recibió en la respuesta del POST
+  // /sync para saber cuándo termina la sincronización completa.
+  async getJobsStatus(jobIds: string[]) {
+    const results: Array<{
+      jobId: string
+      state: string
+      progress?: number
+      returnvalue?: unknown
+      failedReason?: string
+    }> = []
+    let done = true
+    for (const id of jobIds) {
+      const job = await this.syncQueue.getJob(id)
+      if (!job) {
+        // Bull descarta jobs completados al cumplir TTL/retención; si no lo
+        // encuentra asumimos completed (lo más probable es que ya terminó y
+        // se limpió, no que nunca existió).
+        results.push({ jobId: id, state: 'completed' })
+        continue
+      }
+      const state = await job.getState()
+      const entry: any = { jobId: id, state }
+      if (state === 'completed') entry.returnvalue = job.returnvalue
+      else if (state === 'failed') entry.failedReason = job.failedReason
+      else done = false // active / waiting / delayed / paused → aún no termina
+      results.push(entry)
+    }
+    return { done, jobs: results }
   }
 
   // ─── Private Helpers ──────────────────────────────────────────────────────
