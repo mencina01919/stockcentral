@@ -28,16 +28,17 @@ model Tenant {
   branding     Json?
   metadata     Json?
 
-  users         User[]
-  products      Product[]
-  orders        Order[]
-  sales         Sale[]
-  connections   Connection[]
-  warehouses    Warehouse[]
-  webhooks      Webhook[]
-  taxDocuments  TaxDocument[]
-  bsaleClients  BsaleClientCache[]
-  webhookEvents MarketplaceWebhookEvent[]
+  users             User[]
+  products          Product[]
+  orders            Order[]
+  sales             Sale[]
+  connections       Connection[]
+  warehouses        Warehouse[]
+  webhooks          Webhook[]
+  taxDocuments      TaxDocument[]
+  bsaleClients      BsaleClientCache[]
+  webhookEvents     MarketplaceWebhookEvent[]
+  marketplaceOffers MarketplaceOffer[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -109,6 +110,7 @@ model Product {
   variants            ProductVariant[]
   inventory           Inventory[]
   marketplaceMappings MarketplaceMapping[]
+  marketplaceOffers   MarketplaceOffer[]
   stockTransfers      StockTransfer[]
 
   createdAt DateTime @default(now())
@@ -419,6 +421,7 @@ model Connection {
 
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   marketplaceMappings MarketplaceMapping[]
+  marketplaceOffers   MarketplaceOffer[]
   syncLogs            SyncLog[]
 
   createdAt DateTime @default(now())
@@ -452,6 +455,56 @@ model MarketplaceMapping {
   @@unique([productId, connectionId])
   @@index([syncStatus])
   @@index([connectionId])
+}
+
+// =====================
+// MARKETPLACE OFFERS
+// =====================
+// Ofertas controladas desde StockCentral. Fuente de verdad local; el
+// orquestador (OffersScheduler) empuja las ofertas al marketplace según
+// startDate/endDate y limpia cuando expiran. Regla: descuento por porcentaje
+// sobre `Product.marketplacePricing[provider].calculatedPrice`. El precio
+// resultante (`calculatedSalePrice`) se persiste como snapshot al sincronizar
+// para auditoría — si el `calculatedPrice` del producto cambia mientras hay
+// oferta activa, el scheduler detecta el drift y re-sincroniza.
+model MarketplaceOffer {
+  id           String   @id @default(uuid())
+  tenantId     String
+  productId    String
+  connectionId String
+  // Regla: descuento como porcentaje entero o decimal (0 < x < 100).
+  discountPct  Decimal  @db.Decimal(5, 2)
+  startDate    DateTime
+  endDate      DateTime
+  // scheduled (futura) | active (vigente y empujada) | expired | cancelled
+  status       String   @default("scheduled")
+  // Snapshot del precio final calculado al momento del último sync. Se
+  // recomputa cuando se activa la oferta o cuando cambia el calculatedPrice
+  // base. Sirve para mostrar en UI y para detectar drift.
+  calculatedSalePrice  Decimal? @db.Decimal(12, 2)
+  // Snapshot del precio normal del producto al activar la oferta. Útil
+  // para reportes "ganaste vs precio normal".
+  basePriceAtActivation Decimal? @db.Decimal(12, 2)
+  // Estado del push al marketplace (separado del status de la oferta).
+  syncStatus   String   @default("pending") // pending | success | failed
+  syncedAt     DateTime?
+  syncError    String?
+  // Origen: 'local' = creada en StockCentral; 'detected_external' = detectada
+  // en el marketplace sin origen local (oferta hecha a mano en Sellercenter).
+  source       String   @default("local")
+  notes        String?
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([productId, connectionId])
+  @@index([status, startDate])
+  @@index([status, endDate])
 }
 
 // =====================

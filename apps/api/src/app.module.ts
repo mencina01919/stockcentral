@@ -23,6 +23,7 @@ import { CatalogSourceModule } from './modules/catalog-source/catalog-source.mod
 import { TaxDocumentsModule } from './modules/tax-documents/tax-documents.module'
 import { BillingModule } from './modules/billing/billing.module'
 import { InboundWebhooksModule } from './modules/inbound-webhooks/inbound-webhooks.module'
+import { OffersModule } from './modules/offers/offers.module'
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { InboundWebhooksModule } from './modules/inbound-webhooks/inbound-webhoo
     TaxDocumentsModule,
     BillingModule,
     InboundWebhooksModule,
+    OffersModule,
   ],
 })
 export class AppModule {}
