@@ -913,12 +913,32 @@ function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: stri
     )
   }
 
+  // Los valores reales de syncStatus que envía el backend son:
+  //   - 'success' tras un sync OK (mapeo existente y funcional)
+  //   - 'error' cuando el último sync falló (provider down, validación, etc.)
+  //   - 'pending' mapeo creado pero aún no sincronizado
+  //   - 'sku_not_found' detect-by-sku no encontró match
+  //   - 'sku_duplicate' detect-by-sku encontró múltiples
+  //   - 'unlinked' (calculado por el service) cuando no hay mapping
+  // Antes faltaban 'success' y 'error', que caían al fallback 'unlinked' y
+  // mostraban "NO VINCULADO" aunque el producto sí estuviera vinculado.
   const STATUS_TONE: Record<string, { tone: 'ok' | 'warn' | 'err' | 'low'; label: string }> = {
-    connected: { tone: 'ok', label: 'VINCULADO' },
+    success: { tone: 'ok', label: 'VINCULADO' },
+    connected: { tone: 'ok', label: 'VINCULADO' }, // legacy/alias
+    error: { tone: 'err', label: 'ERROR DE SYNC' },
     sku_not_found: { tone: 'warn', label: 'SIN COINCIDENCIA' },
     sku_duplicate: { tone: 'err', label: 'SKU DUPLICADO' },
     unlinked: { tone: 'low', label: 'NO VINCULADO' },
     pending: { tone: 'low', label: 'PENDIENTE' },
+  }
+
+  // Selección segura: si el doc tiene marketplaceProductId y el syncStatus
+  // no está mapeado, asumimos VINCULADO con tono neutro en lugar de caer a
+  // "NO VINCULADO".
+  const resolveStatus = (s: any) => {
+    if (STATUS_TONE[s.syncStatus]) return STATUS_TONE[s.syncStatus]
+    if (s.linked) return { tone: 'ok' as const, label: 'VINCULADO' }
+    return STATUS_TONE.unlinked
   }
 
   return (
@@ -953,7 +973,7 @@ function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: stri
 
       <div className="flex flex-col gap-2.5">
         {status.map((s: any) => {
-          const info = STATUS_TONE[s.syncStatus] || STATUS_TONE.unlinked
+          const info = resolveStatus(s)
           const isBusy = busy === s.connectionId
           const providerName = String(s.provider || '').toUpperCase()
           return (
@@ -1125,10 +1145,17 @@ function MarketplacePricingBlock({ product }: { product: any }) {
     queryFn: () => api.get(`/products/${product.id}/marketplace-pricing`).then(r => r.data),
   })
 
+  // Solo destinos reales de sync — excluimos facturadores (Bsale, type='billing')
+  // y catalog sources (EYLSTORE, isCatalogSource=true), igual que en el
+  // módulo de Sincronización del mismo producto.
   const { data: connections = [] } = useQuery<any[]>({
     queryKey: ['connections-marketplace'],
     queryFn: () => api.get('/connections').then(r =>
-      r.data.filter((c: any) => c.status === 'connected')
+      r.data.filter((c: any) =>
+        c.status === 'connected' &&
+        (c.type === 'marketplace' || c.type === 'ecommerce') &&
+        !c.isCatalogSource
+      )
     ),
   })
 

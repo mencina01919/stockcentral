@@ -254,8 +254,17 @@ export class ProductsService {
     })
     if (!product) throw new NotFoundException('Producto no encontrado')
 
+    // Solo destinos reales de sync — excluimos:
+    //   - Facturadores (type='billing', ej. Bsale): no son marketplaces.
+    //   - Catalog sources (isCatalogSource=true, ej. EYLSTORE): son la fuente
+    //     del catálogo maestro, no destino de publicación. Aparecen mapeados
+    //     pero no se sincronizan hacia ellos.
     const connections = await this.prisma.connection.findMany({
-      where: { tenantId, type: { in: ['marketplace', 'ecommerce'] } },
+      where: {
+        tenantId,
+        type: { in: ['marketplace', 'ecommerce'] },
+        isCatalogSource: false,
+      },
       select: { id: true, provider: true, name: true, status: true },
     })
 
