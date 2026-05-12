@@ -43,11 +43,24 @@ const SANDBOX_CLIENT_SECRET = 'P1izCpF1aCanYQPYzfbAmHZRI8s2hTf8oVVUGOaFewLzknSsI
  * Config (stored in Connection.config):
  *   - sandbox?: true to use sandbox credentials (overrides clientId/clientSecret)
  */
+// Walmart Chile aplica rate limit por seller. Sin throttle el cron sincroniza
+// docenas de productos a 102 req/min (51 productos × updateProduct+updateStock)
+// y gatilla 429 → circuit breaker → connection auto-disabled. Mantenemos un
+// gap mínimo entre requests y un retry exponencial sobre 429.
+const MIN_REQUEST_GAP_MS = 500
+
 export class LiderDriver implements IMarketplaceDriver {
   readonly provider = 'lider'
 
   // Token cache keyed by clientId. Token expires in 15 min; we refresh at <2 min.
   private tokenCache = new Map<string, { token: string; expiresAt: number }>()
+
+  // Mutex chain por clientId: cada request awaitea la cola previa antes de
+  // disparar. Esto garantiza serialización real aunque N jobs en paralelo
+  // construyan N axios instances — el "lock" es a nivel driver, no cliente.
+  // Sin esto, el interceptor leía/escribía `lastRequestAt` con races y dos
+  // requests salían a la vez, gatillando 429 de Walmart.
+  private requestChain = new Map<string, Promise<void>>()
 
   private getClientCredentials(credentials: DriverCredentials, config?: DriverConfig): { clientId: string; clientSecret: string } {
     if (config?.sandbox === true) {
@@ -114,7 +127,7 @@ export class LiderDriver implements IMarketplaceDriver {
     const { clientId, clientSecret } = this.getClientCredentials(credentials, config)
     const token = await this.getAccessToken(credentials, config)
     const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
-    return axios.create({
+    const client = axios.create({
       baseURL: this.getBaseUrl(config),
       timeout: 30000,
       headers: {
@@ -128,6 +141,69 @@ export class LiderDriver implements IMarketplaceDriver {
         Accept: 'application/json',
       },
     })
+
+    // Throttle serializado por seller con mutex chain. Cada request engancha
+    // su espera al final de la cadena previa, garantizando que dos jobs en
+    // paralelo no salgan al mismo tiempo. Sin esto el cron en paralelo
+    // dispara 429 de Walmart aunque cada instancia individual respete su
+    // propio gap.
+    client.interceptors.request.use(async (cfg) => {
+      const prev = this.requestChain.get(clientId) ?? Promise.resolve()
+      let release!: () => void
+      const next = new Promise<void>((r) => { release = r })
+      // Sumamos nuestro lock al final de la cadena ANTES de awaitear
+      this.requestChain.set(clientId, prev.then(() => next))
+      await prev
+      // Solo después de adquirir el lock dormimos el gap mínimo
+      await new Promise((r) => setTimeout(r, MIN_REQUEST_GAP_MS))
+      // Liberar el lock al final del request (response interceptor) — pero
+      // como axios no expone hook directo post-response sincrónico, lo
+      // soltamos en el response success/error abajo y guardamos `release`
+      // en cfg para acceso desde el interceptor de respuesta.
+      ;(cfg as any).__release = release
+      return cfg
+    })
+
+    const releaseLock = (cfg: any) => {
+      const r = cfg?.__release
+      if (typeof r === 'function') {
+        cfg.__release = null
+        r()
+      }
+    }
+
+    // Response interceptor: libera el mutex y reintenta sobre 429.
+    client.interceptors.response.use(
+      (res) => {
+        releaseLock(res.config)
+        return res
+      },
+      async (err) => {
+        const status = err?.response?.status
+        const cfg: any = err?.config
+        if (status !== 429 || !cfg) {
+          releaseLock(cfg)
+          throw err
+        }
+        cfg.__retryCount = (cfg.__retryCount ?? 0) + 1
+        if (cfg.__retryCount > 3) {
+          releaseLock(cfg)
+          throw err
+        }
+        // Liberamos el lock antes de dormir para que la cadena avance — el
+        // siguiente request va a tomar el lock y respetar el gap; nuestro
+        // retry se vuelve a encolar al final.
+        releaseLock(cfg)
+        const retryAfter = parseFloat(err.response.headers?.['retry-after'] ?? '')
+        const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : 1000 * Math.pow(2, cfg.__retryCount)  // 2s, 4s, 8s
+        await new Promise((r) => setTimeout(r, waitMs))
+        return client.request(cfg)
+      },
+    )
+
+    return client
   }
 
   // ─── testConnection ──────────────────────────────────────────────────────────
@@ -158,42 +234,132 @@ export class LiderDriver implements IMarketplaceDriver {
     limit = 50,
   ): Promise<PaginatedResult<MarketplaceProduct>> {
     const client = await this.buildClient(credentials, config)
+
+    // Walmart Chile GMP_ITEM_QUERY_API: limit máximo permitido = 50.
+    // Paginación por offset/limit (no devuelve nextCursor).
+    const PAGE_SIZE = 50
+
+    // Walmart /v3/items no acepta búsqueda nativa. Manejamos `searchQuery`
+    // del caller con dos heurísticas:
+    //  1. Si parece un SKU exacto (alfanumérico corto sin espacios) →
+    //     /v3/items/{sku} directo. Una sola call, instantáneo.
+    //  2. Si es un texto libre → traer TODAS las páginas y filtrar por
+    //     SKU/título client-side. Lider típicamente <500 items por seller,
+    //     manejable.
     const cfg = (config || {}) as Record<string, any>
+    const searchQuery: string | undefined = cfg.searchQuery?.trim()
 
-    // If caller wants all products (limit >= 9999), iterate all pages via nextCursor
-    if (limit >= 9999) {
+    // Enrichment helper: /v3/items no devuelve inventory; lo traemos del
+    // endpoint dedicado. Encolado por el mutex del driver, así una página
+    // de 25 productos tarda ~25×500ms = 12s pero sin gatillar rate limits.
+    const enrichWithStock = async (mp: MarketplaceProduct): Promise<MarketplaceProduct> => {
+      if (!mp.externalSku) return mp
+      try {
+        const r = await client.get(`/v3/inventory`, { params: { sku: mp.externalSku } })
+        const amount = parseInt(r.data?.quantity?.amount ?? '0', 10)
+        return { ...mp, stock: Number.isFinite(amount) ? amount : mp.stock }
+      } catch {
+        // Walmart devuelve 404 cuando el item aún no terminó setup interno
+        // (típico de items recién cargados). Mantenemos el stock=0 inicial.
+        return mp
+      }
+    }
+
+    // Search exacto por SKU (atajo rápido)
+    if (searchQuery && /^[A-Za-z0-9_\-]{1,40}$/.test(searchQuery) && !/\s/.test(searchQuery)) {
+      try {
+        const r = await client.get(`/v3/items/${encodeURIComponent(searchQuery)}`)
+        const data = r.data?.ItemResponse?.[0] ?? r.data
+        if (data) {
+          const mp = this.mapProduct(data)
+          const enriched = await enrichWithStock(mp)
+          return {
+            items: [enriched],
+            total: 1,
+            offset: 0,
+            limit: 1,
+            hasMore: false,
+          }
+        }
+      } catch {
+        // No es un SKU exacto — caemos al modo "traer todos y filtrar"
+      }
+    }
+
+    // Search por texto libre: trae todas las páginas y filtra client-side.
+    if (searchQuery) {
       const allItems: MarketplaceProduct[] = []
-      let nextCursor: string | undefined
+      let pageOffset = 0
       let total = 0
-
-      do {
-        const params: Record<string, any> = { limit: 200 }
-        if (nextCursor) params.nextCursor = nextCursor
+      while (true) {
+        const params: Record<string, any> = { limit: PAGE_SIZE }
+        if (pageOffset > 0) params.offset = pageOffset
         const res = await client.get('/v3/items', { params })
         const batch = res.data?.ItemResponse || []
         total = res.data?.totalItems ?? (allItems.length + batch.length)
         for (const p of batch) allItems.push(this.mapProduct(p))
-        nextCursor = res.data?.nextCursor
-      } while (nextCursor)
+        if (batch.length < PAGE_SIZE || allItems.length >= total) break
+        pageOffset += PAGE_SIZE
+      }
+      const q = searchQuery.toLowerCase()
+      const filtered = allItems.filter(
+        (p) =>
+          (p.externalSku || '').toLowerCase().includes(q) ||
+          (p.title || '').toLowerCase().includes(q) ||
+          (p.externalId || '').toLowerCase().includes(q),
+      )
+      const page = filtered.slice(offset, offset + Math.min(limit, PAGE_SIZE))
+      const enriched = await Promise.all(page.map(enrichWithStock))
+      return {
+        items: enriched,
+        total: filtered.length,
+        offset,
+        limit: page.length,
+        hasMore: offset + page.length < filtered.length,
+      }
+    }
 
-      // Apply pagination slice in memory
+    // If caller wants all products (limit >= 9999), iterate all pages via offset
+    if (limit >= 9999) {
+      const allItems: MarketplaceProduct[] = []
+      let pageOffset = 0
+      let total = 0
+
+      while (true) {
+        const params: Record<string, any> = { limit: PAGE_SIZE }
+        if (pageOffset > 0) params.offset = pageOffset
+        const res = await client.get('/v3/items', { params })
+        const batch = res.data?.ItemResponse || []
+        total = res.data?.totalItems ?? (allItems.length + batch.length)
+        for (const p of batch) allItems.push(this.mapProduct(p))
+        if (batch.length < PAGE_SIZE || allItems.length >= total) break
+        pageOffset += PAGE_SIZE
+      }
+
       const page = allItems.slice(offset, offset + 9999)
+      // Para el caso "todos": NO enrich (50+ items × call = demasiado caro)
       return { items: page, total: allItems.length, offset, limit, hasMore: false }
     }
 
-    // Standard paginated call (used when browsing without caching)
-    const params: Record<string, any> = { limit }
+    // Standard paginated call — cap limit a 50 (máximo de Walmart Chile)
+    const effectiveLimit = Math.min(limit, PAGE_SIZE)
+    const params: Record<string, any> = { limit: effectiveLimit }
     if (offset > 0) params.offset = offset
     const res = await client.get('/v3/items', { params })
     const items = res.data?.ItemResponse || []
     const total = res.data?.totalItems ?? items.length
+    const mapped = items.map((p: any) => this.mapProduct(p))
+
+    // Enrich stock para la página actual. El mutex serializa internamente,
+    // así que aunque hagamos Promise.all las requests salen una por una.
+    const enriched = await Promise.all(mapped.map(enrichWithStock))
 
     return {
-      items: items.map((p: any) => this.mapProduct(p)),
+      items: enriched,
       total,
       offset,
-      limit,
-      hasMore: offset + limit < total,
+      limit: effectiveLimit,
+      hasMore: offset + effectiveLimit < total,
     }
   }
 
@@ -204,8 +370,20 @@ export class LiderDriver implements IMarketplaceDriver {
   ): Promise<MarketplaceProduct | null> {
     try {
       const client = await this.buildClient(credentials, config)
+      // /v3/items/{sku} devuelve { ItemResponse: [{...}] } igual que la lista
       const res = await client.get(`/v3/items/${encodeURIComponent(externalId)}`)
-      return res.data ? this.mapProduct(res.data) : null
+      const data = res.data?.ItemResponse?.[0] ?? res.data
+      if (!data) return null
+      const mp = this.mapProduct(data)
+
+      // Enrich stock desde /v3/inventory (no viene en /v3/items)
+      try {
+        const inv = await client.get(`/v3/inventory`, { params: { sku: externalId } })
+        const amount = parseInt(inv.data?.quantity?.amount ?? '0', 10)
+        if (Number.isFinite(amount)) mp.stock = amount
+      } catch { /* item aún no listo para inventory */ }
+
+      return mp
     } catch {
       return null
     }
@@ -404,6 +582,40 @@ export class LiderDriver implements IMarketplaceDriver {
     return {
       MPItemFeedHeader: header,
       MPItem: [opts.item],
+    }
+  }
+
+  // POST /v3/feeds?feedType=MP_ITEM con archivo Excel via multipart/form-data.
+  // Es la misma vía que el Sellercenter portal usa cuando subes un .xlsx
+  // manualmente. La API acepta tanto JSON como multipart; el multipart con
+  // un Excel bien armado (el mismo que sabemos funciona desde el portal) es
+  // la opción más confiable porque no requiere reverse-engineering del JSON.
+  async uploadItemFeedExcel(
+    credentials: DriverCredentials,
+    fileBuffer: Buffer,
+    filename: string,
+    config?: DriverConfig,
+  ): Promise<any> {
+    const client = await this.buildClient(credentials, config)
+    // FormData global (Node 18+ undici)
+    const fd = new FormData()
+    const blob = new Blob([fileBuffer as any], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    fd.append('file', blob, filename)
+    try {
+      const res = await client.post('/v3/feeds?feedType=MP_ITEM', fd, {
+        // axios + Node FormData: dejar que axios infiera el boundary correcto.
+        headers: { 'Content-Type': undefined as any },
+        maxBodyLength: 25 * 1024 * 1024, // 25 MB
+      })
+      return { success: true, data: res.data }
+    } catch (err: any) {
+      return {
+        success: false,
+        status: err?.response?.status,
+        error: err?.response?.data || err.message,
+      }
     }
   }
 
@@ -648,9 +860,30 @@ export class LiderDriver implements IMarketplaceDriver {
   // ─── Mappers ─────────────────────────────────────────────────────────────────
 
   private mapProduct(data: any): MarketplaceProduct {
-    // Walmart item shape: { sku, productName, status, price, inventory, images }
-    const price = parseFloat(data.price?.currentPrice?.amount || data.price?.currentPrice?.value || '0') || 0
-    const stock = parseInt(data.inventory?.quantity?.amount || '0', 10) || 0
+    // Walmart Chile /v3/items shape verificado con curl:
+    //   { mart, sku, wpid, upc, gtin, productName, shelf, productType,
+    //     price: { currency, amount }, publishedStatus }
+    // /v3/items NO devuelve inventory ni images — stock se enriquece por
+    // /v3/inventory?sku=X en el caller; imágenes hoy quedan vacías
+    // (Walmart no expone galería en /v3/items y /v3/items/:sku tampoco
+    // las trae siempre — pendiente de descubrir endpoint específico).
+    const price =
+      parseFloat(
+        data.price?.amount ??
+        data.price?.currentPrice?.amount ??
+        data.price?.currentPrice?.value ??
+        '0',
+      ) || 0
+
+    // Inventory enrichment se hace en getProducts/getProduct; aquí solo
+    // leemos lo que venga incluido (caso /v3/items/:sku puede tener inventory)
+    const stock = parseInt(
+      data.inventory?.quantity?.amount ??
+      data.inventory?.availableToSellQty ??
+      data.availableToSellQty ??
+      '0',
+      10,
+    ) || 0
 
     const images: string[] = []
     if (data.images?.image) {
@@ -661,9 +894,10 @@ export class LiderDriver implements IMarketplaceDriver {
       })
     }
     if (!images.length && data.imageUrl) images.push(data.imageUrl)
+    if (!images.length && data.mainImageUrl) images.push(data.mainImageUrl)
 
     return {
-      externalId: String(data.sku || data.itemId),
+      externalId: String(data.sku || data.itemId || data.wpid),
       externalSku: data.sku,
       title: data.productName || data.itemDescription?.shortDescription || '',
       description: data.itemDescription?.longDescription,

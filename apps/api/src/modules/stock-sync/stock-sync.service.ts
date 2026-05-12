@@ -46,23 +46,33 @@ export class StockSyncService {
 
     const mappedProductIds = new Set(existingMappings.map((m) => m.productId))
 
-    // Fetch all marketplace products (paginated, max 500 for perf)
+    // Fetch all marketplace products (paginated, max 500 for perf).
+    // Algunos marketplaces capean el page size (Walmart Chile = 50). Usamos
+    // el `limit` que devuelve el driver (effective limit) para avanzar el
+    // offset, en vez de asumir un tamaño fijo.
     let marketProducts: Array<{ externalId: string; externalSku?: string; title: string; stock: number; url?: string }> = []
     try {
-      const page1 = await driver.getProducts(credentials, config, 0, 100)
-      marketProducts = page1.items.map((p) => ({
+      const REQUESTED_PAGE = 100
+      const MAX_TOTAL = 500
+      const mapItem = (p: any) => ({
         externalId: p.externalId,
         externalSku: p.externalSku ?? '',
         title: p.title,
         stock: p.stock,
         url: p.url,
-      }))
+      })
 
-      if (page1.hasMore && page1.total <= 500) {
-        const pages = Math.ceil(Math.min(page1.total, 500) / 100)
-        for (let i = 1; i < pages; i++) {
-          const page = await driver.getProducts(credentials, config, i * 100, 100)
-          marketProducts.push(...page.items.map((p) => ({ externalId: p.externalId, externalSku: p.externalSku ?? '', title: p.title, stock: p.stock, url: p.url })))
+      const page1 = await driver.getProducts(credentials, config, 0, REQUESTED_PAGE)
+      marketProducts = page1.items.map(mapItem)
+      const effectiveLimit = page1.limit || REQUESTED_PAGE
+
+      if (page1.hasMore && page1.total <= MAX_TOTAL) {
+        let off = effectiveLimit
+        while (off < Math.min(page1.total, MAX_TOTAL)) {
+          const page = await driver.getProducts(credentials, config, off, REQUESTED_PAGE)
+          if (!page.items.length) break
+          marketProducts.push(...page.items.map(mapItem))
+          off += page.limit || effectiveLimit
         }
       }
     } catch (err: any) {
