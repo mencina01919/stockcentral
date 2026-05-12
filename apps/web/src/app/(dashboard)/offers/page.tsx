@@ -412,16 +412,24 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
   }
 
   // Buscador filtrado: el endpoint /products acepta connectionId para
-  // devolver solo productos con mapping activo en esa conexión.
-  const { data: products } = useQuery({
+  // devolver solo productos con mapping activo en esa conexión. Lo
+  // habilitamos apenas hay marketplace seleccionado para listar TODOS los
+  // productos publicados (no requiere que el usuario escriba). Si escribe,
+  // filtra. Pensado para casos con pocos productos donde el operador quiere
+  // simplemente elegir uno de la lista.
+  const { data: products, isLoading: loadingProducts } = useQuery({
     queryKey: ['products-search', productQuery, connectionId],
     queryFn: () =>
       api
         .get('/products', {
-          params: { search: productQuery, limit: 10, connectionId },
+          params: {
+            ...(productQuery.length >= 2 ? { search: productQuery } : {}),
+            limit: 20,
+            connectionId,
+          },
         })
         .then((r) => r.data),
-    enabled: productQuery.length >= 2 && !!connectionId,
+    enabled: !!connectionId,
   })
 
   // Cuando se selecciona un producto, prellenamos el precio normal con el
@@ -584,58 +592,76 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                 <input
                   value={productQuery}
                   onChange={(e) => setProductQuery(e.target.value)}
-                  placeholder="Buscar por SKU o nombre (min 2 caracteres)…"
+                  placeholder={`Filtrar... (${products?.meta?.total ?? 0} producto${products?.meta?.total === 1 ? '' : 's'} publicado${products?.meta?.total === 1 ? '' : 's'})`}
                   className="sc-input"
                   style={{ width: '100%' }}
                 />
-                {productQuery.length >= 2 && (
-                  <div
-                    style={{
-                      marginTop: 6,
-                      border: '1px solid var(--sc-line-soft)',
-                      borderRadius: 8,
-                      maxHeight: 240,
-                      overflow: 'auto',
-                    }}
-                  >
-                    {(products?.data || []).length === 0 ? (
-                      <div
-                        style={{
-                          padding: '10px 12px',
-                          fontSize: 11,
-                          color: 'var(--sc-text-low)',
-                        }}
-                      >
-                        Sin productos publicados en este marketplace que coincidan con "{productQuery}".
-                      </div>
-                    ) : (
-                      products.data.slice(0, 10).map((p: any) => {
-                        const conn = eligibleConnections.find((c: any) => c.id === connectionId)
-                        const pricing = (p.marketplacePricing || {}) as any
-                        const calc = conn ? pricing[conn.provider]?.calculatedPrice : null
-                        return (
-                          <button
-                            key={p.id}
-                            onClick={() => onSelectProduct(p)}
-                            className="w-full text-left"
-                            style={{
-                              padding: '8px 12px',
-                              borderBottom: '1px solid var(--sc-line-faint)',
-                              background: 'transparent',
-                              border: 'none',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            <div style={{ fontSize: 12, color: 'var(--sc-text-hi)' }}>{p.name}</div>
-                            <div className="sc-mono" style={{ fontSize: 10, color: 'var(--sc-text-low)' }}>
-                              SKU {p.sku} · precio mkt ${Number(calc || p.basePrice).toLocaleString('es-CL')}
-                            </div>
-                          </button>
-                        )
-                      })
-                    )}
-                  </div>
-                )}
+                <div
+                  style={{
+                    marginTop: 6,
+                    border: '1px solid var(--sc-line-soft)',
+                    borderRadius: 8,
+                    maxHeight: 280,
+                    overflow: 'auto',
+                  }}
+                >
+                  {loadingProducts ? (
+                    <div
+                      style={{
+                        padding: '14px 12px',
+                        fontSize: 11,
+                        color: 'var(--sc-text-low)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Cargando productos...
+                    </div>
+                  ) : (products?.data || []).length === 0 ? (
+                    <div
+                      style={{
+                        padding: '14px 12px',
+                        fontSize: 11,
+                        color: 'var(--sc-text-low)',
+                      }}
+                    >
+                      {productQuery.length >= 2
+                        ? `Sin productos publicados en este marketplace que coincidan con "${productQuery}".`
+                        : 'No hay productos publicados en este marketplace todavía. Publica al menos uno desde el módulo de Publicaciones.'}
+                    </div>
+                  ) : (
+                    products.data.map((p: any) => {
+                      const conn = eligibleConnections.find((c: any) => c.id === connectionId)
+                      const pricing = (p.marketplacePricing || {}) as any
+                      const calc = conn ? pricing[conn.provider]?.calculatedPrice : null
+                      return (
+                        <button
+                          key={p.id}
+                          onClick={() => onSelectProduct(p)}
+                          className="w-full text-left"
+                          style={{
+                            padding: '10px 12px',
+                            borderBottom: '1px solid var(--sc-line-faint)',
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: 'pointer',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = '#f9fafb')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <div style={{ fontSize: 12, color: 'var(--sc-text-hi)', fontWeight: 500 }}>
+                            {p.name}
+                          </div>
+                          <div className="sc-mono" style={{ fontSize: 10, color: 'var(--sc-text-low)' }}>
+                            SKU {p.sku} · precio mkt ${Number(calc || p.basePrice).toLocaleString('es-CL')}
+                          </div>
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
               </>
             )}
           </div>
