@@ -77,6 +77,7 @@ COPY --from=builder /app/packages/database/node_modules ./packages/database/node
 
 COPY --from=builder /app/packages/integrations/package.json ./packages/integrations/
 COPY --from=builder /app/packages/integrations/dist ./packages/integrations/dist
+COPY --from=builder /app/packages/integrations/node_modules ./packages/integrations/node_modules
 
 COPY --from=builder /app/packages/types/package.json ./packages/types/
 COPY --from=builder /app/packages/types/src ./packages/types/src
