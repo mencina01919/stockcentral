@@ -44,7 +44,7 @@ export class OffersService {
   }
 
   async create(tenantId: string, dto: CreateOfferDto) {
-    const product = await this.prisma.product.findFirst({
+    let product = await this.prisma.product.findFirst({
       where: { id: dto.productId, tenantId },
     })
     if (!product) throw new NotFoundException('Producto no encontrado')
@@ -59,6 +59,34 @@ export class OffersService {
     if (endDate <= startDate) {
       throw new BadRequestException('endDate debe ser posterior a startDate')
     }
+
+    // Si el operador editó el precio normal desde el modal, lo sobreescribimos
+    // ANTES de derivar el descuento y antes de validar overlaps.
+    if (dto.overrideCalculatedPrice !== undefined) {
+      const pricing = ((product.marketplacePricing as any) || {}) as Record<string, any>
+      const existing = pricing[connection.provider] || {}
+      const updated = await this.prisma.product.update({
+        where: { id: product.id },
+        data: {
+          marketplacePricing: {
+            ...pricing,
+            [connection.provider]: {
+              ...existing,
+              calculatedPrice: Math.round(dto.overrideCalculatedPrice),
+              manualOverride: true,
+              manualOverrideAt: new Date().toISOString(),
+            },
+          } as any,
+        },
+      })
+      product = updated
+      this.logger.log(
+        `Producto ${product.sku}: calculatedPrice[${connection.provider}] sobreescrito a ${dto.overrideCalculatedPrice} desde modal de oferta`,
+      )
+    }
+
+    // Resolver el descuento: porcentaje O precio fijo, exactamente uno.
+    const { discountPct, calculatedSalePrice } = this.resolveDiscount(product, connection.provider, dto)
 
     // Validar overlap con ofertas activas/scheduled del mismo producto+conexión.
     const overlap = await this.prisma.marketplaceOffer.findFirst({
@@ -79,23 +107,96 @@ export class OffersService {
       )
     }
 
-    // Status inicial: si startDate <= now() y endDate >= now(), entra como
-    // 'scheduled' igual y deja que el scheduler la pase a 'active' (así
-    // siempre pasa por el push en el siguiente tick, sin duplicar lógica acá).
-    return this.prisma.marketplaceOffer.create({
+    // Status inicial: 'scheduled' siempre. El scheduler la pasará a 'active'
+    // en el siguiente tick si startDate <= now().
+    const created = await this.prisma.marketplaceOffer.create({
       data: {
         tenantId,
         productId: dto.productId,
         connectionId: dto.connectionId,
-        discountPct: dto.discountPct,
+        discountPct,
         startDate,
         endDate,
         status: 'scheduled',
         syncStatus: 'pending',
         source: 'local',
         notes: dto.notes,
+        // Pre-llenamos calculatedSalePrice para que la UI ya muestre el monto;
+        // el scheduler lo va a recalcular al activar igualmente.
+        calculatedSalePrice,
       },
     })
+
+    // Si se sobreescribió calculatedPrice y hay otras ofertas active del
+    // mismo producto+conexión, marcarlas como pending para que el scheduler
+    // las re-pushee con el nuevo precio base. Sin esto, sus calculatedSalePrice
+    // quedarían desfasados del nuevo basePrice.
+    if (dto.overrideCalculatedPrice !== undefined) {
+      const affected = await this.prisma.marketplaceOffer.updateMany({
+        where: {
+          tenantId,
+          productId: dto.productId,
+          connectionId: dto.connectionId,
+          status: 'active',
+          id: { not: created.id },
+        },
+        data: { syncStatus: 'pending' },
+      })
+      if (affected.count > 0) {
+        this.logger.log(
+          `${affected.count} oferta(s) activa(s) del mismo producto marcadas para resync por cambio de calculatedPrice`,
+        )
+      }
+    }
+
+    return created
+  }
+
+  // Resuelve discountPct + calculatedSalePrice a partir de los inputs del
+  // operador. Acepta porcentaje O precio fijo, exactamente uno.
+  // - discountPct: aplica el % al calculatedPrice del producto.
+  // - fixedSalePrice: deriva el % equivalente para persistirlo (la regla
+  //   sigue siendo 'porcentaje sobre precio normal', el precio fijo es solo
+  //   una conveniencia de input).
+  private resolveDiscount(
+    product: any,
+    provider: string,
+    dto: CreateOfferDto,
+  ): { discountPct: number; calculatedSalePrice: number | null } {
+    const hasPct = dto.discountPct !== undefined && dto.discountPct !== null
+    const hasFixed = dto.fixedSalePrice !== undefined && dto.fixedSalePrice !== null
+    if (hasPct === hasFixed) {
+      throw new BadRequestException(
+        'Pasa exactamente uno: discountPct o fixedSalePrice (no ambos, no ninguno).',
+      )
+    }
+
+    const pricing = (product?.marketplacePricing || {}) as Record<string, any>
+    const provPricing = pricing[provider]
+    const basePrice =
+      provPricing?.calculatedPrice ? Number(provPricing.calculatedPrice) :
+      product?.basePrice ? Number(product.basePrice) : null
+
+    if (hasPct) {
+      const pct = Number(dto.discountPct)
+      const sale = basePrice ? Math.round(basePrice * (1 - pct / 100)) : null
+      return { discountPct: pct, calculatedSalePrice: sale }
+    }
+
+    // hasFixed
+    const fixed = Number(dto.fixedSalePrice)
+    if (!basePrice || basePrice <= 0) {
+      throw new BadRequestException(
+        'No se puede usar fixedSalePrice sin un precio base configurado en marketplacePricing o basePrice.',
+      )
+    }
+    if (fixed >= basePrice) {
+      throw new BadRequestException(
+        `fixedSalePrice (${fixed}) debe ser menor al precio base (${basePrice}).`,
+      )
+    }
+    const pct = Math.round(((basePrice - fixed) / basePrice) * 100 * 100) / 100
+    return { discountPct: pct, calculatedSalePrice: fixed }
   }
 
   async update(tenantId: string, id: string, dto: UpdateOfferDto) {

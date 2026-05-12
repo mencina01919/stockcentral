@@ -95,6 +95,17 @@ export class ProductsController {
     return this.productsService.unlinkMarketplace(tenantId, id, connectionId)
   }
 
+  @Patch(':id/marketplace-pricing/:provider')
+  @ApiOperation({ summary: 'Sobreescribir solo `calculatedPrice` del marketplace en la calculadora del producto' })
+  setMarketplaceCalculatedPrice(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Param('provider') provider: string,
+    @Body() body: { calculatedPrice: number },
+  ) {
+    return this.productsService.setMarketplaceCalculatedPrice(tenantId, id, provider, body.calculatedPrice)
+  }
+
   // ─── Paris configuration helpers ───────────────────────────────────────
 
   @Get('paris/families')

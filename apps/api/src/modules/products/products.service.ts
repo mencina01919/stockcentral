@@ -536,6 +536,40 @@ export class ProductsService {
     return { unlinked: true }
   }
 
+  // Sobreescribe SOLO el calculatedPrice del marketplace en la calculadora.
+  // No toca commission/margin/shipping — quedan inconsistentes con el
+  // nuevo calculatedPrice (decisión consciente: el operador edita
+  // calculatedPrice directamente desde la UI de ofertas y entiende que el
+  // resto de la calculadora no se reajusta).
+  async setMarketplaceCalculatedPrice(
+    tenantId: string,
+    productId: string,
+    provider: string,
+    calculatedPrice: number,
+  ) {
+    if (!calculatedPrice || calculatedPrice <= 0) {
+      throw new BadRequestException('calculatedPrice debe ser mayor a 0')
+    }
+    const product = await this.prisma.product.findFirst({ where: { id: productId, tenantId } })
+    if (!product) throw new NotFoundException('Producto no encontrado')
+    const pricing = ((product.marketplacePricing as any) || {}) as Record<string, any>
+    const existing = pricing[provider] || {}
+    const next = {
+      ...pricing,
+      [provider]: {
+        ...existing,
+        calculatedPrice: Math.round(calculatedPrice),
+        // Marca que el precio se editó manualmente (útil para reportes).
+        manualOverride: true,
+        manualOverrideAt: new Date().toISOString(),
+      },
+    }
+    return this.prisma.product.update({
+      where: { id: productId },
+      data: { marketplacePricing: next as any },
+    })
+  }
+
   // ─── Paris-specific helpers ────────────────────────────────────────────────
 
   // Resolves the Paris connection for the tenant (one per tenant per provider).

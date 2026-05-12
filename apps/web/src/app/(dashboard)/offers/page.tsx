@@ -375,8 +375,16 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
   const [productQuery, setProductQuery] = useState('')
   const [productId, setProductId] = useState<string | null>(null)
   const [productLabel, setProductLabel] = useState<string>('')
+  const [productData, setProductData] = useState<any | null>(null)
   const [connectionId, setConnectionId] = useState<string>('')
+  // Modo de descuento: porcentaje (%) o precio fijo (CLP).
+  const [mode, setMode] = useState<'pct' | 'fixed'>('pct')
   const [discountPct, setDiscountPct] = useState<string>('15')
+  const [fixedSalePrice, setFixedSalePrice] = useState<string>('')
+  // Precio normal editable. Si el operador lo modifica, también se sobreescribe
+  // marketplacePricing[provider].calculatedPrice en el maestro al crear.
+  const [normalPrice, setNormalPrice] = useState<string>('')
+  const [normalPriceTouched, setNormalPriceTouched] = useState(false)
   const today = new Date().toISOString().slice(0, 10)
   const in30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10)
   const [startDate, setStartDate] = useState<string>(today)
@@ -392,52 +400,88 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
     (c: any) => c.type === 'marketplace' && c.provider === 'falabella',
   )
 
+  // Reset producto al cambiar de marketplace (el listado se restringe).
+  const onConnectionChange = (id: string) => {
+    setConnectionId(id)
+    setProductId(null)
+    setProductLabel('')
+    setProductData(null)
+    setProductQuery('')
+    setNormalPrice('')
+    setNormalPriceTouched(false)
+  }
+
+  // Buscador filtrado: el endpoint /products acepta connectionId para
+  // devolver solo productos con mapping activo en esa conexión.
   const { data: products } = useQuery({
-    queryKey: ['products-search', productQuery],
+    queryKey: ['products-search', productQuery, connectionId],
     queryFn: () =>
       api
-        .get('/products', { params: { search: productQuery, limit: 10 } })
+        .get('/products', {
+          params: { search: productQuery, limit: 10, connectionId },
+        })
         .then((r) => r.data),
-    enabled: productQuery.length >= 2,
+    enabled: productQuery.length >= 2 && !!connectionId,
   })
 
-  const productSelectedPricing =
-    productId && products?.data
-      ? products.data.find((p: any) => p.id === productId)
-      : null
-
-  const previewPrice = (() => {
-    if (!productSelectedPricing) return null
-    const pricing = (productSelectedPricing.marketplacePricing || {}) as any
+  // Cuando se selecciona un producto, prellenamos el precio normal con el
+  // calculatedPrice del marketplace (o basePrice como fallback).
+  const onSelectProduct = (p: any) => {
+    setProductId(p.id)
+    setProductLabel(p.name)
+    setProductData(p)
     const conn = eligibleConnections.find((c: any) => c.id === connectionId)
-    if (!conn) return null
-    const provPricing = pricing[conn.provider]
-    const base =
-      provPricing?.calculatedPrice ||
-      productSelectedPricing.basePrice
-    if (!base) return null
-    const pct = parseFloat(discountPct)
-    if (isNaN(pct) || pct <= 0 || pct >= 100) return null
-    return {
-      base: Number(base),
-      result: Math.round(Number(base) * (1 - pct / 100)),
+    const pricing = (p.marketplacePricing || {}) as any
+    const provPricing = conn ? pricing[conn.provider] : null
+    const base = provPricing?.calculatedPrice || p.basePrice || 0
+    setNormalPrice(String(Math.round(Number(base))))
+    setNormalPriceTouched(false)
+  }
+
+  // Sincronización entre modo % y modo precio fijo: al cambiar uno, recalcula
+  // el otro para que el preview siempre cuadre.
+  const normalPriceNum = parseFloat(normalPrice) || 0
+  const pctNum = parseFloat(discountPct) || 0
+  const fixedNum = parseFloat(fixedSalePrice) || 0
+  const previewSalePrice = (() => {
+    if (!normalPriceNum) return null
+    if (mode === 'pct') {
+      if (pctNum <= 0 || pctNum >= 100) return null
+      return Math.round(normalPriceNum * (1 - pctNum / 100))
     }
+    if (fixedNum <= 0 || fixedNum >= normalPriceNum) return null
+    return fixedNum
+  })()
+  const previewPct = (() => {
+    if (mode === 'pct') return pctNum
+    if (!normalPriceNum || !fixedNum || fixedNum >= normalPriceNum) return null
+    return Math.round(((normalPriceNum - fixedNum) / normalPriceNum) * 100 * 100) / 100
   })()
 
   const createMut = useMutation({
-    mutationFn: () =>
-      api
-        .post('/offers', {
-          productId,
-          connectionId,
-          discountPct: parseFloat(discountPct),
-          startDate: new Date(`${startDate}T00:00:00`).toISOString(),
-          endDate: new Date(`${endDate}T23:59:59`).toISOString(),
-          notes: notes.trim() || undefined,
-        })
-        .then((r) => r.data),
+    mutationFn: () => {
+      const body: any = {
+        productId,
+        connectionId,
+        startDate: new Date(`${startDate}T00:00:00`).toISOString(),
+        endDate: new Date(`${endDate}T23:59:59`).toISOString(),
+        notes: notes.trim() || undefined,
+      }
+      if (mode === 'pct') body.discountPct = pctNum
+      else body.fixedSalePrice = fixedNum
+      // Solo enviamos overrideCalculatedPrice si el operador modificó el
+      // precio normal. Sin esto no tocamos el calculatedPrice del producto.
+      if (normalPriceTouched && normalPriceNum > 0) {
+        body.overrideCalculatedPrice = normalPriceNum
+      }
+      return api.post('/offers', body).then((r) => r.data)
+    },
     onSuccess: () => {
-      toast.success('Oferta creada (programada)')
+      toast.success(
+        normalPriceTouched
+          ? 'Oferta creada · precio normal actualizado en la calculadora del producto'
+          : 'Oferta creada (programada)',
+      )
       onSuccess()
     },
     onError: (err: any) => toast.error(err?.response?.data?.message || 'Error al crear oferta'),
@@ -446,8 +490,8 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
   const canSubmit =
     productId &&
     connectionId &&
-    parseFloat(discountPct) > 0 &&
-    parseFloat(discountPct) < 100 &&
+    normalPriceNum > 0 &&
+    previewSalePrice !== null &&
     startDate &&
     endDate &&
     new Date(endDate) > new Date(startDate)
@@ -471,7 +515,7 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
             <Label>Marketplace</Label>
             <select
               value={connectionId}
-              onChange={(e) => setConnectionId(e.target.value)}
+              onChange={(e) => onConnectionChange(e.target.value)}
               className="sc-input"
               style={{ width: '100%' }}
             >
@@ -489,10 +533,24 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
             )}
           </div>
 
-          {/* Producto */}
+          {/* Producto — solo se habilita tras elegir marketplace */}
           <div>
-            <Label>Producto</Label>
-            {productId ? (
+            <Label>Producto disponible en el marketplace</Label>
+            {!connectionId ? (
+              <div
+                className="sc-mono"
+                style={{
+                  padding: '10px 12px',
+                  background: '#f3f4f6',
+                  border: '1px solid var(--sc-line-soft)',
+                  borderRadius: 8,
+                  fontSize: 11,
+                  color: 'var(--sc-text-low)',
+                }}
+              >
+                Selecciona primero un marketplace para ver los productos publicados ahí.
+              </div>
+            ) : productId ? (
               <div
                 className="flex items-center justify-between"
                 style={{
@@ -507,11 +565,14 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                     {productLabel}
                   </div>
                   <div className="sc-mono" style={{ fontSize: 10, color: 'var(--sc-text-low)' }}>
-                    {productId}
+                    SKU {productData?.sku || '—'}
                   </div>
                 </div>
                 <button
-                  onClick={() => { setProductId(null); setProductLabel(''); setProductQuery('') }}
+                  onClick={() => {
+                    setProductId(null); setProductLabel(''); setProductData(null)
+                    setProductQuery(''); setNormalPrice(''); setNormalPriceTouched(false)
+                  }}
                   className="sc-btn-ghost"
                   style={{ padding: 4 }}
                 >
@@ -527,82 +588,204 @@ function CreateOfferModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                   className="sc-input"
                   style={{ width: '100%' }}
                 />
-                {productQuery.length >= 2 && products?.data?.length > 0 && (
+                {productQuery.length >= 2 && (
                   <div
                     style={{
                       marginTop: 6,
                       border: '1px solid var(--sc-line-soft)',
                       borderRadius: 8,
-                      maxHeight: 200,
+                      maxHeight: 240,
                       overflow: 'auto',
                     }}
                   >
-                    {products.data.slice(0, 10).map((p: any) => (
-                      <button
-                        key={p.id}
-                        onClick={() => {
-                          setProductId(p.id)
-                          setProductLabel(p.name)
-                        }}
-                        className="w-full text-left"
+                    {(products?.data || []).length === 0 ? (
+                      <div
                         style={{
-                          padding: '8px 12px',
-                          borderBottom: '1px solid var(--sc-line-faint)',
-                          background: 'transparent',
-                          border: 'none',
-                          cursor: 'pointer',
+                          padding: '10px 12px',
+                          fontSize: 11,
+                          color: 'var(--sc-text-low)',
                         }}
                       >
-                        <div style={{ fontSize: 12, color: 'var(--sc-text-hi)' }}>{p.name}</div>
-                        <div className="sc-mono" style={{ fontSize: 10, color: 'var(--sc-text-low)' }}>
-                          SKU {p.sku} · ${Number(p.basePrice).toLocaleString('es-CL')}
-                        </div>
-                      </button>
-                    ))}
+                        Sin productos publicados en este marketplace que coincidan con "{productQuery}".
+                      </div>
+                    ) : (
+                      products.data.slice(0, 10).map((p: any) => {
+                        const conn = eligibleConnections.find((c: any) => c.id === connectionId)
+                        const pricing = (p.marketplacePricing || {}) as any
+                        const calc = conn ? pricing[conn.provider]?.calculatedPrice : null
+                        return (
+                          <button
+                            key={p.id}
+                            onClick={() => onSelectProduct(p)}
+                            className="w-full text-left"
+                            style={{
+                              padding: '8px 12px',
+                              borderBottom: '1px solid var(--sc-line-faint)',
+                              background: 'transparent',
+                              border: 'none',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <div style={{ fontSize: 12, color: 'var(--sc-text-hi)' }}>{p.name}</div>
+                            <div className="sc-mono" style={{ fontSize: 10, color: 'var(--sc-text-low)' }}>
+                              SKU {p.sku} · precio mkt ${Number(calc || p.basePrice).toLocaleString('es-CL')}
+                            </div>
+                          </button>
+                        )
+                      })
+                    )}
                   </div>
                 )}
               </>
             )}
           </div>
 
-          {/* Descuento */}
-          <div>
-            <Label>Descuento (%)</Label>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min="1"
-                max="99"
-                step="1"
-                value={discountPct}
-                onChange={(e) => setDiscountPct(e.target.value)}
-                className="sc-input"
-                style={{ width: 120 }}
-              />
-              <span className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)' }}>
-                sobre precio calculado del marketplace
-              </span>
-            </div>
-            {previewPrice && (
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: '10px 12px',
-                  background: '#fef9c3',
-                  border: '1px solid #fde68a',
-                  borderRadius: 8,
-                  fontSize: 12,
-                  color: '#854d0e',
-                }}
-              >
-                Precio resultante:{' '}
-                <strong>${previewPrice.result.toLocaleString('es-CL')}</strong> · antes{' '}
-                <span style={{ textDecoration: 'line-through' }}>
-                  ${previewPrice.base.toLocaleString('es-CL')}
-                </span>
+          {productId && (
+            <>
+              {/* Precio normal editable */}
+              <div>
+                <Label>Precio normal (calculadora del marketplace)</Label>
+                <div className="flex items-center gap-2">
+                  <span style={{ fontSize: 13, color: 'var(--sc-text-low)' }}>$</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={normalPrice}
+                    onChange={(e) => { setNormalPrice(e.target.value); setNormalPriceTouched(true) }}
+                    className="sc-input sc-mono"
+                    style={{ width: 200 }}
+                  />
+                  {normalPriceTouched && (
+                    <span
+                      className="sc-mono"
+                      style={{
+                        fontSize: 10,
+                        padding: '3px 8px',
+                        borderRadius: 999,
+                        background: '#fef3c7',
+                        color: '#854d0e',
+                      }}
+                    >
+                      modificado → se guardará en el maestro
+                    </span>
+                  )}
+                </div>
+                <div className="sc-mono" style={{ fontSize: 10, color: 'var(--sc-text-faint)', marginTop: 4 }}>
+                  Sobreescribe `marketplacePricing.{eligibleConnections.find((c: any) => c.id === connectionId)?.provider || '...'}.calculatedPrice` del producto cuando guardes.
+                </div>
               </div>
-            )}
-          </div>
+
+              {/* Toggle modo descuento */}
+              <div>
+                <Label>Tipo de oferta</Label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setMode('pct')}
+                    style={{
+                      padding: '8px 14px',
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: '1px solid',
+                      borderColor: mode === 'pct' ? 'var(--sc-blue-600)' : 'var(--sc-line-soft)',
+                      background: mode === 'pct' ? 'var(--sc-blue-50, #eff6ff)' : 'transparent',
+                      color: mode === 'pct' ? 'var(--sc-blue-700, #1d4ed8)' : 'var(--sc-text-mid)',
+                      fontWeight: mode === 'pct' ? 600 : 400,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Por porcentaje (%)
+                  </button>
+                  <button
+                    onClick={() => setMode('fixed')}
+                    style={{
+                      padding: '8px 14px',
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: '1px solid',
+                      borderColor: mode === 'fixed' ? 'var(--sc-blue-600)' : 'var(--sc-line-soft)',
+                      background: mode === 'fixed' ? 'var(--sc-blue-50, #eff6ff)' : 'transparent',
+                      color: mode === 'fixed' ? 'var(--sc-blue-700, #1d4ed8)' : 'var(--sc-text-mid)',
+                      fontWeight: mode === 'fixed' ? 600 : 400,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Precio fijo (CLP)
+                  </button>
+                </div>
+              </div>
+
+              {/* Input descuento según modo */}
+              {mode === 'pct' ? (
+                <div>
+                  <Label>Descuento (%)</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="99"
+                      step="0.01"
+                      value={discountPct}
+                      onChange={(e) => setDiscountPct(e.target.value)}
+                      className="sc-input sc-mono"
+                      style={{ width: 120 }}
+                    />
+                    <span className="sc-mono" style={{ fontSize: 11, color: 'var(--sc-text-low)' }}>
+                      %
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <Label>Precio oferta (CLP)</Label>
+                  <div className="flex items-center gap-2">
+                    <span style={{ fontSize: 13, color: 'var(--sc-text-low)' }}>$</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={fixedSalePrice}
+                      onChange={(e) => setFixedSalePrice(e.target.value)}
+                      placeholder="Ej. 899990"
+                      className="sc-input sc-mono"
+                      style={{ width: 200 }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Preview en vivo */}
+              {previewSalePrice !== null && (
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    background: '#fef9c3',
+                    border: '1px solid #fde68a',
+                    borderRadius: 8,
+                    fontSize: 13,
+                    color: '#854d0e',
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>
+                    Cliente verá ${previewSalePrice.toLocaleString('es-CL')}
+                    {previewPct !== null && (
+                      <span style={{ fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
+                        ({previewPct.toFixed(2)}% off)
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, marginTop: 4 }}>
+                    Antes:{' '}
+                    <span style={{ textDecoration: 'line-through' }}>
+                      ${normalPriceNum.toLocaleString('es-CL')}
+                    </span>
+                    {' '}· ahorro $
+                    {(normalPriceNum - previewSalePrice).toLocaleString('es-CL')}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
 
           {/* Fechas */}
           <div className="grid grid-cols-2 gap-3">
