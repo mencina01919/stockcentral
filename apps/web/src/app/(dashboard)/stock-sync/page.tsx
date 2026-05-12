@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, RefreshCw, CheckCircle2, Link2 } from 'lucide-react'
+import { Loader2, RefreshCw, CheckCircle2, Link2, CheckSquare, Square } from 'lucide-react'
 import { toast } from 'sonner'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
@@ -15,10 +15,17 @@ const CONFIDENCE_INFO: Record<string, { label: string; tone: 'ok' | 'warn' | 'lo
   low: { label: 'BAJA', tone: 'low', barTone: 'blue' },
 }
 
+// Key estable por fila (algunas recs no traen id propio)
+const recKey = (r: any) => `${r.masterProduct?.id}::${r.marketProduct?.externalId}`
+
 export default function StockSyncPage() {
   const qc = useQueryClient()
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>('')
   const [filter, setFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all')
+  // Loading por fila — set de recKey actualmente vinculándose
+  const [linkingKeys, setLinkingKeys] = useState<Set<string>>(new Set())
+  // Selección múltiple
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
 
   const { data: connections = [] } = useQuery<any[]>({
     queryKey: ['connections-marketplace'],
@@ -35,15 +42,75 @@ export default function StockSyncPage() {
     enabled: !!selectedConnectionId,
   })
 
-  const applyMutation = useMutation({
-    mutationFn: (data: any) =>
-      api.post(`/stock-sync/apply/${selectedConnectionId}`, data),
-    onSuccess: () => {
-      toast.success('Sincronización aplicada')
-      refetch()
-    },
-    onError: (e: any) => toast.error(e.response?.data?.message || 'Error al sincronizar'),
-  })
+  // Marca optimista de filas recién vinculadas — el endpoint apply tarda ~ms
+  // pero refetch() recarga la query entera (que vuelve a llamar al
+  // marketplace). En vez de esperar el round-trip, marcamos local y
+  // refrescamos en background.
+  const queryKey = ['sync-recommendations', selectedConnectionId]
+  const markRecLinked = (key: string) => {
+    qc.setQueryData<any[]>(queryKey, (old) => {
+      if (!Array.isArray(old)) return old
+      return old.map((r) => (recKey(r) === key ? { ...r, existingMapping: true } : r))
+    })
+  }
+
+  // Vinculación de una sola fila — mantiene loading por recKey en el set
+  const linkOne = async (rec: any): Promise<{ ok: boolean; error?: string }> => {
+    const key = recKey(rec)
+    setLinkingKeys((prev) => new Set(prev).add(key))
+    try {
+      await api.post(`/stock-sync/apply/${selectedConnectionId}`, {
+        productId: rec.masterProduct.id,
+        marketplaceProductId: rec.marketProduct.externalId,
+        marketplaceSku: rec.marketProduct.externalSku,
+      })
+      // Optimistic: marca esta fila como vinculada en el cache local
+      markRecLinked(key)
+      return { ok: true }
+    } catch (e: any) {
+      return { ok: false, error: e?.response?.data?.message || 'Error' }
+    } finally {
+      setLinkingKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
+  const handleLinkSingle = async (rec: any) => {
+    const r = await linkOne(rec)
+    if (r.ok) {
+      toast.success('Vinculado')
+      // No hace falta refetch — markRecLinked ya actualizó el cache.
+      // Invalidamos en background para que próxima visita traiga fresh.
+      qc.invalidateQueries({ queryKey, refetchType: 'none' })
+    } else {
+      toast.error(r.error || 'Error al vincular')
+    }
+  }
+
+  // Vinculación masiva de la selección
+  const [bulkRunning, setBulkRunning] = useState(false)
+  const handleLinkSelected = async () => {
+    const targets = recommendations.filter(
+      (r) => selectedKeys.has(recKey(r)) && !r.existingMapping,
+    )
+    if (!targets.length) return
+    setBulkRunning(true)
+    let ok = 0
+    let fail = 0
+    for (const rec of targets) {
+      const r = await linkOne(rec)
+      if (r.ok) ok++
+      else fail++
+    }
+    setBulkRunning(false)
+    setSelectedKeys(new Set())
+    toast.success(`${ok} vinculados${fail ? `, ${fail} con error` : ''}`)
+    // markRecLinked() ya actualizó cada fila exitosa. Invalida stale sin refetch.
+    qc.invalidateQueries({ queryKey, refetchType: 'none' })
+  }
 
   const syncAllMutation = useMutation({
     mutationFn: () => api.post(`/stock-sync/sync-all/${selectedConnectionId}`),
@@ -58,6 +125,32 @@ export default function StockSyncPage() {
   const filtered = recommendations.filter(
     (r) => filter === 'all' || r.match.confidence === filter,
   )
+
+  // Solo se pueden seleccionar filas sin mapping existente
+  const selectableKeys = useMemo(
+    () => filtered.filter((r) => !r.existingMapping).map(recKey),
+    [filtered],
+  )
+  const allSelected =
+    selectableKeys.length > 0 && selectableKeys.every((k) => selectedKeys.has(k))
+  const someSelected =
+    selectableKeys.some((k) => selectedKeys.has(k)) && !allSelected
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedKeys(new Set())
+    } else {
+      setSelectedKeys(new Set(selectableKeys))
+    }
+  }
+  const toggleOne = (key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   const counts = {
     high: recommendations.filter((r) => r.match.confidence === 'high').length,
@@ -198,11 +291,91 @@ export default function StockSyncPage() {
               </Panel>
             ) : (
               <div className="space-y-3">
+                {/* Barra de selección masiva */}
+                {selectableKeys.length > 0 && (
+                  <Panel
+                    style={{
+                      padding: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 5,
+                      borderColor: selectedKeys.size
+                        ? 'var(--sc-blue-400)'
+                        : 'var(--sc-line-soft)',
+                      boxShadow: selectedKeys.size
+                        ? '0 0 0 3px rgba(59,130,246,0.10)'
+                        : undefined,
+                    }}
+                  >
+                    <button
+                      onClick={toggleAll}
+                      className="flex items-center gap-2"
+                      style={{ fontSize: 12, color: 'var(--sc-text-hi)' }}
+                      aria-label="Seleccionar todos"
+                    >
+                      {allSelected ? (
+                        <CheckSquare className="w-4 h-4" style={{ color: 'var(--sc-blue-600)' }} />
+                      ) : someSelected ? (
+                        <CheckSquare className="w-4 h-4" style={{ color: 'var(--sc-blue-400)', opacity: 0.6 }} />
+                      ) : (
+                        <Square className="w-4 h-4" style={{ color: 'var(--sc-text-low)' }} />
+                      )}
+                      <span className="sc-mono" style={{ fontSize: 11, letterSpacing: '0.12em' }}>
+                        {allSelected ? 'DESELECCIONAR TODOS' : 'SELECCIONAR TODOS'}
+                      </span>
+                    </button>
+                    <span style={{ fontSize: 12, color: 'var(--sc-text-low)' }}>
+                      {selectedKeys.size > 0
+                        ? `${selectedKeys.size} de ${selectableKeys.length} seleccionados`
+                        : `${selectableKeys.length} disponibles para vincular`}
+                    </span>
+                    <div className="ml-auto flex items-center gap-2">
+                      {selectedKeys.size > 0 && (
+                        <button
+                          onClick={() => setSelectedKeys(new Set())}
+                          disabled={bulkRunning}
+                          style={{
+                            fontSize: 11,
+                            color: 'var(--sc-text-low)',
+                            padding: '6px 10px',
+                          }}
+                        >
+                          Limpiar
+                        </button>
+                      )}
+                      <button
+                        onClick={handleLinkSelected}
+                        disabled={selectedKeys.size === 0 || bulkRunning}
+                        className="sc-btn-primary"
+                        style={{ padding: '7px 14px', fontSize: 12 }}
+                      >
+                        {bulkRunning ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            Vinculando ({linkingKeys.size})…
+                          </>
+                        ) : (
+                          <>
+                            <Link2 className="w-3.5 h-3.5" />
+                            Vincular seleccionados
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </Panel>
+                )}
+
                 {filtered.map((rec: any, i: number) => {
                   const conf = CONFIDENCE_INFO[rec.match.confidence]
+                  const key = recKey(rec)
+                  const isLinking = linkingKeys.has(key)
+                  const isSelected = selectedKeys.has(key)
                   return (
                     <Panel
-                      key={i}
+                      key={key}
                       style={{
                         padding: 20,
                         ...(rec.existingMapping
@@ -210,10 +383,31 @@ export default function StockSyncPage() {
                               borderColor: 'rgba(16,185,129,0.30)',
                               background: 'rgba(16,185,129,0.03)',
                             }
+                          : isSelected
+                          ? {
+                              borderColor: 'var(--sc-blue-400)',
+                              background: 'rgba(59,130,246,0.04)',
+                            }
                           : {}),
                       }}
                     >
                       <div className="flex items-start gap-4">
+                        {/* Checkbox (solo si no está vinculado) */}
+                        {!rec.existingMapping && (
+                          <button
+                            onClick={() => toggleOne(key)}
+                            disabled={isLinking || bulkRunning}
+                            className="flex-shrink-0 mt-1"
+                            aria-label="Seleccionar fila"
+                            style={{ padding: 2 }}
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-5 h-5" style={{ color: 'var(--sc-blue-600)' }} />
+                            ) : (
+                              <Square className="w-5 h-5" style={{ color: 'var(--sc-text-low)' }} />
+                            )}
+                          </button>
+                        )}
                         {/* Score */}
                         <div className="flex-shrink-0 text-center" style={{ width: 76 }}>
                           <div
@@ -312,19 +506,22 @@ export default function StockSyncPage() {
                             <Chip tone="ok" dot>VINCULADO</Chip>
                           ) : (
                             <button
-                              onClick={() =>
-                                applyMutation.mutate({
-                                  productId: rec.masterProduct.id,
-                                  marketplaceProductId: rec.marketProduct.externalId,
-                                  marketplaceSku: rec.marketProduct.externalSku,
-                                })
-                              }
-                              disabled={applyMutation.isPending}
+                              onClick={() => handleLinkSingle(rec)}
+                              disabled={isLinking || bulkRunning}
                               className="sc-btn-primary"
-                              style={{ padding: '7px 12px', fontSize: 11 }}
+                              style={{ padding: '7px 12px', fontSize: 11, minWidth: 92 }}
                             >
-                              <Link2 className="w-3 h-3" />
-                              Vincular
+                              {isLinking ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  Vinculando…
+                                </>
+                              ) : (
+                                <>
+                                  <Link2 className="w-3 h-3" />
+                                  Vincular
+                                </>
+                              )}
                             </button>
                           )}
                           <div

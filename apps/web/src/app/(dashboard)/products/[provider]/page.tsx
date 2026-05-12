@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Search, Package, Loader2, AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, X } from 'lucide-react'
+import { Search, Package, Loader2, AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, X, Zap } from 'lucide-react'
+import { toast } from 'sonner'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
 import { formatCurrency, PROVIDER_LABELS } from '@/lib/utils'
@@ -20,7 +21,46 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
   const [page, setPage]           = useState(1)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedExternalId, setSelectedExternalId] = useState<string | null>(null)
+  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
   const limit = 25
+
+  const handleSyncRow = async (masterProductId: string) => {
+    if (!connection?.id) return
+    setSyncingIds((prev) => new Set(prev).add(masterProductId))
+    try {
+      const res = await api.post(
+        `/products/${masterProductId}/push/${connection.id}`,
+      )
+      const d = res.data || {}
+      if (d.success) {
+        toast.success(
+          `Stock ${d.syncedStock} y precio ${formatCurrency(Number(d.syncedPrice), 'CLP')} sincronizados`,
+        )
+      } else if (d.priceOk && !d.stockOk) {
+        // Caso típico Lider: precio aplica, stock falla con 404 "No Item Found"
+        toast.warning(
+          `Precio ${formatCurrency(Number(d.syncedPrice), 'CLP')} aplicado. Stock NO se pudo actualizar: ${d.error?.replace(/^Precio:.*\| /, '').replace(/^Stock: /, '') || 'error'}`,
+          { duration: 8000 },
+        )
+      } else if (!d.priceOk && d.stockOk) {
+        toast.warning(
+          `Stock ${d.syncedStock} aplicado. Precio falló: ${d.error || 'error'}`,
+          { duration: 8000 },
+        )
+      } else {
+        toast.error(d.error || 'Error al sincronizar')
+      }
+      queryClient.invalidateQueries({ queryKey: ['marketplace-products', provider] })
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'Error al sincronizar')
+    } finally {
+      setSyncingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(masterProductId)
+        return next
+      })
+    }
+  }
 
   // Debounce search — only fire backend request 400ms after user stops typing
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -175,7 +215,7 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
                 <button
                   onClick={handleRefresh}
                   disabled={refreshing}
-                  title="Recargar desde ML"
+                  title={`Recargar desde ${providerLabel}`}
                   className="p-1.5 rounded-lg border border-gray-200 text-gray-400 hover:text-sky-600 hover:border-sky-300 disabled:opacity-40 transition-colors"
                 >
                   <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
@@ -222,9 +262,9 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
             <table className="w-full">
               <thead className="bg-gray-50">
                 <tr>
-                  {['Producto', 'SKU vendedor', 'ID en marketplace', 'Precio', 'Stock', 'Estado', 'Maestro'].map((h) => (
+                  {['Producto', 'SKU vendedor', 'ID en marketplace', 'Precio', 'Stock', 'Estado', 'Maestro', ''].map((h, i) => (
                     <th
-                      key={h}
+                      key={i}
                       className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
                     >
                       {h}
@@ -285,6 +325,33 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
                         </span>
                       ) : (
                         <span className="text-xs text-gray-400">No vinculado</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      {p.mapping?.masterProductId ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleSyncRow(p.mapping.masterProductId)
+                          }}
+                          disabled={syncingIds.has(p.mapping.masterProductId)}
+                          title="Sincronizar precio + stock desde el maestro"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-sky-200 bg-sky-50 text-sky-700 text-xs font-medium hover:bg-sky-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {syncingIds.has(p.mapping.masterProductId) ? (
+                            <>
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              Sincronizando…
+                            </>
+                          ) : (
+                            <>
+                              <Zap className="w-3 h-3" />
+                              Sync
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-gray-300">—</span>
                       )}
                     </td>
                   </tr>

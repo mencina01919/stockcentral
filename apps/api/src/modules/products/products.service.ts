@@ -458,18 +458,26 @@ export class ProductsService {
       limit,
     )
 
-    // Cross-reference with local mappings for the "vinculado" badge
+    // Cross-reference with local mappings for the "vinculado" badge.
+    // Incluimos `images` del producto local para usar como fallback cuando
+    // el marketplace no devuelve miniaturas (caso Lider — Walmart Chile no
+    // expone imágenes en ningún endpoint de items).
     const externalIds = result.items.map((p) => p.externalId).filter(Boolean)
     const mappings = externalIds.length
       ? await this.prisma.marketplaceMapping.findMany({
           where: { connectionId, marketplaceProductId: { in: externalIds } },
-          include: { product: { select: { id: true, sku: true, name: true } } },
+          include: { product: { select: { id: true, sku: true, name: true, images: true } } },
         })
       : []
     const mappingByExternalId = new Map(mappings.map((m) => [m.marketplaceProductId, m]))
 
     let items = result.items.map((p) => {
       const mapping = mappingByExternalId.get(p.externalId)
+      // Si el marketplace no trajo imágenes pero hay producto maestro
+      // vinculado, usamos las imágenes del maestro como fallback.
+      const marketImages = p.images || []
+      const masterImages = (mapping?.product?.images as string[] | null) || []
+      const images = marketImages.length > 0 ? marketImages : masterImages
       return {
         externalId: p.externalId,
         externalSku: p.externalSku,
@@ -477,7 +485,7 @@ export class ProductsService {
         price: p.price,
         stock: p.stock,
         status: p.status,
-        images: p.images || [],
+        images,
         categoryId: p.categoryId,
         url: p.url,
         mapping: mapping

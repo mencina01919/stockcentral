@@ -50,6 +50,16 @@ export class ProductsController {
     return this.syncService.pushProductToMarketplaces(tenantId, id)
   }
 
+  @Post(':id/push/:connectionId')
+  @ApiOperation({ summary: 'Sincronizar precio + stock + imágenes de un producto a UN marketplace específico (síncrono)' })
+  pushToConnection(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Param('connectionId') connectionId: string,
+  ) {
+    return this.syncService.pushProductToMarketplace(tenantId, id, connectionId)
+  }
+
   @Get(':id/marketplaces')
   @ApiOperation({ summary: 'Estado de mappings y conexiones disponibles para el producto' })
   marketplaceStatus(@TenantId() tenantId: string, @Param('id') id: string) {

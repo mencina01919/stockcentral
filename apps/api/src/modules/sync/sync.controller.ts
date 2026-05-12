@@ -148,6 +148,16 @@ export class SyncController {
     return this.syncService.liderGetSpec(tenantId, connectionId, feedType)
   }
 
+  @Post('connections/:id/lider-upload-excel')
+  @ApiOperation({ summary: 'Lider: subir archivo Excel local al endpoint /v3/feeds via multipart' })
+  liderUploadExcel(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Body() body: { filePath: string },
+  ) {
+    return this.syncService.liderUploadExcel(tenantId, connectionId, body.filePath)
+  }
+
   @Post('connections/:id/lider-raw-feed')
   @ApiOperation({ summary: 'Lider: enviar un feed body literal (sin transformaciones) para probar shape exacto' })
   liderRawFeed(
