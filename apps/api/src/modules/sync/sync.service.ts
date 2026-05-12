@@ -668,11 +668,80 @@ export class SyncService {
     return { waiting, active, completed, failed }
   }
 
+  // Lee el producto actual en el marketplace (sin tocar nada). Útil para
+  // verificar qué precio/stock tiene HOY el marketplace después de un push.
+  // Si getProduct devuelve null (típico en Falabella cuando un filtro está
+  // ocultando el producto), también busca paginando getProducts con todos
+  // los estados.
+  async diagReadCurrent(tenantId: string, connectionId: string, productId: string) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    const driver = getDriver(connection.provider)
+    if (!driver.getProduct) {
+      return { ok: false, reason: 'driver_no_get_product' }
+    }
+    const credentials = connection.credentials as Record<string, string>
+    const config = connection.config as Record<string, unknown> | undefined
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      include: { marketplaceMappings: { where: { connectionId } } },
+    })
+    if (!product) throw new NotFoundException(`Producto ${productId} no encontrado`)
+    const mapping = product.marketplaceMappings[0]
+    if (!mapping?.marketplaceProductId) return { ok: false, reason: 'no_mapping' }
+    let marketProduct = await driver.getProduct(credentials, mapping.marketplaceProductId, config)
+
+    // Fallback: si no aparece por SkuSellerList, escaneamos getProducts
+    // página por página para encontrarlo. Esto distingue entre "el producto
+    // fue borrado" y "hay un filtro de estado oculto".
+    let foundVia: 'getProduct' | 'getProducts_scan' | 'not_found' = 'getProduct'
+    if (!marketProduct && driver.getProducts) {
+      const SCAN_LIMIT = 100
+      const MAX_PAGES = 50
+      foundVia = 'not_found'
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const offset = page * SCAN_LIMIT
+        const result = await driver.getProducts(credentials, config, offset, SCAN_LIMIT)
+        const hit = result.items.find(
+          (p: any) => p.externalSku === mapping.marketplaceProductId ||
+                       p.externalId === mapping.marketplaceProductId,
+        )
+        if (hit) {
+          marketProduct = hit
+          foundVia = 'getProducts_scan'
+          break
+        }
+        if (!result.hasMore) break
+      }
+    }
+
+    return {
+      ok: true,
+      localSku: product.sku,
+      marketplaceProductId: mapping.marketplaceProductId,
+      foundVia,
+      currentInMarketplace: marketProduct,
+    }
+  }
+
   // Diagnóstico puntual de push hacia un marketplace. Ejecuta updateProduct +
   // updateStock SIN tocar mappings ni logs, y devuelve toda la respuesta
   // cruda. Útil para depurar casos donde el cron dice success pero el
   // marketplace no aplica el cambio.
-  async diagPushSingle(tenantId: string, connectionId: string, productId: string) {
+  //
+  // El parámetro `overrides` permite probar shapes específicos (ej. precio
+  // oferta Falabella) sin tocar la BD. Si viene `salePrice` + fechas, el
+  // driver lo pasa como formData.SalePriceFalabella al payload XML.
+  async diagPushSingle(
+    tenantId: string,
+    connectionId: string,
+    productId: string,
+    overrides?: {
+      price?: number
+      salePrice?: number
+      saleStartDate?: string
+      saleEndDate?: string
+    },
+  ) {
     const connection = await this.getConnection(tenantId, connectionId)
     const driver = getDriver(connection.provider)
     const credentials = connection.credentials as Record<string, string>
@@ -702,14 +771,33 @@ export class SyncService {
     const stock = product.inventory.reduce((s, i) => s + i.quantity, 0)
     const pricing = (product as any).marketplacePricing as Record<string, any> | null
     const providerPricing = pricing?.[connection.provider]
-    const price = providerPricing?.calculatedPrice
-      ? Number(providerPricing.calculatedPrice)
-      : Number(product.basePrice)
+    const price = overrides?.price !== undefined
+      ? overrides.price
+      : providerPricing?.calculatedPrice
+        ? Number(providerPricing.calculatedPrice)
+        : Number(product.basePrice)
+
+    // formData se usa para campos no-estándar del driver. Para Falabella:
+    // SalePriceFalabella + SaleStartDateFalabella + SaleEndDateFalabella
+    // configuran el precio oferta dentro de <ProductData>.
+    const formData: Record<string, unknown> = {}
+    if (overrides?.salePrice !== undefined) {
+      formData.SalePriceFalabella = overrides.salePrice
+      if (overrides.saleStartDate) formData.SaleStartDateFalabella = overrides.saleStartDate
+      if (overrides.saleEndDate) formData.SaleEndDateFalabella = overrides.saleEndDate
+    }
 
     const updateRes = await driver.updateProduct(
       credentials,
       mapping.marketplaceProductId,
-      { sku: product.sku, title: product.name, description: product.description || undefined, price, stock },
+      {
+        sku: product.sku,
+        title: product.name,
+        description: product.description || undefined,
+        price,
+        stock,
+        ...(Object.keys(formData).length > 0 ? { formData } : {}),
+      } as any,
       config,
     )
     const stockRes = await driver.updateStock(
@@ -728,7 +816,20 @@ export class SyncService {
         lastSyncAt: mapping.lastSyncAt,
         errorMessage: mapping.errorMessage,
       },
-      payload: { price, stock, calculatedFrom: providerPricing?.calculatedPrice ? 'marketplacePricing.calculatedPrice' : 'basePrice' },
+      payload: {
+        price,
+        stock,
+        calculatedFrom: overrides?.price !== undefined
+          ? 'overrides.price'
+          : providerPricing?.calculatedPrice ? 'marketplacePricing.calculatedPrice' : 'basePrice',
+        ...(overrides?.salePrice !== undefined
+          ? {
+              salePrice: overrides.salePrice,
+              saleStartDate: overrides.saleStartDate,
+              saleEndDate: overrides.saleEndDate,
+            }
+          : {}),
+      },
       updateProduct: updateRes,
       updateStock: stockRes,
     }

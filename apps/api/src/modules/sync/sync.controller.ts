@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Query, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Post, Param, Query, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
@@ -71,7 +71,18 @@ export class SyncController {
     @TenantId() tenantId: string,
     @Param('id') connectionId: string,
     @Param('productId') productId: string,
+    @Body() overrides?: { price?: number; salePrice?: number; saleStartDate?: string; saleEndDate?: string },
   ) {
-    return this.syncService.diagPushSingle(tenantId, connectionId, productId)
+    return this.syncService.diagPushSingle(tenantId, connectionId, productId, overrides)
+  }
+
+  @Get('connections/:id/diag-read/:productId')
+  @ApiOperation({ summary: 'Diagnóstico: lee precio/stock actual del marketplace' })
+  diagReadProduct(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Param('productId') productId: string,
+  ) {
+    return this.syncService.diagReadCurrent(tenantId, connectionId, productId)
   }
 }

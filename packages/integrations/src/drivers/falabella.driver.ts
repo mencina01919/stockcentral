@@ -192,9 +192,12 @@ export class FalabellaDriver implements IMarketplaceDriver {
   async getProduct(credentials: DriverCredentials, externalId: string, config?: DriverConfig): Promise<MarketplaceProduct | null> {
     try {
       const client = this.buildClient(credentials, config)
-      // API accepts SkuSellerList as JSON array string
+      // API accepts SkuSellerList as JSON array string. `Filter=all` para
+      // incluir productos inactive/deleted: si el producto fue pausado o se
+      // borró, sin ese filtro Falabella no lo devuelve y parece "no existe".
       const params = this.buildParams(credentials, 'GetProducts', {
         SkuSellerList: JSON.stringify([externalId]),
+        Filter: 'all',
       })
       const res = await client.get('', { params })
       const raw = res.data?.SuccessResponse?.Body?.Products?.Product
@@ -386,28 +389,49 @@ export class FalabellaDriver implements IMarketplaceDriver {
       const cfg = (config || {}) as Record<string, unknown>
       const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-      // Raíz de <Product>: solo identificación y campos descriptivos.
+      // Raíz de <Product>: solo identificación. Intencionalmente NO mandamos
+      // Description ni Name en updates rutinarios: el maestro puede traer
+      // descripciones con HTML/CSS rico (clases Tailwind, estilos inline) que
+      // Falabella valida internamente y rechaza con WarningDetail, lo que
+      // hace que descarte TODO el update (incluido precio/stock) aunque
+      // responda SuccessResponse en la cabecera. Para cambiar descripción o
+      // nombre, usar un endpoint específico que normalice el HTML antes.
       const topFields: string[] = [`<SellerSku>${esc(externalId)}</SellerSku>`]
-      if (product.title) topFields.push(`<Name>${esc(product.title)}</Name>`)
-      if (product.description) topFields.push(`<Description>${esc(product.description)}</Description>`)
 
-      // BusinessUnits: precio y stock. Operador 'facl' = Falabella Chile por
-      // default; se sobreescribe vía config.operatorCode si la cuenta opera
-      // en Tottus/Sodimac/Linio.
+      // Falabella separa precio normal (BusinessUnits.Price) del precio
+      // oferta (ProductData.SalePriceFalabella). Spec verificado mayo 2026:
+      //   - <Price> dentro de <BusinessUnits><BusinessUnit>: precio normal.
+      //   - <SalePriceFalabella> + <SaleStartDateFalabella> + <SaleEndDateFalabella>
+      //     dentro de <ProductData>: precio oferta (lo tachado se vuelve
+      //     Price y el cliente ve SalePriceFalabella en la PDP).
+      // El campo legacy <SpecialPrice> en BusinessUnit ya NO se aplica vía
+      // ProductUpdate (Falabella lo ignora silenciosamente). Solo aparece
+      // poblado en GetProducts cuando viene de una promo Falabella propia.
       const operatorCode = String(cfg.operatorCode || 'facl')
       const buFields: string[] = [`<OperatorCode>${esc(operatorCode)}</OperatorCode>`]
       if (product.price !== undefined) {
         buFields.push(`<Price>${product.price.toFixed(2)}</Price>`)
-        buFields.push(`<SalePrice>${product.price.toFixed(2)}</SalePrice>`)
       }
       if (product.stock !== undefined) {
         buFields.push(`<Stock>${product.stock}</Stock>`)
+      }
+
+      // ProductData: campos de oferta opcionales. Si el caller no manda
+      // formData.SalePriceFalabella, dejamos ProductData vacío para no tocar
+      // la oferta existente.
+      const fd = ((product as any).formData ?? {}) as Record<string, any>
+      const pdFields: string[] = []
+      if (fd.SalePriceFalabella !== undefined) {
+        pdFields.push(`<SalePriceFalabella>${Number(fd.SalePriceFalabella).toFixed(2)}</SalePriceFalabella>`)
+        if (fd.SaleStartDateFalabella) pdFields.push(`<SaleStartDateFalabella>${esc(String(fd.SaleStartDateFalabella))}</SaleStartDateFalabella>`)
+        if (fd.SaleEndDateFalabella) pdFields.push(`<SaleEndDateFalabella>${esc(String(fd.SaleEndDateFalabella))}</SaleEndDateFalabella>`)
       }
 
       const xmlPayload =
         `<?xml version="1.0" encoding="UTF-8"?><Request><Product>` +
         topFields.join('') +
         `<BusinessUnits><BusinessUnit>${buFields.join('')}</BusinessUnit></BusinessUnits>` +
+        (pdFields.length > 0 ? `<ProductData>${pdFields.join('')}</ProductData>` : '') +
         `</Product></Request>`
       const params = this.buildParams(credentials, 'ProductUpdate')
 
@@ -702,7 +726,14 @@ export class FalabellaDriver implements IMarketplaceDriver {
     // Price and stock live inside BusinessUnits.BusinessUnit (single BU or array)
     const bu = data.BusinessUnits?.BusinessUnit
     const firstBu = Array.isArray(bu) ? bu[0] : bu
-    const price = parseFloat(firstBu?.SpecialPrice || firstBu?.Price || data.Price || '0')
+    // El precio que ve el cliente: oferta vigente si hay (SalePriceFalabella
+    // dentro de ProductData) → SpecialPrice (en BU, legacy) → Price normal.
+    // Falabella usa el campo SalePriceFalabella para el "precio oferta" que se
+    // muestra en la PDP, distinto al SpecialPrice histórico.
+    const pd = data.ProductData || {}
+    const salePriceFalabella = pd.SalePriceFalabella ? parseFloat(pd.SalePriceFalabella) : null
+    const price = salePriceFalabella ||
+      parseFloat(firstBu?.SpecialPrice || firstBu?.Price || data.Price || '0')
     const stock = parseInt(firstBu?.Stock || data.Quantity || '0', 10)
     const status = firstBu?.Status === 'active' ? 'active' : 'paused'
     return {
