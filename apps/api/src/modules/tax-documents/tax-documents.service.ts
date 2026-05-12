@@ -111,83 +111,125 @@ export class TaxDocumentsService {
       sortOrder = 'desc',
     } = query
     const skip = (page - 1) * limit
-    const where: any = { tenantId }
-    if (status) where.status = status
-    if (type) where.type = type
-    if (emitter) where.emitter = emitter
-    if (saleId) where.saleId = saleId
-    if (orderId) where.orderId = orderId
 
-    // Filtro por situación del marketplace (sólo ML hoy). Coincide cuando al
-    // menos una de las orders de la sale tiene mediación / no entregada / etc.
-    // Debe ir al inicio de where.AND para que los demás filtros se compongan.
-    if (situation === 'mediation') {
-      // hasMediations en metadata ya descuenta mediaciones cerradas.
-      where.AND = [
-        ...(where.AND || []),
+    // Paginamos por VENTA, no por TaxDocument, para que cada página devuelva
+    // todos los documentos (boleta + factura cancelled + NC + ...) juntos.
+    // El groupBy del frontend ya estaba pensado para eso pero cuando la API
+    // paginaba por doc, una NC podía aparecer en una página sin su boleta
+    // (estaba en otra página) y caer al fallback "NC sola".
+    //
+    // Estrategia:
+    //   1. Resolver el set de ventas que matchea los filtros (status/type/etc.
+    //      siguen siendo filtros del TaxDocument, así que vivimos en sale-where
+    //      con `taxDocuments: { some: {...} }`).
+    //   2. Páginar por sale, ordenando por sale.placedAt.
+    //   3. Devolver TODOS los TaxDocs de esas sales como array plano (shape
+    //      que el frontend ya consume vía `data: TaxDocument[]`).
+    //
+    // Si el filtro pide un type específico (ej. type=nota_credito) seguimos
+    // devolviendo SOLO los docs de esas sales que matchean el filtro — el
+    // operador vería NCs huérfanas sin su boleta. Para evitar eso, los
+    // filtros de documento se aplican al "some" de la sale (incluye la sale
+    // si tiene AL MENOS un doc que matchea) pero el include trae TODOS los
+    // docs de la sale para que el groupBy del front funcione.
+
+    // Construir el where a nivel de Sale.
+    // - Filtros estructurales del TaxDocument (status, type, emitter, saleId,
+    //   orderId) → entran en `taxDocuments: { some: {...} }` para incluir solo
+    //   las ventas que tienen al menos un doc que cumple.
+    // - Búsqueda libre → se aplica a nivel sale (saleNumber, customerName,
+    //   etc.) + a docs (folio, externalId). Eso da el comportamiento esperado:
+    //   buscar "Garrido" trae la venta completa con todos sus documentos.
+    const docFilters: any = {}
+    if (status) docFilters.status = status
+    if (type) docFilters.type = type
+    if (emitter) docFilters.emitter = emitter
+    if (saleId) docFilters.saleId = saleId
+    if (orderId) docFilters.orderId = orderId
+
+    const saleWhere: any = { tenantId, taxDocuments: { some: {} } }
+    if (Object.keys(docFilters).length > 0) {
+      saleWhere.taxDocuments = { some: docFilters }
+    }
+    if (search) {
+      const q = search
+      saleWhere.OR = [
+        { saleNumber: { contains: q, mode: 'insensitive' as const } },
+        { customerName: { contains: q, mode: 'insensitive' as const } },
+        { customerDocNumber: { contains: q, mode: 'insensitive' as const } },
+        { customerEmail: { contains: q, mode: 'insensitive' as const } },
+        { billingName: { contains: q, mode: 'insensitive' as const } },
+        { billingDocNumber: { contains: q, mode: 'insensitive' as const } },
         {
-          sale: {
-            is: {
-              orders: {
-                some: {
-                  OR: [
-                    { metadata: { path: ['hasMediations'], equals: true } },
-                    { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
-                  ],
-                },
-              },
+          taxDocuments: {
+            some: {
+              OR: [
+                { folio: { contains: q, mode: 'insensitive' as const } },
+                { externalId: { contains: q, mode: 'insensitive' as const } },
+              ],
             },
           },
         },
-      ]
-    } else if (situation === 'not_delivered') {
-      where.AND = [
-        ...(where.AND || []),
         {
-          sale: {
-            is: {
-              orders: {
-                some: {
-                  AND: [
-                    { NOT: { status: 'cancelled' } },
-                    {
-                      OR: [
-                        { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
-                        { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
-                      ],
-                    },
-                  ],
-                },
-              },
-            },
-          },
-        },
-      ]
-    } else if (situation === 'cancelled_clean') {
-      // Sale cuyas orders están todas cancelled pero ninguna en mediación
-      // abierta — la cancelación "limpia".
-      where.AND = [
-        ...(where.AND || []),
-        {
-          sale: {
-            is: {
-              orders: {
-                every: { status: 'cancelled' },
-                none: {
-                  OR: [
-                    { metadata: { path: ['hasMediations'], equals: true } },
-                    { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
-                  ],
-                },
-              },
+          orders: {
+            some: {
+              OR: [
+                { externalOrderId: { contains: q, mode: 'insensitive' as const } },
+                { orderNumber: { contains: q, mode: 'insensitive' as const } },
+                { packId: { contains: q, mode: 'insensitive' as const } },
+              ],
             },
           },
         },
       ]
     }
-    if (search) where.OR = this.buildSearchOr(search)
-    // Filtro por fecha real de la venta (sale.placedAt). Caemos a sale.createdAt
-    // si placedAt es null (caso legacy).
+    // Re-usar los AND que ya construimos para situación / placedAt — pero
+    // ahora viven a nivel de sale, sin el wrapper `sale: { is: {...} }`.
+    // Re-construimos en formato sale-nativo.
+    if (situation === 'mediation') {
+      saleWhere.orders = {
+        some: {
+          OR: [
+            { metadata: { path: ['hasMediations'], equals: true } },
+            { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
+          ],
+        },
+      }
+    } else if (situation === 'not_delivered') {
+      saleWhere.AND = [
+        ...(saleWhere.AND || []),
+        {
+          orders: {
+            some: {
+              AND: [
+                { NOT: { status: 'cancelled' } },
+                {
+                  OR: [
+                    { metadata: { path: ['statusDetail'], equals: 'not_delivered' } },
+                    { metadata: { path: ['tags'], array_contains: ['not_delivered'] } },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      ]
+    } else if (situation === 'cancelled') {
+      saleWhere.AND = [
+        ...(saleWhere.AND || []),
+        {
+          orders: {
+            every: { status: 'cancelled' },
+            none: {
+              OR: [
+                { metadata: { path: ['hasMediations'], equals: true } },
+                { metadata: { path: ['statusDetail'], equals: 'mediation_open' } },
+              ],
+            },
+          },
+        },
+      ]
+    }
     if (placedFrom || placedTo) {
       const range: Record<string, Date> = {}
       if (placedFrom) range.gte = new Date(placedFrom)
@@ -196,69 +238,74 @@ export class TaxDocumentsService {
         if (placedTo.length <= 10) to.setUTCHours(23, 59, 59, 999)
         range.lte = to
       }
-      where.AND = [
-        ...(where.AND || []),
-        {
-          sale: {
-            is: {
-              OR: [{ placedAt: range }, { AND: [{ placedAt: null }, { createdAt: range }] }],
-            },
-          },
-        },
+      saleWhere.AND = [
+        ...(saleWhere.AND || []),
+        { OR: [{ placedAt: range }, { AND: [{ placedAt: null }, { createdAt: range }] }] },
       ]
     }
 
-    // orderBy: cuando sortBy=placedAt, ordenamos por sale.placedAt con nulls
-    // al final y como tiebreaker la fecha de creación del TaxDoc. Esto evita
-    // que los TaxDocuments importados en bulk (mismo createdAt) se vean
-    // mezclados — cada fila se ancla a la fecha real de la venta.
-    let orderBy: any
-    if (sortBy === 'placedAt') {
-      orderBy = [
-        { sale: { placedAt: { sort: sortOrder, nulls: 'last' } } },
-        { createdAt: sortOrder },
-      ]
-    } else {
-      orderBy = { [sortBy]: sortOrder }
-    }
+    // orderBy a nivel sale.
+    const saleOrderBy: any =
+      sortBy === 'placedAt'
+        ? [
+            { placedAt: { sort: sortOrder, nulls: 'last' } as any },
+            { createdAt: sortOrder },
+          ]
+        : sortBy === 'createdAt'
+        ? { createdAt: sortOrder }
+        : { placedAt: { sort: sortOrder, nulls: 'last' } as any }
 
-    const [data, total] = await Promise.all([
-      this.prisma.taxDocument.findMany({
-        where,
+    const [salePage, totalSales] = await Promise.all([
+      this.prisma.sale.findMany({
+        where: saleWhere,
         skip,
         take: limit,
-        orderBy,
-        include: {
-          sale: {
-            select: {
-              id: true,
-              saleNumber: true,
-              customerName: true,
-              total: true,
-              placedAt: true,
-              createdAt: true,
-              source: true,
-              // Sólo el metadata + status de cada order: la UI deriva
-              // mediación/reclamo/no-entregado de ahí (ver deriveSaleSituation).
-              orders: {
-                select: { status: true, internalStatus: true, metadata: true },
-              },
-            },
+        orderBy: saleOrderBy,
+        select: {
+          id: true,
+          saleNumber: true,
+          customerName: true,
+          total: true,
+          placedAt: true,
+          createdAt: true,
+          source: true,
+          orders: {
+            select: { status: true, internalStatus: true, metadata: true },
           },
-          lines: true,
+          taxDocuments: {
+            include: { lines: true },
+            orderBy: { createdAt: 'asc' },
+          },
         },
       }),
-      this.prisma.taxDocument.count({ where }),
+      this.prisma.sale.count({ where: saleWhere }),
     ])
 
+    // Aplanamos los TaxDocs y adjuntamos un `sale` slim a cada uno para
+    // preservar el shape que el frontend espera (cada item es un TaxDocument
+    // con `sale` adentro y `lines`).
+    const flat = salePage.flatMap((sale) => {
+      const saleSlim = {
+        id: sale.id,
+        saleNumber: sale.saleNumber,
+        customerName: sale.customerName,
+        total: sale.total,
+        placedAt: sale.placedAt,
+        createdAt: sale.createdAt,
+        source: sale.source,
+        orders: sale.orders,
+      }
+      return sale.taxDocuments.map((d) => ({ ...d, sale: saleSlim }))
+    })
+
     return {
-      data,
+      data: flat,
       meta: {
-        total,
+        total: totalSales,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
-        hasNextPage: page * limit < total,
+        totalPages: Math.ceil(totalSales / limit),
+        hasNextPage: page * limit < totalSales,
         hasPrevPage: page > 1,
       },
     }

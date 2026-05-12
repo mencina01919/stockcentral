@@ -238,7 +238,7 @@ export default function TaxDocumentsPage() {
         title="Documentos tributarios"
         subtitle={
           meta
-            ? `${rows.length} venta${rows.length === 1 ? '' : 's'} · ${meta.total} documento${meta.total === 1 ? '' : 's'} · agrupado por venta`
+            ? `${meta.total.toLocaleString('es-CL')} venta${meta.total === 1 ? '' : 's'} · ${docs.length} documento${docs.length === 1 ? '' : 's'} en esta página · agrupado por venta`
             : 'Boletas, facturas y notas de crédito emitidas'
         }
         actions={
