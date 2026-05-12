@@ -21,8 +21,24 @@ async function bootstrap() {
     }),
   )
 
+  // FRONTEND_URL puede traer una lista coma-separada (ej. Vercel preview +
+  // production + localhost). CORS acepta función para validar dinámicamente.
+  const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean)
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true) // mobile apps / curl / server-side
+      if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+        return callback(null, true)
+      }
+      // Permitir todos los previews de Vercel del proyecto si está definido
+      if (process.env.VERCEL_PROJECT_HOST && origin.endsWith(`.${process.env.VERCEL_PROJECT_HOST}`)) {
+        return callback(null, true)
+      }
+      callback(new Error(`CORS: origin ${origin} no permitido`))
+    },
     credentials: true,
   })
 
@@ -36,10 +52,14 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config)
   SwaggerModule.setup('api/docs', app, document)
 
-  const port = process.env.API_PORT || 3001
-  await app.listen(port)
-  Logger.log(`API running on http://localhost:${port}`, 'Bootstrap')
-  Logger.log(`Swagger docs at http://localhost:${port}/api/docs`, 'Bootstrap')
+  // Railway/Render/Vercel inyectan PORT. Mantenemos API_PORT como fallback
+  // local para que `pnpm dev` siga funcionando con el puerto 3001 conocido.
+  const port = parseInt(process.env.PORT || process.env.API_PORT || '3001', 10)
+  // 0.0.0.0 es obligatorio en entornos contenedorizados — sin esto Railway
+  // no puede rutear tráfico al proceso.
+  await app.listen(port, '0.0.0.0')
+  Logger.log(`API running on port ${port}`, 'Bootstrap')
+  Logger.log(`Swagger docs at /api/docs`, 'Bootstrap')
 }
 
 bootstrap()

@@ -24,6 +24,7 @@ import { TaxDocumentsModule } from './modules/tax-documents/tax-documents.module
 import { BillingModule } from './modules/billing/billing.module'
 import { InboundWebhooksModule } from './modules/inbound-webhooks/inbound-webhooks.module'
 import { OffersModule } from './modules/offers/offers.module'
+import { HealthModule } from './modules/health/health.module'
 
 @Module({
   imports: [
@@ -32,13 +33,23 @@ import { OffersModule } from './modules/offers/offers.module'
     ScheduleModule.forRoot(),
     BullModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (config: ConfigService) => ({
-        redis: {
-          host: config.get('REDIS_HOST', 'localhost'),
-          port: config.get<number>('REDIS_PORT', 6380),
-          password: config.get('REDIS_PASSWORD') || undefined,
-        },
-      }),
+      useFactory: (config: ConfigService) => {
+        // Railway expone REDISHOST/REDISPORT/REDISPASSWORD (sin underscore).
+        // Localmente seguimos usando REDIS_HOST/REDIS_PORT/REDIS_PASSWORD.
+        // Aceptamos ambos para que el mismo build corra en los dos entornos.
+        const host = config.get<string>('REDIS_HOST') || config.get<string>('REDISHOST') || 'localhost'
+        const port =
+          config.get<number>('REDIS_PORT') ||
+          config.get<number>('REDISPORT') ||
+          6380
+        const password =
+          config.get<string>('REDIS_PASSWORD') ||
+          config.get<string>('REDISPASSWORD') ||
+          undefined
+        return {
+          redis: { host, port: Number(port), password },
+        }
+      },
       inject: [ConfigService],
     }),
     PrismaModule,
@@ -62,6 +73,7 @@ import { OffersModule } from './modules/offers/offers.module'
     BillingModule,
     InboundWebhooksModule,
     OffersModule,
+    HealthModule,
   ],
 })
 export class AppModule {}
