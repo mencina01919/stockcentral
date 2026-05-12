@@ -230,76 +230,97 @@ export class LiderDriver implements IMarketplaceDriver {
     }
   }
 
-  // Build Orderable + Visible MPItem payload from formData (fields come from LiderSpecService / Item Spec 4.3)
+  // Construye un MPItem (Orderable + Visible) según el JSON schema oficial
+  // MPItemFeed v4.46 que entregó Walmart Chile. Diferencias clave vs versiones
+  // anteriores del driver:
+  //   - `mart` correcto es "WALMART_CHILE" (NO "WALMART_CL").
+  //   - `processMode`/`subset`/`sellingChannel`/`version` van en
+  //     MPItemFeedHeader, no por item.
+  //   - NO existe el wrapper `MPItemAndLocationGroups`: Orderable y Visible
+  //     van directos dentro de cada MPItem.
+  //   - `productIdentifiers` es objeto plano {productIdType, productId}, NO
+  //     array bajo `productIdentifier`.
+  //   - `price` es un número plano (CLP), NO objeto con currentPrice/currency.
+  //   - `Visible` lleva como key el nombre de la subCategory (ej.
+  //     "Accesorios Electrónicos") con sus atributos category-specific.
+  //
+  // Lo que el master de StockCentral provee va automático; los atributos
+  // específicos del producto (garantías, dimensiones del producto armado,
+  // color, etc.) vienen por formData del mapping (que el operador completa
+  // al publicar).
   private buildMPItemPayload(product: Partial<SyncProductInput> & { formData?: Record<string, any> }): Record<string, any> {
-    const fd: Record<string, any> = (product as any).formData ?? (product as any)
+    const fd: Record<string, any> = (product as any).formData ?? {}
     const [mainImage, ...additionalImages] = product.images ?? []
+    const sku = String(fd.sku || product.sku || '')
 
-    // ── Orderable (required by Walmart, spec-exact names) ──────────────────
+    // ── Orderable: campos comunes de todo producto Walmart CL ────────────────
     const orderable: Record<string, any> = {
-      sku: fd.sku || product.sku,
+      sku,
       productName: fd.productName || product.title,
-      brand: fd.brand,
-      price: { currentPrice: { value: String(fd.price ?? product.price), currency: 'CLP' } },
-      ShippingWeight: {
-        measure: String(fd.shippingWeightValue || 1),
-        unit: fd.shippingWeightUnit || 'KG',
-      },
+      brand: fd.brand || 'Sin marca',
+      price: Number(fd.price ?? product.price ?? 0),
       productIdentifiers: {
-        productIdentifier: [{
-          productIdType: fd.productIdType || 'UPC',
-          productId: fd.productId || product.sku,
-        }],
+        productIdType: fd.productIdType || 'GTIN',
+        productId: String(fd.productId || (product as any).barcode || product.sku || ''),
+      },
+      // Imágenes
+      ...(mainImage ? { mainImageUrl: mainImage } : {}),
+      ...(additionalImages.length
+        ? { productSecondaryImageURL: additionalImages.slice(0, 9) }
+        : {}),
+      // Fechas vigencia de la oferta en el sitio.
+      startDate: fd.startDate || new Date().toISOString().slice(0, 10),
+      endDate:
+        fd.endDate ||
+        new Date(Date.now() + 5 * 365 * 24 * 3600 * 1000).toISOString().slice(0, 10),
+      countryOfOriginAssembly: fd.countryOfOriginAssembly || ['CN - China'],
+      // Envío
+      ShippingWeight: Number(fd.ShippingWeight ?? (product as any).weight ?? 1),
+      ShippingDimensionsWidth: this.dim(fd.ShippingDimensionsWidth, (product as any).dimensions?.width ?? 15),
+      shippingDimensionsHeight: this.dim(fd.shippingDimensionsHeight, (product as any).dimensions?.height ?? 15),
+      ShippingDimensionsDepth: this.dim(fd.ShippingDimensionsDepth, (product as any).dimensions?.depth ?? 10),
+      // Garantía / descripción / featuring obligatorios para publicar
+      shortDescription: (fd.shortDescription || product.description || product.title || '').slice(0, 1000),
+      keyFeatures: fd.keyFeatures || [(fd.shortDescription || product.title || 'Producto').slice(0, 80)],
+      manufacturer: fd.manufacturer || fd.brand || 'Sin marca',
+      condition: fd.condition || 'Nuevo',
+      sellerWarrantyPeriod: fd.sellerWarrantyPeriod ?? 0,
+      sellerWarrantyCondition: fd.sellerWarrantyCondition || 'En el caso de falla proceder a la devolución',
+      warrantyText: fd.warrantyText || '6 meses',
+      sellerWarranty: String(fd.sellerWarranty ?? '6'),
+      // pricePerUnit obligatorio según la categoría — default a 1un.
+      pricePerUnit: fd.pricePerUnit || {
+        pricePerUnitQuantity: 1,
+        pricePerUnitUom: 'un',
       },
     }
-    if (fd.fulfillmentLagTime)  orderable.fulfillmentLagTime  = fd.fulfillmentLagTime
-    if (fd.multipackQuantity)   orderable.multipackQuantity   = String(fd.multipackQuantity)
-    if (fd.startDate)           orderable.startDate           = fd.startDate
-    if (fd.endDate)             orderable.endDate             = fd.endDate
+
+    // Campos Orderable opcionales si vienen
+    if (fd.multipackQuantity) orderable.multipackQuantity = Number(fd.multipackQuantity)
     if (fd.electronicsIndicator) orderable.electronicsIndicator = fd.electronicsIndicator
     if (fd.batteryTechnologyType) orderable.batteryTechnologyType = fd.batteryTechnologyType
-    if (fd.chemicalAerosolPesticide) orderable.chemicalAerosolPesticide = fd.chemicalAerosolPesticide
+    if (fd.shipsInOriginalPackaging) orderable.shipsInOriginalPackaging = fd.shipsInOriginalPackaging
+    if (fd.MustShipAlone) orderable.MustShipAlone = fd.MustShipAlone
+    if (fd.externalProductIdentifier) orderable.externalProductIdentifier = fd.externalProductIdentifier
+    if (fd.SkuUpdate) orderable.SkuUpdate = fd.SkuUpdate
+    if (fd.ProductIdUpdate) orderable.ProductIdUpdate = fd.ProductIdUpdate
 
-    // ── Visible (spec-exact field names for the productType) ───────────────
-    // All remaining formData keys that are NOT orderable fields go into Visible.
-    // The LiderSpecService already sets field keys matching the spec exactly.
-    const ORDERABLE_KEYS = new Set([
-      'sku', 'productName', 'brand', 'price', 'shippingWeightValue', 'shippingWeightUnit',
-      'productIdType', 'productId', 'fulfillmentLagTime', 'multipackQuantity',
-      'startDate', 'endDate', 'electronicsIndicator', 'batteryTechnologyType',
-      'chemicalAerosolPesticide', 'images', 'availableQuantity',
-    ])
-
-    const visible: Record<string, any> = {
-      productType: fd.productType,
-      shortDescription: (fd.shortDescription || product.description || product.title || '').slice(0, 4000),
-    }
-    if (mainImage) visible.mainImageUrl = mainImage
-    if (additionalImages.length) visible.productSecondaryImageURL = additionalImages.slice(0, 9)
-
-    // Copy all spec-exact visible fields from formData
-    for (const [key, val] of Object.entries(fd)) {
-      if (ORDERABLE_KEYS.has(key)) continue
-      if (key === 'shortDescription') continue // already set
-      if (val === undefined || val === null || val === '') continue
-
-      // measure fields come as key_value + key_unit pairs → reassemble
-      if (key.endsWith('_value')) {
-        const base = key.slice(0, -6)
-        const unit = fd[`${base}_unit`]
-        if (unit !== undefined) {
-          visible[base] = { measure: String(val), unit }
-        } else {
-          visible[base] = { measure: String(val), unit: 'CM' }
-        }
-        continue
-      }
-      if (key.endsWith('_unit')) continue // consumed above
-
-      visible[key] = val
-    }
+    // ── Visible: atributos category-specific anidados bajo el nombre de
+    // la subCategory ("Accesorios Electrónicos", "Computadores", etc.). El
+    // operador define la subcategoría y sus atributos en formData.Visible.
+    // Si no vienen, dejamos un objeto mínimo con dimensiones del producto.
+    const visible: Record<string, any> = fd.Visible || {}
 
     return { orderable, visible }
+  }
+
+  // Helper para construir un { measure, unit } a partir de un valor crudo o
+  // un objeto ya formado.
+  private dim(raw: any, fallbackMeasure: number): { measure: number; unit: string } {
+    if (raw && typeof raw === 'object' && raw.measure !== undefined) {
+      return { measure: Number(raw.measure), unit: String(raw.unit || 'cm') }
+    }
+    return { measure: Number(raw ?? fallbackMeasure), unit: 'cm' }
   }
 
   async createProduct(
@@ -309,27 +330,14 @@ export class LiderDriver implements IMarketplaceDriver {
   ): Promise<SyncResult> {
     try {
       const client = await this.buildClient(credentials, config)
+      const fd: Record<string, any> = (product as any).formData ?? {}
       const { orderable, visible } = this.buildMPItemPayload(product)
 
-      const feedPayload = {
-        MPItemFeedHeader: {
-          requestId: randomUUID(),
-          requestBatchSize: '1',
-          feedDate: new Date().toISOString(),
-          mart: 'WALMART_CL',
-          locale: 'es',
-        },
-        MPItem: [{
-          processMode: 'CREATE',
-          sku: orderable.sku,
-          productIdentifiers: orderable.productIdentifiers,
-          MPItemAndLocationGroups: {
-            MPItemGroupHeader: { isPrimaryItem: '1', isPrimaryVariant: '1' },
-            Orderable: orderable,
-            Visible: visible,
-          },
-        }],
-      }
+      const feedPayload = this.buildFeedPayload({
+        processMode: 'REPLACE',
+        subCategory: fd.subCategory,
+        item: { Orderable: orderable, Visible: visible },
+      })
 
       const res = await client.post('/v3/feeds?feedType=MP_ITEM_INTL', feedPayload)
 
@@ -349,41 +357,147 @@ export class LiderDriver implements IMarketplaceDriver {
     }
   }
 
+  // updateProduct (sync outbound del cron): para Walmart Chile, los updates
+  // rutinarios de PRECIO usan el endpoint REST directo PUT /v3/price (no
+  // feed). Es síncrono, rápido y no requiere subset/version/mart. Stock se
+  // actualiza por separado vía updateStock() del cron.
+  //
+  // Los feeds MP_ITEM/MP_MAINTENANCE quedan reservados para changes
+  // estructurales del catálogo (descripción, imágenes, atributos),
+  // operaciones que sí justifican la asincronía del feed.
+  //
+  // Si el caller no pasa product.price, no hace nada (el cron también
+  // empuja stock por separado).
   async updateProduct(
     credentials: DriverCredentials,
     externalId: string,
     product: Partial<SyncProductInput>,
     config?: DriverConfig,
   ): Promise<SyncResult> {
+    if (product.price === undefined || product.price === null) {
+      return { success: true, externalId, rawResponse: { skipped: 'no price provided' } }
+    }
+    return this.updatePriceDirect(credentials, externalId, Number(product.price), config)
+  }
+
+  // Construye el feed top-level con MPItemFeedHeader v4.46 obligatorio.
+  // - processMode: REPLACE para crear, MERGE para update parcial.
+  // - subset/sellingChannel/version/mart son enums fijos.
+  // - subCategory es obligatorio del lado de Walmart pero depende de la
+  //   subcategoría del producto. Lo aceptamos por formData del operador.
+  private buildFeedPayload(opts: {
+    processMode: 'REPLACE' | 'MERGE'
+    subCategory?: string
+    item: { Orderable: Record<string, any>; Visible: Record<string, any> }
+  }): Record<string, any> {
+    const header: Record<string, any> = {
+      sellingChannel: 'marketplace',
+      processMode: opts.processMode,
+      mart: 'WALMART_CHILE',
+      subset: 'EXTERNAL',
+      locale: 'es',
+      version: '4.46',
+      requestId: randomUUID(),
+      feedDate: new Date().toISOString(),
+    }
+    if (opts.subCategory) header.subCategory = opts.subCategory
+    return {
+      MPItemFeedHeader: header,
+      MPItem: [opts.item],
+    }
+  }
+
+  // PUT /v3/price — actualiza el precio normal de uno o varios SKUs.
+  // Endpoint REST dedicado (síncrono, no es feed async).
+  // Doc CL: https://developer.walmart.com/cl-marketplace/reference/updateprice
+  //
+  // El shape de Walmart Chile es DISTINTO al de US:
+  //   - US: {sku, pricing: [{currentPriceType, currentPrice: {currency, amount}}]}
+  //   - CL: {amount: "29.99", skus: ["SKU1", "SKU2"]}  ← amount como STRING
+  //
+  // Validado contra la API real: Walmart CL rechaza `sku`, `pricing`,
+  // `price`, `currentPrice`. El DTO ItemPriceUpdateRequestDTO solo acepta
+  // los campos `amount` (string) y `skus` (array).
+  async updatePriceDirect(
+    credentials: DriverCredentials,
+    sku: string,
+    price: number,
+    config?: DriverConfig,
+  ): Promise<SyncResult> {
     try {
       const client = await this.buildClient(credentials, config)
-      const { orderable, visible } = this.buildMPItemPayload({ ...product, sku: externalId } as any)
-
-      const feedPayload = {
-        MPItemFeedHeader: {
-          requestId: randomUUID(),
-          requestBatchSize: '1',
-          feedDate: new Date().toISOString(),
-          mart: 'WALMART_CL',
-          locale: 'es',
-        },
-        MPItem: [{
-          processMode: 'REPLACE',
-          sku: externalId,
-          MPItemAndLocationGroups: {
-            Orderable: orderable,
-            Visible: visible,
-          },
-        }],
+      const payload = {
+        amount: String(Math.round(price)), // CL no acepta decimales y amount va como string
+        skus: [sku],
       }
-
-      const res = await client.post('/v3/feeds?feedType=MP_ITEM_INTL', feedPayload)
-      return { success: true, externalId, rawResponse: res.data }
+      const res = await client.put('/v3/price', payload)
+      return { success: true, externalId: sku, rawResponse: res.data }
     } catch (err: any) {
       return {
         success: false,
         error: err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message,
         rawResponse: err?.response?.data,
+      }
+    }
+  }
+
+  // GET /v3/inventory?sku=<sku> — estado actual del inventario de un SKU.
+  // Sirve para verificar si updateStock realmente aplicó.
+  async getStock(
+    credentials: DriverCredentials,
+    sku: string,
+    config?: DriverConfig,
+  ): Promise<any> {
+    const client = await this.buildClient(credentials, config)
+    try {
+      const res = await client.get(`/v3/inventory?sku=${encodeURIComponent(sku)}`)
+      return { success: true, data: res.data }
+    } catch (err: any) {
+      return {
+        success: false,
+        status: err?.response?.status,
+        error: err?.response?.data || err.message,
+      }
+    }
+  }
+
+  // GET /v3/feeds/{feedId}?includeDetails=true — estado real de un feed
+  // específico (los feeds se procesan async; el POST inicial siempre devuelve
+  // 200 con un feedId, lo que importa es el feedStatus después).
+  async getFeedStatus(
+    credentials: DriverCredentials,
+    feedId: string,
+    config?: DriverConfig,
+  ): Promise<any> {
+    const client = await this.buildClient(credentials, config)
+    try {
+      const res = await client.get(`/v3/feeds/${encodeURIComponent(feedId)}?includeDetails=true`)
+      return { success: true, data: res.data }
+    } catch (err: any) {
+      return {
+        success: false,
+        status: err?.response?.status,
+        error: err?.response?.data || err.message,
+      }
+    }
+  }
+
+  // GET /v3/feeds?limit=N — historial reciente. Útil para ver el contexto
+  // de feeds rechazados.
+  async listRecentFeeds(
+    credentials: DriverCredentials,
+    config?: DriverConfig,
+    limit = 10,
+  ): Promise<any> {
+    const client = await this.buildClient(credentials, config)
+    try {
+      const res = await client.get(`/v3/feeds?limit=${limit}&offset=0`)
+      return { success: true, data: res.data }
+    } catch (err: any) {
+      return {
+        success: false,
+        status: err?.response?.status,
+        error: err?.response?.data || err.message,
       }
     }
   }
@@ -406,8 +520,8 @@ export class LiderDriver implements IMarketplaceDriver {
           amount: stock,
         },
       }
-      await client.put(`/v3/inventory?sku=${encodeURIComponent(externalId)}`, payload)
-      return { success: true, externalId }
+      const res = await client.put(`/v3/inventory?sku=${encodeURIComponent(externalId)}`, payload)
+      return { success: true, externalId, rawResponse: res.data }
     } catch (err: any) {
       return {
         success: false,

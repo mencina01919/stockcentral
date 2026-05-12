@@ -85,4 +85,56 @@ export class SyncController {
   ) {
     return this.syncService.diagReadCurrent(tenantId, connectionId, productId)
   }
+
+  // Diagnóstico Lider: estado real de feeds Walmart.
+  @Get('connections/:id/lider-feed/:feedId')
+  @ApiOperation({ summary: 'Lider: consultar estado de un feed específico' })
+  liderFeed(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Param('feedId') feedId: string,
+  ) {
+    return this.syncService.liderFeedStatus(tenantId, connectionId, feedId)
+  }
+
+  @Get('connections/:id/lider-feeds')
+  @ApiOperation({ summary: 'Lider: listar últimos feeds enviados a Walmart' })
+  liderFeeds(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+  ) {
+    return this.syncService.liderFeedsList(tenantId, connectionId)
+  }
+
+  @Get('connections/:id/lider-stock/:sku')
+  @ApiOperation({ summary: 'Lider: consultar stock actual de un SKU' })
+  liderStock(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Param('sku') sku: string,
+  ) {
+    return this.syncService.liderGetStock(tenantId, connectionId, sku)
+  }
+
+  @Post('connections/:id/lider-price/:sku')
+  @ApiOperation({ summary: 'Lider: actualizar precio vía PUT /v3/price (no feed)' })
+  liderPushPrice(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Param('sku') sku: string,
+    @Body() body: { price: number },
+  ) {
+    return this.syncService.liderPushPrice(tenantId, connectionId, sku, body.price)
+  }
+
+  @Post('connections/:id/lider-stock-push/:sku')
+  @ApiOperation({ summary: 'Lider: actualizar stock vía PUT /v3/inventory con cantidad arbitraria' })
+  liderPushStock(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Param('sku') sku: string,
+    @Body() body: { stock: number },
+  ) {
+    return this.syncService.liderPushStockManual(tenantId, connectionId, sku, body.stock)
+  }
 }

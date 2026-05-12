@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common'
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common'
 import { InjectQueue } from '@nestjs/bull'
 import { Cron, CronExpression } from '@nestjs/schedule'
 import { Queue } from 'bull'
@@ -666,6 +666,80 @@ export class SyncService {
       this.syncQueue.getFailedCount(),
     ])
     return { waiting, active, completed, failed }
+  }
+
+  // Diagnóstico Lider: consulta directa al endpoint de feeds de Walmart.
+  // Necesario porque Walmart procesa los feeds async: el POST inicial siempre
+  // devuelve 200 + feedId, lo que realmente importa es el feedStatus después
+  // (feedStatus ERROR + itemsReceived=0 = el feed fue rechazado).
+  async liderFeedStatus(tenantId: string, connectionId: string, feedId: string) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') {
+      throw new BadRequestException('Esta conexión no es Lider')
+    }
+    const driver = getDriver(connection.provider) as any
+    if (!driver.getFeedStatus) {
+      throw new BadRequestException('Driver Lider no expone getFeedStatus')
+    }
+    return driver.getFeedStatus(
+      connection.credentials as Record<string, string>,
+      feedId,
+      connection.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  // Push de precio Lider vía endpoint REST directo /v3/price (no feed).
+  async liderPushPrice(tenantId: string, connectionId: string, sku: string, price: number) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') throw new BadRequestException('No es Lider')
+    const driver = getDriver(connection.provider) as any
+    if (!driver.updatePriceDirect) throw new BadRequestException('Driver Lider no expone updatePriceDirect')
+    return driver.updatePriceDirect(
+      connection.credentials as Record<string, string>,
+      sku,
+      price,
+      connection.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  async liderPushStockManual(tenantId: string, connectionId: string, sku: string, stock: number) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') throw new BadRequestException('No es Lider')
+    const driver = getDriver(connection.provider)
+    return driver.updateStock(
+      connection.credentials as Record<string, string>,
+      sku,
+      stock,
+      connection.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  async liderGetStock(tenantId: string, connectionId: string, sku: string) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') throw new BadRequestException('No es Lider')
+    const driver = getDriver(connection.provider) as any
+    if (!driver.getStock) throw new BadRequestException('Driver Lider no expone getStock')
+    return driver.getStock(
+      connection.credentials as Record<string, string>,
+      sku,
+      connection.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  async liderFeedsList(tenantId: string, connectionId: string) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') {
+      throw new BadRequestException('Esta conexión no es Lider')
+    }
+    const driver = getDriver(connection.provider) as any
+    if (!driver.listRecentFeeds) {
+      throw new BadRequestException('Driver Lider no expone listRecentFeeds')
+    }
+    return driver.listRecentFeeds(
+      connection.credentials as Record<string, string>,
+      connection.config as Record<string, unknown> | undefined,
+      10,
+    )
   }
 
   // Lee el producto actual en el marketplace (sin tocar nada). Útil para

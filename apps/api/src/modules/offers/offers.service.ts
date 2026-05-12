@@ -123,7 +123,7 @@ export class OffersService {
         notes: dto.notes,
         // Pre-llenamos calculatedSalePrice para que la UI ya muestre el monto;
         // el scheduler lo va a recalcular al activar igualmente.
-        calculatedSalePrice,
+        calculatedSalePrice: calculatedSalePrice ?? undefined,
       },
     })
 
