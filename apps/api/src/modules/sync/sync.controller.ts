@@ -137,4 +137,24 @@ export class SyncController {
   ) {
     return this.syncService.liderPushStockManual(tenantId, connectionId, sku, body.stock)
   }
+
+  @Get('connections/:id/lider-spec/:feedType')
+  @ApiOperation({ summary: 'Lider: descubrir version vigente del spec para un feedType' })
+  liderSpec(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Param('feedType') feedType: string,
+  ) {
+    return this.syncService.liderGetSpec(tenantId, connectionId, feedType)
+  }
+
+  @Post('connections/:id/lider-raw-feed')
+  @ApiOperation({ summary: 'Lider: enviar un feed body literal (sin transformaciones) para probar shape exacto' })
+  liderRawFeed(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+    @Body() body: { feedType: string; payload: any },
+  ) {
+    return this.syncService.liderRawFeed(tenantId, connectionId, body.feedType, body.payload)
+  }
 }

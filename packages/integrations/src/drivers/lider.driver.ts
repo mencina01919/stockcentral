@@ -339,7 +339,7 @@ export class LiderDriver implements IMarketplaceDriver {
         item: { Orderable: orderable, Visible: visible },
       })
 
-      const res = await client.post('/v3/feeds?feedType=MP_ITEM_INTL', feedPayload)
+      const res = await client.post('/v3/feeds?feedType=MP_ITEM', feedPayload)
 
       // After creating, push initial stock via inventory API
       const qty = (product as any).formData?.availableQuantity ?? (product as any).availableQuantity
@@ -404,6 +404,56 @@ export class LiderDriver implements IMarketplaceDriver {
     return {
       MPItemFeedHeader: header,
       MPItem: [opts.item],
+    }
+  }
+
+  // POST /v3/items/spec — descubre las specs disponibles para un feedType.
+  async getItemSpec(
+    credentials: DriverCredentials,
+    feedType: string,
+    config?: DriverConfig,
+    version = '5.0',
+    productTypes: string[] = ['Computers'],
+  ): Promise<any> {
+    const client = await this.buildClient(credentials, config)
+    try {
+      const res = await client.post('/v3/items/spec', {
+        feedType,
+        version,
+        productTypes,
+      })
+      return { success: true, data: res.data }
+    } catch (err: any) {
+      return {
+        success: false,
+        status: err?.response?.status,
+        error: err?.response?.data || err.message,
+      }
+    }
+  }
+
+  // POST /v3/feeds?feedType=MP_ITEM con payload literal — para enviar el
+  // ejemplo EXACTO que Walmart documenta y descartar cualquier diferencia
+  // del shape v4.46 generado por buildMPItemPayload. Si esto procesa OK,
+  // sabemos que el problema NO es el feedType ni el shape sino algún
+  // campo derivado del producto local; si esto también falla, el problema
+  // es del lado de Walmart (cuenta sin WM_SPEC_MODE activado).
+  async diagRawFeed(
+    credentials: DriverCredentials,
+    feedType: string,
+    body: any,
+    config?: DriverConfig,
+  ): Promise<any> {
+    const client = await this.buildClient(credentials, config)
+    try {
+      const res = await client.post(`/v3/feeds?feedType=${encodeURIComponent(feedType)}`, body)
+      return { success: true, data: res.data }
+    } catch (err: any) {
+      return {
+        success: false,
+        status: err?.response?.status,
+        error: err?.response?.data || err.message,
+      }
     }
   }
 

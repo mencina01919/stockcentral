@@ -702,6 +702,40 @@ export class SyncService {
     )
   }
 
+  // Descubre la versión vigente del spec en la cuenta Walmart.
+  async liderGetSpec(tenantId: string, connectionId: string, feedType: string) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') throw new BadRequestException('No es Lider')
+    const driver = getDriver(connection.provider) as any
+    if (!driver.getItemSpec) throw new BadRequestException('Driver Lider no expone getItemSpec')
+    return driver.getItemSpec(
+      connection.credentials as Record<string, string>,
+      feedType,
+      connection.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  // Envía un body literal al endpoint /v3/feeds de Walmart. Sirve para
+  // probar el payload exacto de la doc oficial sin transformaciones, y
+  // descartar bugs del shape generado por el driver.
+  async liderRawFeed(
+    tenantId: string,
+    connectionId: string,
+    feedType: string,
+    body: any,
+  ) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') throw new BadRequestException('No es Lider')
+    const driver = getDriver(connection.provider) as any
+    if (!driver.diagRawFeed) throw new BadRequestException('Driver Lider no expone diagRawFeed')
+    return driver.diagRawFeed(
+      connection.credentials as Record<string, string>,
+      feedType,
+      body,
+      connection.config as Record<string, unknown> | undefined,
+    )
+  }
+
   async liderPushStockManual(tenantId: string, connectionId: string, sku: string, stock: number) {
     const connection = await this.getConnection(tenantId, connectionId)
     if (connection.provider !== 'lider') throw new BadRequestException('No es Lider')
