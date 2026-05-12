@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common'
+import { Injectable, Logger, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common'
 import { InjectQueue } from '@nestjs/bull'
 import { Cron, CronExpression } from '@nestjs/schedule'
 import { Queue } from 'bull'
@@ -6,6 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service'
 import { getDriver } from '@stockcentral/integrations'
 import { SYNC_QUEUE, SyncJobType } from './sync.constants'
 import { BillingListener } from '../billing/billing.listener'
+import { InventoryService } from '../inventory/inventory.service'
 
 @Injectable()
 export class SyncService {
@@ -15,6 +16,8 @@ export class SyncService {
     private readonly prisma: PrismaService,
     @InjectQueue(SYNC_QUEUE) private readonly syncQueue: Queue,
     private readonly billing: BillingListener,
+    @Inject(forwardRef(() => InventoryService))
+    private readonly inventory: InventoryService,
   ) {}
 
   // ─── Queue Helpers ────────────────────────────────────────────────────────
@@ -43,6 +46,13 @@ export class SyncService {
     )
   }
 
+  // Encola un sync de stock con prioridad alta y dedup por producto+conexión.
+  // - jobId garantiza que si el mismo producto cambia 3 veces seguidas, solo
+  //   un job queda en cola (Bull descarta duplicados con el mismo jobId
+  //   pendiente). El último que llega gana el stock más fresco vía override
+  //   del data al re-encolar.
+  // - priority=1 (más alta) para que pase delante de los jobs masivos del
+  //   cron (priority=10 default).
   async enqueueStockSync(
     tenantId: string,
     connectionId: string,
@@ -50,10 +60,26 @@ export class SyncService {
     externalId: string,
     stock: number,
   ) {
+    const jobId = `stock:${connectionId}:${productId}`
+    // Si hay un job pendiente con este id, lo quitamos para reemplazar con
+    // el nuevo (que trae el stock más actualizado).
+    try {
+      const existing = await this.syncQueue.getJob(jobId)
+      if (existing && (await existing.getState()) === 'waiting') {
+        await existing.remove()
+      }
+    } catch {
+      // si la remoción falla, Bull devolverá el job existente al .add(jobId,...)
+    }
     return this.syncQueue.add(
       SyncJobType.SYNC_STOCK,
       { tenantId, connectionId, productId, externalId, stock },
-      { attempts: 5, backoff: { type: 'exponential', delay: 2000 } },
+      {
+        jobId,
+        priority: 1,
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 2000 },
+      },
     )
   }
 
@@ -115,7 +141,15 @@ export class SyncService {
     }
   }
 
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  // Cron de reconciliación (catch-up) — corre cada 15 min.
+  // Antes era 5 min porque era el ÚNICO mecanismo de sync outbound. Ahora
+  // que `enqueueStockSync` se dispara en vivo desde:
+  //   - inventory.update() / createMovement() cuando el operador edita stock
+  //   - consumeStockForOrder() cuando entra una venta de un marketplace
+  // … los cambios reales llegan a markets en segundos. El cron queda como
+  // safety net para casos que pudieron perderse (job que falló todos los
+  // reintentos, restart del worker en medio de un job, etc.).
+  @Cron('0 */15 * * * *')
   async scheduledProductsOutbound() {
     const connections = await this.prisma.connection.findMany({
       where: { syncEnabled: true, status: 'connected' },
@@ -198,7 +232,13 @@ export class SyncService {
       // (the create errored but the externalId got persisted as the local sku).
       // Sending updateProduct with that "id" makes the marketplace treat it as
       // a brand-new create, which spams their backoffice. Skip and flag.
-      if (mapping.marketplaceProductId === product.sku) {
+      //
+      // Excepción: Walmart Chile (lider) usa el SKU del seller como su sku
+      // real — la igualdad es legítima, no corrupción.
+      if (
+        mapping.marketplaceProductId === product.sku &&
+        connection.provider !== 'lider'
+      ) {
         await this.updateMappingError(
           product.id,
           connectionId,
@@ -589,6 +629,114 @@ export class SyncService {
     }
   }
 
+  // Sync inmediato (síncrono, sin queue) de UN producto a UN marketplace.
+  // Útil para el botón "Sync" por fila en la vista de productos del market:
+  // el operador quiere feedback inmediato sin esperar al cron de 5min.
+  async pushProductToMarketplace(tenantId: string, productId: string, connectionId: string) {
+    const product = await this.prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      include: {
+        inventory: {
+          where: { variantId: null, warehouse: { warehouseType: { in: ['online', 'store'] } } },
+        },
+        marketplaceMappings: { where: { connectionId }, include: { connection: true } },
+      },
+    })
+    if (!product) throw new NotFoundException(`Producto ${productId} no encontrado`)
+
+    const mapping = product.marketplaceMappings[0]
+    if (!mapping) throw new BadRequestException('Producto no está vinculado a este marketplace')
+
+    const connection = mapping.connection as any
+    if (connection.status !== 'connected') {
+      throw new BadRequestException(`La conexión "${connection.name}" no está activa`)
+    }
+    if (connection.isCatalogSource) {
+      throw new BadRequestException('No se puede sincronizar a una fuente de catálogo (read-only)')
+    }
+
+    const driver = getDriver(connection.provider)
+    if (driver.supportsWriteSync === false) {
+      throw new BadRequestException(`Driver ${connection.provider} es read-only`)
+    }
+
+    const credentials = connection.credentials as Record<string, string>
+    const config = connection.config as Record<string, unknown> | undefined
+    const externalId = mapping.marketplaceProductId || product.sku
+
+    const stock = product.inventory.reduce((s, i) => s + i.quantity, 0)
+    const images = (product.images as string[] | null) || []
+    const pricing = (product as any).marketplacePricing as Record<string, any> | null
+    const providerPricing = pricing?.[connection.provider]
+    const price = providerPricing?.calculatedPrice
+      ? Number(providerPricing.calculatedPrice)
+      : Number(product.basePrice)
+
+    // Tres llamadas separadas: producto (precio), imágenes, stock. Cada una
+    // puede fallar independientemente — no podemos enmascarar errores con
+    // .catch(() => {}) porque la UI necesita saber qué se aplicó realmente.
+    let priceRes: any = null
+    let stockRes: any = null
+    let imagesRes: any = null
+
+    try {
+      priceRes = await driver.updateProduct(credentials, externalId, {
+        sku: product.sku,
+        title: product.name,
+        description: product.description || undefined,
+        price,
+        stock,
+        images,
+      }, config)
+    } catch (err: any) {
+      priceRes = { success: false, error: err?.response?.data?.message || err.message }
+    }
+
+    if (images.length > 0 && driver.updateImages) {
+      try {
+        imagesRes = await driver.updateImages(credentials, externalId, images, config)
+      } catch (err: any) {
+        imagesRes = { success: false, error: err?.response?.data?.message || err.message }
+      }
+    }
+
+    try {
+      stockRes = await driver.updateStock(credentials, externalId, stock, config)
+    } catch (err: any) {
+      stockRes = { success: false, error: err?.response?.data?.message || err.message }
+    }
+
+    // Éxito real = al menos uno aplicado, sin errores no recuperables.
+    // Lo más importante para el operador es el stock + precio.
+    const priceOk = priceRes?.success !== false
+    const stockOk = stockRes?.success !== false
+    const allOk = priceOk && stockOk
+    const errors: string[] = []
+    if (!priceOk) errors.push(`Precio: ${priceRes?.error || 'error'}`)
+    if (!stockOk) errors.push(`Stock: ${stockRes?.error || 'error'}`)
+    if (imagesRes && imagesRes.success === false) errors.push(`Imágenes: ${imagesRes.error || 'error'}`)
+
+    await this.prisma.marketplaceMapping.update({
+      where: { id: mapping.id },
+      data: {
+        syncStatus: allOk ? 'success' : 'error',
+        lastSyncAt: new Date(),
+        errorMessage: allOk ? null : errors.join(' | '),
+      },
+    })
+
+    return {
+      success: allOk,
+      externalId,
+      syncedStock: stockOk ? stock : null,
+      syncedPrice: priceOk ? price : null,
+      priceOk,
+      stockOk,
+      imagesOk: imagesRes ? imagesRes.success !== false : null,
+      error: errors.length ? errors.join(' | ') : undefined,
+    }
+  }
+
   async pushProductToMarketplaces(tenantId: string, productId: string) {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, tenantId },
@@ -698,6 +846,35 @@ export class SyncService {
       connection.credentials as Record<string, string>,
       sku,
       price,
+      connection.config as Record<string, unknown> | undefined,
+    )
+  }
+
+  // Sube un archivo Excel (.xlsx) al endpoint /v3/feeds de Walmart Chile via
+  // multipart/form-data. El path debe ser absoluto y el archivo debe estar
+  // en el shape que el portal Sellercenter acepta para MP_ITEM.
+  async liderUploadExcel(
+    tenantId: string,
+    connectionId: string,
+    filePath: string,
+  ) {
+    const connection = await this.getConnection(tenantId, connectionId)
+    if (connection.provider !== 'lider') throw new BadRequestException('No es Lider')
+    const driver = getDriver(connection.provider) as any
+    if (!driver.uploadItemFeedExcel) throw new BadRequestException('Driver Lider no expone uploadItemFeedExcel')
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs')
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const path = require('path')
+    if (!fs.existsSync(filePath)) {
+      throw new BadRequestException(`Archivo no existe: ${filePath}`)
+    }
+    const buffer = fs.readFileSync(filePath)
+    const filename = path.basename(filePath)
+    return driver.uploadItemFeedExcel(
+      connection.credentials as Record<string, string>,
+      buffer,
+      filename,
       connection.config as Record<string, unknown> | undefined,
     )
   }
@@ -1236,6 +1413,32 @@ export class SyncService {
         internalStatus: initialInternalStatus,
       },
     })
+
+    // Descontar stock del maestro y propagar a los OTROS marketplaces.
+    // Solo se hace al CREAR una orden nueva — los updates de status
+    // (cancelaciones, mediaciones) tienen su propio flujo. Cancelaciones
+    // hoy NO reponen stock automático — el operador puede ajustar manual.
+    try {
+      const result = await this.inventory.consumeStockForOrder({
+        tenantId,
+        items: marketOrder.items.map((it) => ({ sku: it.sku, quantity: it.quantity })),
+        orderReference: `${connection.provider}#${marketOrder.externalId}`,
+        skipConnectionId: connection.id,
+      })
+      if (result.missing.length) {
+        this.logger.warn(
+          `Order ${connection.provider}#${marketOrder.externalId}: SKUs sin inventory: ${result.missing.join(', ')}`,
+        )
+      }
+      this.logger.log(
+        `Stock consumido para orden ${connection.provider}#${marketOrder.externalId}: ${result.consumed} items`,
+      )
+    } catch (err: any) {
+      this.logger.error(
+        `Error descontando stock para orden ${connection.provider}#${marketOrder.externalId}: ${err.message}`,
+      )
+    }
+
     return { created: true, orderId: newOrder.id }
   }
 
@@ -1448,8 +1651,13 @@ export class SyncService {
       },
     })
 
+    // Walmart Chile (lider) usa el SKU del seller como su sku real — la
+    // igualdad es legítima en ese provider, no corrupción.
     const suspicious = mappings.filter(
-      (m) => m.marketplaceProductId && m.marketplaceProductId === m.product.sku,
+      (m) =>
+        m.marketplaceProductId &&
+        m.marketplaceProductId === m.product.sku &&
+        m.connection.provider !== 'lider',
     )
     const erroredWithoutId = mappings.filter(
       (m) => m.syncStatus === 'error' && !m.marketplaceProductId,
@@ -1495,10 +1703,20 @@ export class SyncService {
     // readable).
     const all = await this.prisma.marketplaceMapping.findMany({
       where: { connectionId: { in: liveMarketIds } },
-      include: { product: { select: { sku: true } } },
+      include: {
+        product: { select: { sku: true } },
+        connection: { select: { provider: true } },
+      },
     })
+    // Excluir lider de la limpieza: en Walmart Chile la igualdad sku/externalId
+    // es legítima.
     const suspiciousIds = all
-      .filter((m) => m.marketplaceProductId && m.marketplaceProductId === m.product.sku)
+      .filter(
+        (m) =>
+          m.marketplaceProductId &&
+          m.marketplaceProductId === m.product.sku &&
+          m.connection.provider !== 'lider',
+      )
       .map((m) => m.id)
     const erroredEmptyIds = all
       .filter((m) => m.syncStatus === 'error' && !m.marketplaceProductId)

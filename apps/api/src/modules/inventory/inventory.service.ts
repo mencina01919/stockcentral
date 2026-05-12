@@ -14,13 +14,22 @@ export class InventoryService {
 
   // Encolar push de stock a todos los marketplaces vinculados al producto.
   // Llamado tras cambios de inventario o movimientos.
-  private async pushStockToMarketplaces(tenantId: string, productId: string, totalStock: number) {
+  // Encola sync de stock hacia cada marketplace vinculado del producto.
+  // skipConnectionId permite excluir uno (típicamente el que originó una
+  // venta — ese sistema ya descontó por su lado).
+  private async pushStockToMarketplaces(
+    tenantId: string,
+    productId: string,
+    totalStock: number,
+    skipConnectionId?: string,
+  ) {
     const mappings = await this.prisma.marketplaceMapping.findMany({
       where: {
         productId,
-        syncStatus: 'connected',
+        syncStatus: { in: ['connected', 'success', 'error'] },
         marketplaceProductId: { not: null },
         connection: { syncEnabled: true, status: 'connected', isCatalogSource: false },
+        ...(skipConnectionId ? { connectionId: { not: skipConnectionId } } : {}),
       },
       include: { connection: true },
     })
@@ -38,6 +47,99 @@ export class InventoryService {
         this.logger.error(`Failed to enqueue stock sync ${productId}@${m.connectionId}: ${err.message}`)
       }
     }
+  }
+
+  // Consumo de stock al recibir una orden desde un marketplace.
+  // Se llama desde syncService.upsertOrderFromMarketplace cuando se crea
+  // una orden nueva (no para updates de orden existente — Walmart no nos
+  // avisa de cambios de qty, solo de status).
+  //
+  // Estrategia por item:
+  //   1. Buscar producto local por SKU
+  //   2. Descontar del warehouse 'online' (preferido) o el primero disponible
+  //   3. Crear StockMovement tipo 'out' con la referencia de la orden
+  //   4. Trigger sync hacia los OTROS marketplaces (excluye el originador
+  //      del descuento — ese ya descontó por su lado al confirmar la venta)
+  //
+  // skipConnectionId: el marketplace que originó la orden — no le re-pushamos
+  // stock porque su sistema ya descontó la unidad al cerrar la venta.
+  async consumeStockForOrder(opts: {
+    tenantId: string
+    items: Array<{ sku: string; quantity: number }>
+    orderReference: string  // ej. "ML#123456" para auditoría en StockMovement
+    skipConnectionId?: string
+  }): Promise<{ consumed: number; missing: string[] }> {
+    let consumed = 0
+    const missing: string[] = []
+
+    for (const item of opts.items) {
+      const sku = item.sku?.trim()
+      if (!sku || !item.quantity) continue
+
+      // Buscar producto local
+      const product = await this.prisma.product.findFirst({
+        where: { tenantId: opts.tenantId, sku },
+        select: { id: true, sku: true },
+      })
+      if (!product) {
+        missing.push(sku)
+        continue
+      }
+
+      // Buscar inventory del warehouse online (preferido) o el primero disponible
+      // que tenga stock suficiente.
+      const inventories = await this.prisma.inventory.findMany({
+        where: {
+          tenantId: opts.tenantId,
+          productId: product.id,
+          variantId: null,
+          warehouse: { warehouseType: { in: ['online', 'store'] } },
+        },
+        include: { warehouse: { select: { warehouseType: true } } },
+        orderBy: { warehouse: { warehouseType: 'asc' } }, // 'online' antes que 'store'
+      })
+
+      // Preferir online; si no, agarra el primero con stock
+      let target = inventories.find((i) => i.warehouse.warehouseType === 'online' && i.quantity >= item.quantity)
+      if (!target) target = inventories.find((i) => i.quantity >= item.quantity)
+      if (!target) {
+        // No hay stock suficiente — descontamos del primero igual y dejamos
+        // negativo (mejor sobreventa visible que silenciar el problema).
+        target = inventories[0]
+      }
+      if (!target) {
+        missing.push(`${sku} (sin inventory)`)
+        continue
+      }
+
+      await this.prisma.$transaction([
+        this.prisma.inventory.update({
+          where: { id: target.id },
+          data: { quantity: { decrement: item.quantity } },
+        }),
+        this.prisma.stockMovement.create({
+          data: {
+            inventoryId: target.id,
+            type: 'out',
+            quantity: item.quantity,
+            reason: 'Venta marketplace',
+            reference: opts.orderReference,
+          },
+        }),
+      ])
+      consumed++
+
+      // Push stock a otros marketplaces (excluye el que originó la orden)
+      const newTotal = await this.totalStockForProduct(opts.tenantId, product.id)
+      await this.pushStockToMarketplaces(
+        opts.tenantId,
+        product.id,
+        newTotal,
+        opts.skipConnectionId,
+      )
+    }
+
+    return { consumed, missing }
   }
 
   private async totalStockForProduct(tenantId: string, productId: string): Promise<number> {
