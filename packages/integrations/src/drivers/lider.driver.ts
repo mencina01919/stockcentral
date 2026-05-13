@@ -709,6 +709,95 @@ export class LiderDriver implements IMarketplaceDriver {
     }
   }
 
+  // POST /v3/feeds?feedType=inventory — actualización masiva de stock.
+  // Walmart Chile acepta hasta 1000 SKUs por feed. El feed se procesa
+  // async: el POST devuelve feedId al toque, hay que consultar el feed
+  // status después para saber cuántos aceptó/rechazó.
+  //
+  // Shape validado en probe-lider-inventory-feed.cjs:
+  //   { InventoryHeader: { version: '1.4' }, Inventory: [{sku, quantity:{unit,amount}}, ...] }
+  //
+  // Devolvemos { feedId, count } al caller. La verificación del status
+  // del feed queda en manos del caller (sync.service decide cuándo
+  // consultarlo).
+  async bulkUpdateStock(
+    credentials: DriverCredentials,
+    items: Array<{ sku: string; stock: number }>,
+    config?: DriverConfig,
+  ): Promise<{ success: boolean; feedId?: string; count?: number; error?: string }> {
+    if (!items.length) return { success: true, count: 0 }
+    try {
+      const client = await this.buildClient(credentials, config)
+      // Walmart capea en 1000 por feed; si vienen más, dividimos en chunks.
+      const CHUNK = 1000
+      const chunks: Array<typeof items> = []
+      for (let i = 0; i < items.length; i += CHUNK) chunks.push(items.slice(i, i + CHUNK))
+
+      const feedIds: string[] = []
+      for (const chunk of chunks) {
+        const payload = {
+          InventoryHeader: { version: '1.4' },
+          Inventory: chunk.map((it) => ({
+            sku: it.sku,
+            quantity: { unit: 'EACH', amount: Math.max(0, Math.floor(it.stock)) },
+          })),
+        }
+        const res = await client.post('/v3/feeds?feedType=inventory', payload)
+        const fid = res.data?.feedId
+        if (fid) feedIds.push(fid)
+      }
+      // Si hubo 1 solo feed devolvemos su id directo; si hubo varios, los
+      // unimos por coma (poco común — sería >1000 SKUs).
+      return {
+        success: feedIds.length > 0,
+        feedId: feedIds.join(','),
+        count: items.length,
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message,
+      }
+    }
+  }
+
+  // PUT /v3/price con array de SKUs — actualización masiva de precio.
+  // Walmart CL solo acepta el MISMO precio para todos los SKUs del array,
+  // así que el caller debe agrupar por precio antes de llamar a esta
+  // función. Devolvemos un resumen con el total de SKUs actualizados.
+  async bulkUpdatePrice(
+    credentials: DriverCredentials,
+    groups: Array<{ price: number; skus: string[] }>,
+    config?: DriverConfig,
+  ): Promise<{ success: boolean; updated: number; failed: number; errors: string[] }> {
+    if (!groups.length) return { success: true, updated: 0, failed: 0, errors: [] }
+    const client = await this.buildClient(credentials, config)
+    let updated = 0
+    let failed = 0
+    const errors: string[] = []
+    for (const g of groups) {
+      if (!g.skus.length) continue
+      // El cap del payload no está documentado; usamos 200 SKUs por call
+      // por las dudas (el mutex serializa requests).
+      const CHUNK = 200
+      for (let i = 0; i < g.skus.length; i += CHUNK) {
+        const slice = g.skus.slice(i, i + CHUNK)
+        try {
+          await client.put('/v3/price', {
+            amount: String(Math.round(g.price)),
+            skus: slice,
+          })
+          updated += slice.length
+        } catch (err: any) {
+          failed += slice.length
+          const msg = err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message
+          errors.push(`price=${g.price}: ${msg}`)
+        }
+      }
+    }
+    return { success: failed === 0, updated, failed, errors }
+  }
+
   // GET /v3/inventory?sku=<sku> — estado actual del inventario de un SKU.
   // Sirve para verificar si updateStock realmente aplicó.
   async getStock(

@@ -138,6 +138,15 @@ export class SyncController {
     return this.syncService.liderPushStockManual(tenantId, connectionId, sku, body.stock)
   }
 
+  @Post('connections/:id/bulk-sync')
+  @ApiOperation({ summary: 'Sincronizar stock + precio de TODOS los productos vinculados en 1-3 llamadas masivas (vs N llamadas secuenciales)' })
+  bulkSync(
+    @TenantId() tenantId: string,
+    @Param('id') connectionId: string,
+  ) {
+    return this.syncService.bulkSyncStockAndPrice(tenantId, connectionId)
+  }
+
   @Get('connections/:id/lider-spec/:feedType')
   @ApiOperation({ summary: 'Lider: descubrir version vigente del spec para un feedType' })
   liderSpec(
