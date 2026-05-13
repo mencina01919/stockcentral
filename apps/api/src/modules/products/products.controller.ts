@@ -194,13 +194,21 @@ export class ProductsController {
   }
 
   @Post('marketplace/:connectionId/refresh')
-  @ApiOperation({ summary: 'Invalida el caché de productos del marketplace y fuerza recarga' })
+  @ApiOperation({ summary: 'Forzar refresh del cache de productos del marketplace (síncrono, puede tardar 30s+)' })
   refreshMarketplaceCache(
     @TenantId() tenantId: string,
     @Param('connectionId') connectionId: string,
   ) {
-    this.productsService.invalidateMpCache(connectionId)
-    return { ok: true }
+    return this.productsService.refreshMarketplaceCache(tenantId, connectionId)
+  }
+
+  @Get('marketplace/:connectionId/cache-status')
+  @ApiOperation({ summary: 'Información del estado del cache (lastFetchedAt + cantidad)' })
+  marketplaceCacheStatus(
+    @TenantId() tenantId: string,
+    @Param('connectionId') connectionId: string,
+  ) {
+    return this.productsService.getMarketplaceCacheStatus(tenantId, connectionId)
   }
 
 @Get('marketplace/:connectionId')

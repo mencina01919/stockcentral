@@ -2,10 +2,14 @@ import { Injectable, NotFoundException, ConflictException, BadRequestException }
 import { PrismaService } from '../../prisma/prisma.service'
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto/product.dto'
 import { getDriver, ParisDriver } from '@stockcentral/integrations'
+import { MarketplaceCacheService } from './marketplace-cache.service'
 
 @Injectable()
 export class ProductsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private marketplaceCache: MarketplaceCacheService,
+  ) {}
 
   private async generateSku(tenantId: string, name: string): Promise<string> {
     const base = name
@@ -442,11 +446,28 @@ export class ProductsService {
     })
     if (!connection) throw new NotFoundException('Conexión no encontrada')
 
-    const driver = getDriver(connection.provider)
-    const cfg = connection.config as Record<string, unknown> | undefined
     const { status, stock, search, linked } = filters
 
-    // status + search go to the driver (ML supports both natively)
+    // Lectura del cache local (MarketplaceProductSnapshot). El cron lo llena
+    // cada 30 min; el botón "Refrescar" lo dispara on-demand. Si NUNCA se
+    // llenó (primera vez), caemos al fetch sincrónico abajo para no
+    // mostrar lista vacía.
+    const hasCache = await this.marketplaceCache.hasCache(connectionId)
+    if (hasCache) {
+      return this.fetchMarketplaceProductsFromCache(
+        connectionId,
+        offset,
+        limit,
+        filters,
+      )
+    }
+
+    // ── Fallback: fetch sincrónico al marketplace (legacy path). Solo se
+    // usa la primera vez antes de que el cron llene el cache, o si el
+    // cache fue borrado a mano. El driver tarda ~15s con Lider porque
+    // enriquece stock por producto — por eso el cache existe.
+    const driver = getDriver(connection.provider)
+    const cfg = connection.config as Record<string, unknown> | undefined
     const driverCfg: Record<string, unknown> = { ...(cfg as any) }
     if (status) driverCfg.statusFilter = status
     if (search) driverCfg.searchQuery = search
@@ -458,11 +479,86 @@ export class ProductsService {
       limit,
     )
 
-    // Cross-reference with local mappings for the "vinculado" badge.
-    // Incluimos `images` del producto local para usar como fallback cuando
-    // el marketplace no devuelve miniaturas (caso Lider — Walmart Chile no
-    // expone imágenes en ningún endpoint de items).
-    const externalIds = result.items.map((p) => p.externalId).filter(Boolean)
+    return this.attachMappingsAndFilter(
+      connectionId,
+      result.items,
+      filters,
+      { total: result.total, offset: result.offset, limit: result.limit, hasMore: result.hasMore },
+    )
+  }
+
+  // Lee productos del marketplace desde el cache local. Toda la lógica
+  // de filtros (status, search, linked, stock) corre en Postgres → es
+  // instantáneo aunque haya 10k productos.
+  private async fetchMarketplaceProductsFromCache(
+    connectionId: string,
+    offset: number,
+    limit: number,
+    filters: { status?: string; stock?: string; search?: string; linked?: string },
+  ) {
+    const { status, stock, search, linked } = filters
+
+    // WHERE base
+    const where: any = { connectionId }
+    if (status) where.status = status
+    if (stock === 'in_stock') where.stock = { gt: 0 }
+    else if (stock === 'out_of_stock') where.OR = [{ stock: 0 }, { stock: null }]
+    if (search) {
+      const q = search.trim()
+      const orSearch = [
+        { externalId: { contains: q, mode: 'insensitive' as const } },
+        { externalSku: { contains: q, mode: 'insensitive' as const } },
+        { title: { contains: q, mode: 'insensitive' as const } },
+      ]
+      // Combina con `OR` existente si lo había (caso out_of_stock)
+      where.AND = (where.OR ? [{ OR: where.OR }] : []).concat([{ OR: orSearch }])
+      delete where.OR
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.marketplaceProductSnapshot.findMany({
+        where,
+        skip: offset,
+        take: limit,
+        orderBy: { lastFetchedAt: 'desc' },
+      }),
+      this.prisma.marketplaceProductSnapshot.count({ where }),
+    ])
+
+    // Forma compatible con la respuesta legacy
+    const items = data.map((p) => ({
+      externalId: p.externalId,
+      externalSku: p.externalSku,
+      title: p.title,
+      description: undefined,
+      price: p.price ? Number(p.price) : 0,
+      stock: p.stock ?? 0,
+      status: p.status || 'unknown',
+      images: (p.images as string[] | null) || [],
+      categoryId: p.categoryId,
+      url: p.url,
+      rawData: p.rawData,
+    }))
+
+    const enriched = await this.attachMappingsAndFilter(
+      connectionId,
+      items,
+      { linked },
+      { total, offset, limit, hasMore: offset + items.length < total },
+    )
+    return enriched
+  }
+
+  // Cruza una lista de items del marketplace con MarketplaceMapping
+  // (badge "vinculado") y aplica filtro linked/unlinked sobre la página.
+  // Compartido entre el path cache y el path fallback.
+  private async attachMappingsAndFilter(
+    connectionId: string,
+    rawItems: any[],
+    filters: { linked?: string },
+    meta: { total: number; offset: number; limit: number; hasMore: boolean },
+  ) {
+    const externalIds = rawItems.map((p) => p.externalId).filter(Boolean)
     const mappings = externalIds.length
       ? await this.prisma.marketplaceMapping.findMany({
           where: { connectionId, marketplaceProductId: { in: externalIds } },
@@ -471,10 +567,8 @@ export class ProductsService {
       : []
     const mappingByExternalId = new Map(mappings.map((m) => [m.marketplaceProductId, m]))
 
-    let items = result.items.map((p) => {
+    let items = rawItems.map((p) => {
       const mapping = mappingByExternalId.get(p.externalId)
-      // Si el marketplace no trajo imágenes pero hay producto maestro
-      // vinculado, usamos las imágenes del maestro como fallback.
       const marketImages = p.images || []
       const masterImages = (mapping?.product?.images as string[] | null) || []
       const images = marketImages.length > 0 ? marketImages : masterImages
@@ -499,16 +593,10 @@ export class ProductsService {
       }
     })
 
-    // stock / linked filters applied on the returned page (ML doesn't support these natively)
-    if (stock === 'in_stock')       items = items.filter((p) => p.stock > 0)
-    else if (stock === 'out_of_stock') items = items.filter((p) => !(p.stock > 0))
-    if (linked === 'linked')        items = items.filter((p) => p.mapping !== null)
-    else if (linked === 'unlinked') items = items.filter((p) => p.mapping === null)
+    if (filters.linked === 'linked') items = items.filter((p) => p.mapping !== null)
+    else if (filters.linked === 'unlinked') items = items.filter((p) => p.mapping === null)
 
-    return {
-      data: items,
-      meta: { total: result.total, offset: result.offset, limit: result.limit, hasMore: result.hasMore },
-    }
+    return { data: items, meta }
   }
 
   async fetchMarketplaceProductDetail(tenantId: string, connectionId: string, externalId: string) {
@@ -542,6 +630,34 @@ export class ProductsService {
   }
 
   invalidateMpCache(_connectionId: string) { /* kept for API compat */ }
+
+  // Dispara un refresh del cache de productos del marketplace. Síncrono
+  // (espera a que termine) para que el botón "Refrescar" en la UI sepa
+  // cuándo invalidar la query de React.
+  async refreshMarketplaceCache(tenantId: string, connectionId: string) {
+    // Verificar tenant para que no se pueda refrescar conexiones ajenas
+    const conn = await this.prisma.connection.findFirst({
+      where: { id: connectionId, tenantId },
+      select: { id: true },
+    })
+    if (!conn) throw new NotFoundException('Conexión no encontrada')
+    return this.marketplaceCache.refreshConnection(connectionId)
+  }
+
+  // Estado del cache: cuándo fue la última actualización y cuántos
+  // productos hay. Lo consume la UI para mostrar "actualizado hace X min".
+  async getMarketplaceCacheStatus(tenantId: string, connectionId: string) {
+    const conn = await this.prisma.connection.findFirst({
+      where: { id: connectionId, tenantId },
+      select: { id: true },
+    })
+    if (!conn) throw new NotFoundException('Conexión no encontrada')
+    const [count, lastFetchedAt] = await Promise.all([
+      this.prisma.marketplaceProductSnapshot.count({ where: { connectionId } }),
+      this.marketplaceCache.getLastFetchedAt(connectionId),
+    ])
+    return { count, lastFetchedAt }
+  }
 
   async unlinkMarketplace(tenantId: string, productId: string, connectionId: string) {
     const product = await this.prisma.product.findFirst({ where: { id: productId, tenantId } })

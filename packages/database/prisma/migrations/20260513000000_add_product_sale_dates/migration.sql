@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS "saleEndDate" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "saleStartDate" TIMESTAMP(3);
