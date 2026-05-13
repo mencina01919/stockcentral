@@ -725,6 +725,37 @@ export class SyncService {
       },
     })
 
+    // Actualizar el snapshot del marketplace para que la vista refleje
+    // los cambios al toque, sin esperar al próximo cron de 30 min. Si el
+    // marketplace rechazó algún campo (stockOk=false), NO escribimos ese
+    // campo para no contaminar el cache con datos inexistentes en el
+    // marketplace real.
+    try {
+      const snapshotData: Record<string, any> = { lastFetchedAt: new Date() }
+      if (priceOk) snapshotData.price = price
+      if (stockOk) snapshotData.stock = stock
+      if (imagesRes?.success !== false && images.length > 0) {
+        snapshotData.images = images as any
+      }
+      await this.prisma.marketplaceProductSnapshot.upsert({
+        where: { connectionId_externalId: { connectionId, externalId } },
+        create: {
+          connectionId,
+          externalId,
+          externalSku: mapping.marketplaceSku || product.sku,
+          title: product.name,
+          ...snapshotData,
+        },
+        update: snapshotData,
+      })
+    } catch (err: any) {
+      // Si falla el snapshot update no abortamos — el sync principal ya
+      // se aplicó. Solo logueamos para detectar bugs.
+      this.logger.warn(
+        `No se pudo actualizar snapshot post-sync: ${err.message}`,
+      )
+    }
+
     return {
       success: allOk,
       externalId,
