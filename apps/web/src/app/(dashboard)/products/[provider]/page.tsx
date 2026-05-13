@@ -103,13 +103,58 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
   }
   const hasFilters = search || statusFilter || linkedFilter || stockFilter
 
+  // GET /cache-status — devuelve cuántos productos hay y cuándo fue
+  // la última actualización del cache. La UI lo refresca cada 60s para
+  // mantener el indicador "Actualizado hace X min" vivo.
+  const { data: cacheStatus } = useQuery<{ count: number; lastFetchedAt: string | null }>({
+    enabled: !!connection?.id,
+    queryKey: ['marketplace-cache-status', connection?.id],
+    queryFn: () =>
+      api.get(`/products/marketplace/${connection.id}/cache-status`).then((r) => r.data),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  })
+
   const handleRefresh = async () => {
     if (!connection?.id) return
     setRefreshing(true)
-    await api.post(`/products/marketplace/${connection.id}/refresh`).catch(() => {})
-    await queryClient.invalidateQueries({ queryKey: ['marketplace-products', provider] })
-    setRefreshing(false)
+    try {
+      const r = await api.post(`/products/marketplace/${connection.id}/refresh`)
+      const { fetched, upserted, durationMs } = r.data || {}
+      if (typeof fetched === 'number') {
+        toast.success(
+          `${providerLabel}: ${upserted} productos actualizados en ${Math.round((durationMs || 0) / 1000)}s`,
+        )
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['marketplace-products', provider] }),
+        queryClient.invalidateQueries({ queryKey: ['marketplace-cache-status', connection.id] }),
+      ])
+    } catch (e: any) {
+      toast.error(
+        e?.response?.data?.message ||
+          `No se pudo actualizar desde ${providerLabel}. Intentalo de nuevo en unos minutos.`,
+      )
+    } finally {
+      setRefreshing(false)
+    }
   }
+
+  // "Actualizado hace X min/seg" — string humano que se calcula a partir
+  // de cacheStatus.lastFetchedAt. Se recalcula en cada render gracias
+  // al refetchInterval del useQuery de arriba.
+  const lastUpdatedLabel = (() => {
+    if (!cacheStatus?.lastFetchedAt) return null
+    const ms = Date.now() - new Date(cacheStatus.lastFetchedAt).getTime()
+    if (ms < 0) return 'ahora'
+    const min = Math.floor(ms / 60000)
+    if (min < 1) return 'hace menos de 1 min'
+    if (min < 60) return `hace ${min} min`
+    const h = Math.floor(min / 60)
+    if (h < 24) return `hace ${h} h`
+    const d = Math.floor(h / 24)
+    return `hace ${d} d`
+  })()
 
   if (!connections) {
     return (
@@ -212,6 +257,18 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
 
               {/* Reset + conteo + refresh */}
               <div className="flex items-center gap-2 ml-auto">
+                {lastUpdatedLabel && (
+                  <p
+                    className="text-xs text-gray-400 whitespace-nowrap"
+                    title={
+                      cacheStatus?.lastFetchedAt
+                        ? `Última actualización del cache: ${new Date(cacheStatus.lastFetchedAt).toLocaleString('es-CL')}`
+                        : ''
+                    }
+                  >
+                    Actualizado {lastUpdatedLabel}
+                  </p>
+                )}
                 <button
                   onClick={handleRefresh}
                   disabled={refreshing}
