@@ -850,13 +850,18 @@ export class SyncService {
     const config = connection.config as Record<string, unknown> | undefined
 
     const startedAt = Date.now()
+    this.logger.log(`[bulk-sync ${connection.provider}] iniciando — ${stockItems.length} stocks, ${priceMap.size} grupos de precio`)
 
     // 1. Bulk inventory feed (async, devuelve feedId)
+    this.logger.log(`[bulk-sync ${connection.provider}] llamando bulkUpdateStock...`)
     const stockResult = await driver.bulkUpdateStock(credentials, stockItems, config)
+    this.logger.log(`[bulk-sync ${connection.provider}] bulkUpdateStock ok — feedId=${stockResult?.feedId} took=${Date.now() - startedAt}ms`)
 
     // 2. Bulk price PUTs agrupados (síncrono por grupo)
     const priceGroups = Array.from(priceMap.entries()).map(([price, skus]) => ({ price, skus }))
+    this.logger.log(`[bulk-sync ${connection.provider}] llamando bulkUpdatePrice con ${priceGroups.length} grupos...`)
     const priceResult = await driver.bulkUpdatePrice(credentials, priceGroups, config)
+    this.logger.log(`[bulk-sync ${connection.provider}] bulkUpdatePrice ok — updated=${priceResult?.updated} failed=${priceResult?.failed} took=${Date.now() - startedAt}ms`)
 
     // 3. Actualizar mappings + snapshot del cache local en lote.
     //    Como el feed inventory es async, marcamos mappings como
