@@ -336,9 +336,15 @@ export class LiderDriver implements IMarketplaceDriver {
         pageOffset += PAGE_SIZE
       }
 
-      const page = allItems.slice(offset, offset + 9999)
-      // Para el caso "todos": NO enrich (50+ items × call = demasiado caro)
-      return { items: page, total: allItems.length, offset, limit, hasMore: false }
+      // Enrich con /v3/inventory para CADA producto. Es caro (N calls
+      // × 500ms throttle = ~30s para 51 items), pero el cache refresh
+      // corre cada 30 min en background — el usuario no espera esto.
+      // Sin esto, los productos quedan con stock=0 en el cache aunque
+      // Walmart sí los tenga con stock real.
+      const enrichedAll = await Promise.all(allItems.map(enrichWithStock))
+
+      const page = enrichedAll.slice(offset, offset + 9999)
+      return { items: page, total: enrichedAll.length, offset, limit, hasMore: false }
     }
 
     // Standard paginated call — cap limit a 50 (máximo de Walmart Chile)
