@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -2073,7 +2073,19 @@ function FormFields({
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 
+// useSearchParams() en Next 14 con SSG requiere estar dentro de <Suspense>.
+// Como esta página es client-side completa (use client) y necesita los
+// query params para deep-linking desde otras vistas, envolvemos el cuerpo
+// en Suspense para satisfacer el prerender estático.
 export default function PublicationsPage() {
+  return (
+    <Suspense fallback={null}>
+      <PublicationsPageInner />
+    </Suspense>
+  )
+}
+
+function PublicationsPageInner() {
   const searchParams = useSearchParams()
   const deepLinkProductId = searchParams.get('productId')
   const deepLinkConnectionId = searchParams.get('connectionId')

@@ -358,21 +358,6 @@ export default function LoginPage() {
             </a>
           </p>
 
-          <div
-            className="sc-mono"
-            style={{
-              marginTop: 20,
-              padding: '12px 14px',
-              borderRadius: 8,
-              background: 'rgba(59,130,246,0.06)',
-              border: '1px dashed var(--sc-line-soft)',
-              fontSize: 11,
-              color: 'var(--sc-text-mid)',
-              letterSpacing: '0.04em',
-            }}
-          >
-            <span style={{ color: 'var(--sc-blue-600)' }}>// DEMO:</span> admin@demo-store.com · Admin1234!
-          </div>
         </div>
       </div>
     </div>
