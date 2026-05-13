@@ -168,23 +168,44 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     const searchQuery: string | undefined = cfg.searchQuery
 
     // Modo "todos" para el cache refresh: itera todas las páginas de 100
-    // (cap nativo de /users/:id/items/search). Sin esto, limit=9999 da 400.
+    // por estado. ML tiene un cap muy fuerte: offset+limit ≤ 1000 en
+    // /users/:id/items/search. Para superar eso usamos el endpoint
+    // /users/:id/items/search/scan_ids que devuelve cursor scroll_id
+    // sin tope de offset.
     if (limit >= 9999) {
       const PAGE = 100
       const allItems: MarketplaceProduct[] = []
-      // Si hay statusFilter usamos solo ese; sino todos los 3 estados.
       const statuses = statusFilter
         ? [statusFilter]
         : ['active', 'paused', 'closed']
+
       for (const status of statuses) {
-        let pageOffset = 0
-        // Tope defensivo: ML capea offset+limit en 10.000 para esta búsqueda
-        const MAX_OFFSET = 10000 - PAGE
-        while (pageOffset <= MAX_OFFSET) {
-          const res = await client.get(`/users/${sellerId}/items/search`, {
-            params: { status, limit: PAGE, offset: pageOffset },
-          })
-          const ids: string[] = res.data.results || []
+        // Estrategia scroll_id: primera request con search_type=scan
+        // devuelve scroll_id + primera página. Subsiguientes envían el
+        // scroll_id hasta agotar.
+        let scrollId: string | undefined
+        let safetyCounter = 0
+        const MAX_PAGES = 200 // 200 * 100 = 20.000 items por status máximo
+        while (safetyCounter++ < MAX_PAGES) {
+          const params: Record<string, any> = {
+            status,
+            limit: PAGE,
+            search_type: 'scan',
+          }
+          if (scrollId) params.scroll_id = scrollId
+          let res
+          try {
+            res = await client.get(`/users/${sellerId}/items/search`, { params })
+          } catch (err: any) {
+            // Algunos sellers no soportan scan_id; degradamos a offset
+            // tradicional con tope 1000.
+            if (err?.response?.status === 400 && safetyCounter === 1) {
+              break
+            }
+            throw err
+          }
+          const ids: string[] = res.data?.results || []
+          scrollId = res.data?.scroll_id
           if (!ids.length) break
           for (const chunk of this.chunkArray(ids, 20)) {
             const detailRes = await client.get('/items', { params: { ids: chunk.join(',') } })
@@ -192,10 +213,12 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
               if (entry.code === 200) allItems.push(this.mapProduct(entry.body, status))
             }
           }
-          if (ids.length < PAGE) break
-          pageOffset += PAGE
+          // Cuando scroll_id se agota o la página viene corta, paramos
+          if (!scrollId || ids.length < PAGE) break
         }
+
       }
+
       return {
         items: allItems,
         total: allItems.length,
