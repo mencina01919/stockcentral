@@ -167,6 +167,44 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     const statusFilter: string | undefined = cfg.statusFilter
     const searchQuery: string | undefined = cfg.searchQuery
 
+    // Modo "todos" para el cache refresh: itera todas las páginas de 100
+    // (cap nativo de /users/:id/items/search). Sin esto, limit=9999 da 400.
+    if (limit >= 9999) {
+      const PAGE = 100
+      const allItems: MarketplaceProduct[] = []
+      // Si hay statusFilter usamos solo ese; sino todos los 3 estados.
+      const statuses = statusFilter
+        ? [statusFilter]
+        : ['active', 'paused', 'closed']
+      for (const status of statuses) {
+        let pageOffset = 0
+        // Tope defensivo: ML capea offset+limit en 10.000 para esta búsqueda
+        const MAX_OFFSET = 10000 - PAGE
+        while (pageOffset <= MAX_OFFSET) {
+          const res = await client.get(`/users/${sellerId}/items/search`, {
+            params: { status, limit: PAGE, offset: pageOffset },
+          })
+          const ids: string[] = res.data.results || []
+          if (!ids.length) break
+          for (const chunk of this.chunkArray(ids, 20)) {
+            const detailRes = await client.get('/items', { params: { ids: chunk.join(',') } })
+            for (const entry of detailRes.data) {
+              if (entry.code === 200) allItems.push(this.mapProduct(entry.body, status))
+            }
+          }
+          if (ids.length < PAGE) break
+          pageOffset += PAGE
+        }
+      }
+      return {
+        items: allItems,
+        total: allItems.length,
+        offset: 0,
+        limit: allItems.length,
+        hasMore: false,
+      }
+    }
+
     // When a text search is provided, ML supports `q` natively — single call, no multi-status merging needed
     if (searchQuery) {
       const params: Record<string, any> = { q: searchQuery, offset, limit }

@@ -172,6 +172,39 @@ export class FalabellaDriver implements IMarketplaceDriver {
       closed: 'deleted',
     }
     const filter = statusFilter ? (filterMap[statusFilter] ?? 'all') : 'all'
+
+    // Modo "todos" — itera páginas de 50 (cap nativo Falabella). Sin esto,
+    // Limit=9999 hace que el API ignore el cap y solo devuelva la primera
+    // página, perdiendo el resto del catálogo.
+    if (limit >= 9999) {
+      const PAGE = 50
+      const allItems: MarketplaceProduct[] = []
+      let pageOffset = 0
+      let total = 0
+      while (true) {
+        const params = this.buildParams(credentials, 'GetProducts', {
+          Offset: String(pageOffset),
+          Limit: String(PAGE),
+          Filter: filter,
+        })
+        const res = await client.get('', { params })
+        const body = res.data?.SuccessResponse?.Body
+        const rawProducts = body?.Products?.Product || []
+        const list = Array.isArray(rawProducts) ? rawProducts : [rawProducts]
+        total = parseInt(body?.TotalCount || String(list.length), 10)
+        for (const p of list) allItems.push(this.mapProduct(p))
+        if (list.length < PAGE || allItems.length >= total) break
+        pageOffset += PAGE
+      }
+      return {
+        items: allItems,
+        total: allItems.length,
+        offset: 0,
+        limit: allItems.length,
+        hasMore: false,
+      }
+    }
+
     const params = this.buildParams(credentials, 'GetProducts', {
       Offset: String(offset),
       Limit: String(limit),

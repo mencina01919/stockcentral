@@ -137,15 +137,47 @@ export class ParisDriver implements IMarketplaceDriver {
     limit = 25,
   ): Promise<PaginatedResult<MarketplaceProduct>> {
     const client = await this.buildClient(credentials, config)
-    const res = await client.get('/v2/products/search', { params: { limit, offset } })
+
+    // Paris API tiene cap interno; con limit grande (ej. 9999) responde
+    // 400. Usamos páginas de 100. Si el caller pide 9999 (modo "todos"
+    // que usa el cache refresh) iteramos hasta agotar.
+    const PAGE_SIZE = 100
+
+    if (limit >= 9999) {
+      const allItems: MarketplaceProduct[] = []
+      let pageOffset = 0
+      let total = 0
+      while (true) {
+        const res = await client.get('/v2/products/search', {
+          params: { limit: PAGE_SIZE, offset: pageOffset },
+        })
+        const batch = res.data?.results || []
+        total = res.data?.total ?? (allItems.length + batch.length)
+        for (const p of batch) allItems.push(this.mapProduct(p))
+        if (batch.length < PAGE_SIZE || allItems.length >= total) break
+        pageOffset += PAGE_SIZE
+      }
+      return {
+        items: allItems,
+        total: allItems.length,
+        offset: 0,
+        limit: allItems.length,
+        hasMore: false,
+      }
+    }
+
+    const effectiveLimit = Math.min(limit, PAGE_SIZE)
+    const res = await client.get('/v2/products/search', {
+      params: { limit: effectiveLimit, offset },
+    })
     const results = res.data?.results || []
     const total = res.data?.total ?? results.length
     return {
       items: results.map((p: any) => this.mapProduct(p)),
       total,
       offset,
-      limit,
-      hasMore: offset + limit < total,
+      limit: effectiveLimit,
+      hasMore: offset + effectiveLimit < total,
     }
   }
 
