@@ -5,6 +5,7 @@ export const SyncJobType = {
   SYNC_PRODUCTS_INBOUND: 'sync:products:inbound',
   SYNC_ORDERS_INBOUND: 'sync:orders:inbound',
   SYNC_STOCK: 'sync:stock',
+  SYNC_BULK_STOCK_PRICE: 'sync:bulk-stock-price',
   TEST_CONNECTION: 'sync:test-connection',
   REFRESH_OAUTH_TOKEN: 'sync:refresh-oauth-token',
 } as const

@@ -778,6 +778,19 @@ export class SyncService {
   //
   // Solo funciona para drivers que implementan bulkUpdateStock /
   // bulkUpdatePrice. Si el driver no los tiene, devolvemos error.
+  // Bulk sync ASÍNCRONO con filtro de drift.
+  //
+  // Flujo:
+  //   1. Compara estado del maestro (Product + Inventory + marketplacePricing)
+  //      con el snapshot del cache (MarketplaceProductSnapshot).
+  //   2. Filtra SOLO los SKUs donde el stock o precio cambió → reduce 64
+  //      productos a quizás 5-10 que realmente necesitan sync.
+  //   3. Encola un job Bull `sync:bulk-stock-price` con la lista filtrada.
+  //   4. Devuelve { jobId, totalProductos, productosConDrift } al toque.
+  //
+  // El worker (sync.processor.ts) procesa el job en background usando
+  // driver.bulkUpdateStock + driver.bulkUpdatePrice. La UI puede hacer
+  // polling a /sync/bulk-status/:jobId para ver progreso.
   async bulkSyncStockAndPrice(tenantId: string, connectionId: string) {
     const connection = await this.prisma.connection.findFirst({
       where: { id: connectionId, tenantId },
@@ -793,11 +806,11 @@ export class SyncService {
     }
     if (typeof driver.bulkUpdateStock !== 'function' || typeof driver.bulkUpdatePrice !== 'function') {
       throw new BadRequestException(
-        `Driver ${connection.provider} no soporta bulk sync. Usá el sync individual o pidamelo para implementarlo.`,
+        `Driver ${connection.provider} no soporta bulk sync.`,
       )
     }
 
-    // Traer todos los mappings activos de esta conexión + producto + inventory
+    // 1. Mappings activos con inventory + snapshot del cache (para drift)
     const mappings = await this.prisma.marketplaceMapping.findMany({
       where: {
         connectionId,
@@ -818,92 +831,177 @@ export class SyncService {
       },
     })
     if (!mappings.length) {
-      return { success: true, total: 0, message: 'No hay productos vinculados para sincronizar' }
+      return { success: true, total: 0, message: 'No hay productos vinculados' }
     }
 
-    // Preparar inputs:
-    //   - stockItems: [{sku, stock}]
-    //   - priceGroups: agrupados por precio para mandar pocos PUT
-    const stockItems: Array<{ sku: string; stock: number; productId: string }> = []
-    const priceMap = new Map<number, string[]>() // price → skus[]
+    const snapshots = await this.prisma.marketplaceProductSnapshot.findMany({
+      where: {
+        connectionId,
+        externalId: { in: mappings.map((m) => m.marketplaceProductId!).filter(Boolean) },
+      },
+      select: { externalId: true, stock: true, price: true },
+    })
+    const snapByExternalId = new Map(snapshots.map((s) => [s.externalId, s]))
+
+    // 2. Filtrar drift — solo los que cambiaron
+    const stockItems: Array<{ sku: string; stock: number }> = []
+    const priceItems: Array<{ sku: string; price: number }> = []
+    const totalMappings = mappings.length
+    let stockUnchanged = 0
+    let priceUnchanged = 0
 
     for (const m of mappings) {
       const sku = m.marketplaceProductId!
-      const stock = m.product.inventory.reduce((s, i) => s + i.quantity, 0)
+      const masterStock = m.product.inventory.reduce((s, i) => s + i.quantity, 0)
       const pricing = (m.product as any).marketplacePricing as Record<string, any> | null
       const providerPricing = pricing?.[connection.provider]
-      const price = providerPricing?.calculatedPrice
+      const masterPrice = providerPricing?.calculatedPrice
         ? Number(providerPricing.calculatedPrice)
         : Number(m.product.basePrice)
 
-      if (Number.isFinite(stock)) {
-        stockItems.push({ sku, stock, productId: m.product.id })
+      const snap = snapByExternalId.get(sku)
+      const cachedStock = snap?.stock ?? null
+      const cachedPrice = snap?.price ? Number(snap.price) : null
+
+      if (Number.isFinite(masterStock)) {
+        if (cachedStock !== masterStock) {
+          stockItems.push({ sku, stock: masterStock })
+        } else {
+          stockUnchanged++
+        }
       }
-      if (Number.isFinite(price) && price > 0) {
-        const rounded = Math.round(price)
-        if (!priceMap.has(rounded)) priceMap.set(rounded, [])
-        priceMap.get(rounded)!.push(sku)
+      if (Number.isFinite(masterPrice) && masterPrice > 0) {
+        const roundedMaster = Math.round(masterPrice)
+        if (cachedPrice !== roundedMaster) {
+          priceItems.push({ sku, price: roundedMaster })
+        } else {
+          priceUnchanged++
+        }
       }
     }
 
-    const credentials = connection.credentials as Record<string, string>
-    const config = connection.config as Record<string, unknown> | undefined
-
-    const startedAt = Date.now()
-    this.logger.log(`[bulk-sync ${connection.provider}] iniciando — ${stockItems.length} stocks, ${priceMap.size} grupos de precio`)
-
-    // 1. Bulk inventory feed (async, devuelve feedId)
-    this.logger.log(`[bulk-sync ${connection.provider}] llamando bulkUpdateStock...`)
-    const stockResult = await driver.bulkUpdateStock(credentials, stockItems, config)
-    this.logger.log(`[bulk-sync ${connection.provider}] bulkUpdateStock ok — feedId=${stockResult?.feedId} took=${Date.now() - startedAt}ms`)
-
-    // 2. Bulk price PUTs agrupados (síncrono por grupo)
-    const priceGroups = Array.from(priceMap.entries()).map(([price, skus]) => ({ price, skus }))
-    this.logger.log(`[bulk-sync ${connection.provider}] llamando bulkUpdatePrice con ${priceGroups.length} grupos...`)
-    const priceResult = await driver.bulkUpdatePrice(credentials, priceGroups, config)
-    this.logger.log(`[bulk-sync ${connection.provider}] bulkUpdatePrice ok — updated=${priceResult?.updated} failed=${priceResult?.failed} took=${Date.now() - startedAt}ms`)
-
-    // 3. Actualizar mappings + snapshot del cache local en lote.
-    //    Como el feed inventory es async, marcamos mappings como
-    //    'submitted' (no 'success'); el cron de cache va a recoger el
-    //    estado real cuando lea de vuelta /v3/inventory.
-    const now = new Date()
-    await this.prisma.marketplaceMapping.updateMany({
-      where: { connectionId, marketplaceProductId: { in: stockItems.map((s) => s.sku) } },
-      data: { syncStatus: 'success', lastSyncAt: now, errorMessage: null },
-    })
-
-    // Actualizar snapshot local con el stock + precio que mandamos
-    // (asumiendo que el feed los va a aplicar; si Walmart rechaza
-    // algunos, el próximo refresh del cache los corrige).
-    for (const item of stockItems) {
-      const price = priceGroups.find((g) => g.skus.includes(item.sku))?.price
-      await this.prisma.marketplaceProductSnapshot.updateMany({
-        where: { connectionId, externalId: item.sku },
-        data: {
-          stock: item.stock,
-          ...(price !== undefined ? { price } : {}),
-          lastFetchedAt: now,
-        },
-      })
+    // 3. Si no hay drift, terminamos al toque sin encolar
+    if (!stockItems.length && !priceItems.length) {
+      return {
+        success: true,
+        total: totalMappings,
+        productosConDrift: 0,
+        message: 'Todo sincronizado, no hay cambios pendientes',
+      }
     }
+
+    // 4. Encolar job Bull para procesamiento en background
+    const job = await this.syncQueue.add(
+      SyncJobType.SYNC_BULK_STOCK_PRICE,
+      { tenantId, connectionId, stockItems, priceItems },
+      { attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
+    )
 
     return {
       success: true,
-      total: mappings.length,
-      stock: {
-        items: stockItems.length,
-        feedId: stockResult.feedId,
-        feedSubmitted: stockResult.success,
-        error: stockResult.error,
-      },
-      price: {
-        groups: priceGroups.length,
-        updated: priceResult.updated,
-        failed: priceResult.failed,
-        errors: priceResult.errors,
-      },
-      durationMs: Date.now() - startedAt,
+      jobId: String(job.id),
+      total: totalMappings,
+      productosConDrift: stockItems.length + priceItems.length,
+      stock: { toUpdate: stockItems.length, unchanged: stockUnchanged },
+      price: { toUpdate: priceItems.length, unchanged: priceUnchanged },
+      message: `Encolado job ${job.id}. Procesamiento en background.`,
+    }
+  }
+
+  // Worker logic: ejecuta el bulk sync (lo llama sync.processor.ts).
+  // Separado del método de encolado para que el cron también pueda
+  // usarlo si en el futuro queremos un cron de bulk-sync.
+  async runBulkStockPriceJob(data: {
+    tenantId: string
+    connectionId: string
+    stockItems: Array<{ sku: string; stock: number }>
+    priceItems: Array<{ sku: string; price: number }>
+  }) {
+    const { tenantId, connectionId, stockItems, priceItems } = data
+    const connection = await this.prisma.connection.findFirst({
+      where: { id: connectionId, tenantId },
+    })
+    if (!connection) throw new Error(`Connection ${connectionId} no existe`)
+    const driver = getDriver(connection.provider) as any
+    const credentials = connection.credentials as Record<string, string>
+    const config = connection.config as Record<string, unknown> | undefined
+    const startedAt = Date.now()
+
+    this.logger.log(
+      `[bulk-job ${connection.provider}] start — ${stockItems.length} stocks, ${priceItems.length} precios`,
+    )
+
+    // Stock — 1 sola call con feed multipart (hasta 1000 SKUs)
+    let stockResult: any = { success: true, count: 0 }
+    if (stockItems.length) {
+      stockResult = await driver.bulkUpdateStock(credentials, stockItems, config)
+      this.logger.log(
+        `[bulk-job ${connection.provider}] stock feedId=${stockResult?.feedId} took=${Date.now() - startedAt}ms`,
+      )
+    }
+
+    // Precio — agrupar por precio único y mandar con concurrencia controlada
+    let priceResult: any = { success: true, updated: 0, failed: 0, errors: [] }
+    if (priceItems.length) {
+      const priceMap = new Map<number, string[]>()
+      for (const it of priceItems) {
+        if (!priceMap.has(it.price)) priceMap.set(it.price, [])
+        priceMap.get(it.price)!.push(it.sku)
+      }
+      const priceGroups = Array.from(priceMap.entries()).map(([price, skus]) => ({ price, skus }))
+      priceResult = await driver.bulkUpdatePrice(credentials, priceGroups, config)
+      this.logger.log(
+        `[bulk-job ${connection.provider}] price updated=${priceResult?.updated} failed=${priceResult?.failed} took=${Date.now() - startedAt}ms`,
+      )
+    }
+
+    // Actualizar mappings + snapshot
+    const now = new Date()
+    const allSkus = Array.from(new Set([...stockItems.map((s) => s.sku), ...priceItems.map((s) => s.sku)]))
+    if (allSkus.length) {
+      await this.prisma.marketplaceMapping.updateMany({
+        where: { connectionId, marketplaceProductId: { in: allSkus } },
+        data: { syncStatus: 'success', lastSyncAt: now, errorMessage: null },
+      })
+    }
+    // Stock snapshot update
+    for (const it of stockItems) {
+      await this.prisma.marketplaceProductSnapshot.updateMany({
+        where: { connectionId, externalId: it.sku },
+        data: { stock: it.stock, lastFetchedAt: now },
+      })
+    }
+    // Price snapshot update
+    for (const it of priceItems) {
+      await this.prisma.marketplaceProductSnapshot.updateMany({
+        where: { connectionId, externalId: it.sku },
+        data: { price: it.price, lastFetchedAt: now },
+      })
+    }
+
+    const durationMs = Date.now() - startedAt
+    this.logger.log(`[bulk-job ${connection.provider}] done in ${durationMs}ms`)
+    return {
+      success: true,
+      stock: { items: stockItems.length, feedId: stockResult?.feedId, error: stockResult?.error },
+      price: { items: priceItems.length, updated: priceResult?.updated, failed: priceResult?.failed, errors: priceResult?.errors },
+      durationMs,
+    }
+  }
+
+  // Estado de un job de bulk sync — para polling desde la UI.
+  async getBulkSyncJobStatus(jobId: string) {
+    const job = await this.syncQueue.getJob(jobId)
+    if (!job) return { state: 'not_found' }
+    const state = await job.getState()
+    return {
+      state,
+      progress: job.progress(),
+      result: job.returnvalue,
+      failedReason: job.failedReason,
+      attemptsMade: job.attemptsMade,
+      timestamp: job.timestamp,
+      finishedOn: job.finishedOn,
     }
   }
 

@@ -41,6 +41,21 @@ export class SyncProcessor {
     )
   }
 
+  @Process(SyncJobType.SYNC_BULK_STOCK_PRICE)
+  async handleBulkStockPrice(
+    job: Job<{
+      tenantId: string
+      connectionId: string
+      stockItems: Array<{ sku: string; stock: number }>
+      priceItems: Array<{ sku: string; price: number }>
+    }>,
+  ) {
+    this.logger.log(
+      `Processing bulk sync for ${job.data.connectionId} — ${job.data.stockItems.length} stocks, ${job.data.priceItems.length} prices`,
+    )
+    return this.syncService.runBulkStockPriceJob(job.data)
+  }
+
   @Process(SyncJobType.TEST_CONNECTION)
   async handleTestConnection(job: Job<{ tenantId: string; connectionId: string }>) {
     return this.syncService.testConnection(job.data.tenantId, job.data.connectionId)

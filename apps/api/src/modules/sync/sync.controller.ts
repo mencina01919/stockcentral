@@ -139,12 +139,18 @@ export class SyncController {
   }
 
   @Post('connections/:id/bulk-sync')
-  @ApiOperation({ summary: 'Sincronizar stock + precio de TODOS los productos vinculados en 1-3 llamadas masivas (vs N llamadas secuenciales)' })
+  @ApiOperation({ summary: 'Bulk sync: detecta drift (stock+precio) y encola job en background. Devuelve jobId al toque.' })
   bulkSync(
     @TenantId() tenantId: string,
     @Param('id') connectionId: string,
   ) {
     return this.syncService.bulkSyncStockAndPrice(tenantId, connectionId)
+  }
+
+  @Get('bulk-sync/:jobId')
+  @ApiOperation({ summary: 'Estado de un job de bulk sync (para polling desde UI)' })
+  bulkSyncStatus(@Param('jobId') jobId: string) {
+    return this.syncService.getBulkSyncJobStatus(jobId)
   }
 
   @Get('connections/:id/lider-spec/:feedType')
