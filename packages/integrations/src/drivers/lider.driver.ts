@@ -800,25 +800,40 @@ export class LiderDriver implements IMarketplaceDriver {
     let failed = 0
     const errors: string[] = []
 
-    // Ejecutar en paralelo con concurrencia controlada (5 a la vez)
-    // para no saturar Walmart pero terminar mucho más rápido.
-    const CONCURRENCY = 5
+    // Walmart Chile aplica rate-limit a PUT /v3/price (confirmado con
+    // 429 cuando ejecutamos 5 concurrent). Bajamos a 2 concurrent y
+    // agregamos retry con backoff sobre 429. Esto da ~12-15s para 56
+    // grupos en vez de los 28s del modo secuencial.
+    const CONCURRENCY = 2
+    const MAX_RETRIES = 3
     const queue = [...groups]
+    async function putWithRetry(g: { price: number; skus: string[] }, attempt = 0): Promise<void> {
+      try {
+        await fastClient.put('/v3/price', {
+          amount: String(Math.round(g.price)),
+          skus: g.skus,
+        })
+        updated += g.skus.length
+      } catch (err: any) {
+        const status = err?.response?.status
+        if (status === 429 && attempt < MAX_RETRIES) {
+          const retryAfter = parseFloat(err.response.headers?.['retry-after'] ?? '')
+          const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+            ? retryAfter * 1000
+            : 1000 * Math.pow(2, attempt) // 1s, 2s, 4s
+          await new Promise((r) => setTimeout(r, waitMs))
+          return putWithRetry(g, attempt + 1)
+        }
+        failed += g.skus.length
+        const msg = err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message
+        errors.push(`price=${g.price}: ${msg}`)
+      }
+    }
     async function worker() {
       while (queue.length) {
         const g = queue.shift()
         if (!g || !g.skus.length) continue
-        try {
-          await fastClient.put('/v3/price', {
-            amount: String(Math.round(g.price)),
-            skus: g.skus,
-          })
-          updated += g.skus.length
-        } catch (err: any) {
-          failed += g.skus.length
-          const msg = err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message
-          errors.push(`price=${g.price}: ${msg}`)
-        }
+        await putWithRetry(g)
       }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
