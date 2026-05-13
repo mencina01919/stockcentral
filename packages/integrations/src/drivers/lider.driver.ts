@@ -765,36 +765,63 @@ export class LiderDriver implements IMarketplaceDriver {
   // Walmart CL solo acepta el MISMO precio para todos los SKUs del array,
   // así que el caller debe agrupar por precio antes de llamar a esta
   // función. Devolvemos un resumen con el total de SKUs actualizados.
+  //
+  // OPTIMIZACIÓN: el endpoint /v3/price es muy liviano y Walmart tolera
+  // burst de 10-20 requests sin 429 (los caps de rate-limit aplican a
+  // /v3/inventory PUT y /v3/items GET, NO al PUT /v3/price). Bypaseamos
+  // el mutex normal del driver creando un cliente nuevo SIN throttle —
+  // sino 56 grupos × 500ms = 28s solo en mutex.
   async bulkUpdatePrice(
     credentials: DriverCredentials,
     groups: Array<{ price: number; skus: string[] }>,
     config?: DriverConfig,
   ): Promise<{ success: boolean; updated: number; failed: number; errors: string[] }> {
     if (!groups.length) return { success: true, updated: 0, failed: 0, errors: [] }
-    const client = await this.buildClient(credentials, config)
+    // Cliente axios "fast" — usa el token cacheado pero sin el mutex de
+    // 500ms entre requests. Solo lo usamos para PUT /v3/price que es
+    // idempotente y Walmart no aplica throttle agresivo en él.
+    const { clientId, clientSecret } = this.getClientCredentials(credentials, config)
+    const token = await this.getAccessToken(credentials, config)
+    const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+    const fastClient = axios.create({
+      baseURL: this.getBaseUrl(config),
+      timeout: 20000,
+      headers: {
+        Authorization: `Basic ${encoded}`,
+        'WM_SEC.ACCESS_TOKEN': token,
+        'WM_MARKET': 'cl',
+        'WM_SVC.NAME': 'Walmart Marketplace',
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+    })
+
     let updated = 0
     let failed = 0
     const errors: string[] = []
-    for (const g of groups) {
-      if (!g.skus.length) continue
-      // El cap del payload no está documentado; usamos 200 SKUs por call
-      // por las dudas (el mutex serializa requests).
-      const CHUNK = 200
-      for (let i = 0; i < g.skus.length; i += CHUNK) {
-        const slice = g.skus.slice(i, i + CHUNK)
+
+    // Ejecutar en paralelo con concurrencia controlada (5 a la vez)
+    // para no saturar Walmart pero terminar mucho más rápido.
+    const CONCURRENCY = 5
+    const queue = [...groups]
+    async function worker() {
+      while (queue.length) {
+        const g = queue.shift()
+        if (!g || !g.skus.length) continue
         try {
-          await client.put('/v3/price', {
+          await fastClient.put('/v3/price', {
             amount: String(Math.round(g.price)),
-            skus: slice,
+            skus: g.skus,
           })
-          updated += slice.length
+          updated += g.skus.length
         } catch (err: any) {
-          failed += slice.length
+          failed += g.skus.length
           const msg = err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message
           errors.push(`price=${g.price}: ${msg}`)
         }
       }
     }
+    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
     return { success: failed === 0, updated, failed, errors }
   }
 
