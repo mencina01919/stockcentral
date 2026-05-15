@@ -1001,8 +1001,14 @@ export class SyncService {
         data: { stock: it.stock, lastFetchedAt: now },
       })
     }
-    // Price snapshot update
+    // Price snapshot update — solo para los SKUs que Walmart aceptó
+    // (excluimos los que devolvieron 429/error). Si actualizamos el
+    // snapshot con un precio que NO se aplicó, el filtro de drift
+    // del próximo run lo va a considerar "ya sincronizado" cuando en
+    // realidad Walmart sigue con el precio viejo.
+    const failedPriceSkus = new Set<string>(priceResult?.failedSkus || [])
     for (const it of priceItems) {
+      if (failedPriceSkus.has(it.sku)) continue
       await this.prisma.marketplaceProductSnapshot.updateMany({
         where: { connectionId, externalId: it.sku },
         data: { price: it.price, lastFetchedAt: now },

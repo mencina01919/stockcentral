@@ -777,8 +777,14 @@ export class LiderDriver implements IMarketplaceDriver {
     credentials: DriverCredentials,
     groups: Array<{ price: number; skus: string[] }>,
     config?: DriverConfig,
-  ): Promise<{ success: boolean; updated: number; failed: number; errors: string[] }> {
-    if (!groups.length) return { success: true, updated: 0, failed: 0, errors: [] }
+  ): Promise<{
+    success: boolean
+    updated: number
+    failed: number
+    errors: string[]
+    failedSkus: string[] // SKUs específicos que NO se aplicaron — el caller los excluye del snapshot update
+  }> {
+    if (!groups.length) return { success: true, updated: 0, failed: 0, errors: [], failedSkus: [] }
     // Cliente axios "fast" — usa el token cacheado pero sin el mutex de
     // 500ms entre requests. Solo lo usamos para PUT /v3/price que es
     // idempotente y Walmart no aplica throttle agresivo en él.
@@ -801,6 +807,7 @@ export class LiderDriver implements IMarketplaceDriver {
     let updated = 0
     let failed = 0
     const errors: string[] = []
+    const failedSkus: string[] = []
 
     // Walmart Chile aplica rate-limit a PUT /v3/price (confirmado con
     // 429 cuando ejecutamos 5 concurrent). Bajamos a 2 concurrent y
@@ -827,6 +834,7 @@ export class LiderDriver implements IMarketplaceDriver {
           return putWithRetry(g, attempt + 1)
         }
         failed += g.skus.length
+        failedSkus.push(...g.skus)
         const msg = err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message
         errors.push(`price=${g.price}: ${msg}`)
       }
@@ -839,7 +847,7 @@ export class LiderDriver implements IMarketplaceDriver {
       }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
-    return { success: failed === 0, updated, failed, errors }
+    return { success: failed === 0, updated, failed, errors, failedSkus }
   }
 
   // GET /v3/inventory?sku=<sku> — estado actual del inventario de un SKU.
