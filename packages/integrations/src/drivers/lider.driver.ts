@@ -186,19 +186,20 @@ export class LiderDriver implements IMarketplaceDriver {
           throw err
         }
         cfg.__retryCount = (cfg.__retryCount ?? 0) + 1
-        // Aumentado a 5 reintentos con backoff más agresivo (5s, 10s, 20s,
-        // 40s, 60s). Walmart Chile suele tardar 30-60s en bajar el
-        // rate-limit cuando lo saturamos. Sin esto, el sync individual
-        // fallaba en el primer 429 después de los retries cortos.
-        if (cfg.__retryCount > 5) {
+        // 2 reintentos rápidos (1s, 3s = total ~5s incluyendo HTTP). Si
+        // Walmart sigue 429 después, fallamos rápido para no colgar la
+        // UI. El operador puede reintentar manualmente cuando quiera.
+        // Para sincros masivas el bulk-sync tiene su propio retry y
+        // background processing.
+        if (cfg.__retryCount > 2) {
           releaseLock(cfg)
           throw err
         }
         releaseLock(cfg)
         const retryAfter = parseFloat(err.response.headers?.['retry-after'] ?? '')
         const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-          ? retryAfter * 1000
-          : Math.min(60000, 5000 * Math.pow(2, cfg.__retryCount - 1))  // 5s, 10s, 20s, 40s, 60s
+          ? Math.min(5000, retryAfter * 1000)
+          : 1000 * cfg.__retryCount  // 1s, 2s
         await new Promise((r) => setTimeout(r, waitMs))
         return client.request(cfg)
       },
