@@ -404,18 +404,38 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     return []
   }
 
-  // Setea el seller_custom_field (SKU del maestro) en un item ya publicado
-  // de ML. Útil para vincular publicaciones históricas que se crearon antes
-  // que existiera la integración con StockCentral. ML acepta este campo
-  // tanto en items custom como catalog (a diferencia de title/pictures que
-  // los catalog rechazan).
+  // Setea el SKU del maestro en un item ya publicado de ML. ML guarda el
+  // SKU en DOS lugares:
+  //   1. seller_custom_field (campo top-level, vía API)
+  //   2. attributes[id=SELLER_SKU].value_name (form del portal seller)
+  // Escribimos AMBOS para que el SKU sea visible tanto al usar la API
+  // (findBySku, syncs) como al revisar el item en el portal seller.
+  //
+  // Casos:
+  // - Items custom: ML acepta ambos campos en el mismo PUT → todo OK.
+  // - Items catalog: ML acepta seller_custom_field, pero a veces rechaza
+  //   attributes (con warning, no error). Intentamos los dos en paralelo
+  //   con try/catch separado: si attributes falla, seller_custom_field
+  //   queda igual seteado (que es lo que findBySku usa primero).
   async setSellerSku(
     credentials: DriverCredentials,
     externalId: string,
     sku: string,
   ): Promise<void> {
     const client = this.buildClient(credentials.accessToken)
-    await client.put(`/items/${externalId}`, { seller_custom_field: sku })
+    // PUT combinado: ML lo acepta en items custom y en algunos catalog.
+    try {
+      await client.put(`/items/${externalId}`, {
+        seller_custom_field: sku,
+        attributes: [{ id: 'SELLER_SKU', value_name: sku }],
+      })
+      return
+    } catch {
+      // Fallback: si ML rechaza el combinado (ej. catalog item que no
+      // permite attributes editables), mandamos solo seller_custom_field.
+      // Eso es suficiente para que findBySku encuentre el item.
+      await client.put(`/items/${externalId}`, { seller_custom_field: sku })
+    }
   }
 
   async getProduct(credentials: DriverCredentials, externalId: string): Promise<MarketplaceProduct | null> {
