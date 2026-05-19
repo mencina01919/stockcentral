@@ -791,9 +791,13 @@ export class LiderDriver implements IMarketplaceDriver {
     const { clientId, clientSecret } = this.getClientCredentials(credentials, config)
     const token = await this.getAccessToken(credentials, config)
     const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+    // fastClient: pasa el token cacheado y todos los headers obligatorios de
+    // Walmart Chile. Necesita WM_QOS.CORRELATION_ID (sin él Walmart trata las
+    // requests como sospechosas → más 429). Se regenera por cada request en
+    // el interceptor de abajo para tener un UUID único por PUT.
     const fastClient = axios.create({
       baseURL: this.getBaseUrl(config),
-      timeout: 20000,
+      timeout: 30000,
       headers: {
         Authorization: `Basic ${encoded}`,
         'WM_SEC.ACCESS_TOKEN': token,
@@ -803,18 +807,26 @@ export class LiderDriver implements IMarketplaceDriver {
         Accept: 'application/json',
       },
     })
+    fastClient.interceptors.request.use((cfg) => {
+      cfg.headers['WM_QOS.CORRELATION_ID'] = randomUUID()
+      return cfg
+    })
 
     let updated = 0
     let failed = 0
     const errors: string[] = []
     const failedSkus: string[] = []
 
-    // Walmart Chile aplica rate-limit a PUT /v3/price (confirmado con
-    // 429 cuando ejecutamos 5 concurrent). Bajamos a 2 concurrent y
-    // agregamos retry con backoff sobre 429. Esto da ~12-15s para 56
-    // grupos en vez de los 28s del modo secuencial.
-    const CONCURRENCY = 2
-    const MAX_RETRIES = 3
+    // Walmart Chile aplica rate-limit muy estricto a PUT /v3/price:
+    // con CONCURRENCY=2 + backoff 1s/2s/4s, 73% de 196 requests dieron 429.
+    // Pasamos a SECUENCIAL (CONCURRENCY=1) + backoff agresivo (5/15/45/120s
+    // × 5 retries) para dejar que Walmart libere el bucket entre intentos.
+    // Tiempo esperado: 196 precios × ~600ms = ~2 min en happy path. Si hay
+    // 429, cada uno espera 5s mínimo. El bucket se libera y el 99% pasa al
+    // segundo retry.
+    const CONCURRENCY = 1
+    const MAX_RETRIES = 5
+    const BACKOFF_MS = [5000, 15000, 45000, 120000, 300000]
     const queue = [...groups]
     async function putWithRetry(g: { price: number; skus: string[] }, attempt = 0): Promise<void> {
       try {
@@ -828,15 +840,17 @@ export class LiderDriver implements IMarketplaceDriver {
         if (status === 429 && attempt < MAX_RETRIES) {
           const retryAfter = parseFloat(err.response.headers?.['retry-after'] ?? '')
           const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-            ? retryAfter * 1000
-            : 1000 * Math.pow(2, attempt) // 1s, 2s, 4s
+            ? Math.max(retryAfter * 1000, BACKOFF_MS[attempt])
+            : BACKOFF_MS[attempt]
           await new Promise((r) => setTimeout(r, waitMs))
           return putWithRetry(g, attempt + 1)
         }
         failed += g.skus.length
         failedSkus.push(...g.skus)
         const msg = err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message
-        errors.push(`price=${g.price}: ${msg}`)
+        // Loguear cada fallo individual con sku+price para poder hacer retry
+        // incremental fuera del batch (script de convergencia, debugging).
+        errors.push(`price=${g.price} skus=[${g.skus.join(',')}]: ${msg}`)
       }
     }
     async function worker() {

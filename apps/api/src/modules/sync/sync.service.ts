@@ -184,6 +184,16 @@ export class SyncService {
       return { synced: 0, errors: 0, suspiciousSkipped: 0, circuitTripped: false, total: 0, skipped: true }
     }
 
+    // Walmart Chile aplica rate-limit fuerte a PUT /v3/price y /v3/inventory.
+    // El loop tradicional (1 PUT por SKU × 394 productos = 788 requests) dispara
+    // 429 sostenido y el circuit breaker. Para Lider usamos el path bulk que
+    // agrupa precios + manda 1 feed inventory para todo el batch.
+    if (connection.provider === 'lider' && !productIds?.length) {
+      this.logger.log(`Using bulk path for Lider outbound sync (avoids per-SKU rate-limit)`)
+      const bulk = await this.bulkSyncStockAndPrice(tenantId, connectionId)
+      return { synced: bulk.productosConDrift ?? 0, errors: 0, suspiciousSkipped: 0, circuitTripped: false, total: bulk.total ?? 0, bulkJobId: bulk.jobId, skipped: false }
+    }
+
     const credentials = connection.credentials as Record<string, string>
     const config = connection.config as Record<string, unknown> | undefined
 
