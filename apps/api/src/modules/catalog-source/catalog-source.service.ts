@@ -349,7 +349,7 @@ export class CatalogSourceService {
     }
   }
 
-  // ── Cron: stock sync for tenants that opted in ───────────────────────────
+  // ── Cron: stock + product sync for tenants that opted in ─────────────────
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async scheduledStockSync() {
@@ -360,9 +360,16 @@ export class CatalogSourceService {
 
     for (const src of sources) {
       const cfg = (src.catalogConfig as Record<string, unknown> | undefined) ?? {}
-      if (cfg.autoSyncStock === false) continue
+      const syncStock = cfg.autoSyncStock !== false
+      const syncProducts = cfg.autoSyncProducts === true
+      // Si ambos están false (raro), no hay nada que hacer.
+      if (!syncStock && !syncProducts) continue
       try {
-        await this.runStockSync(src.tenantId)
+        // Una sola pasada respeta los dos flags. Antes el cron solo
+        // sincronizaba stock y los cambios de name/desc/images del
+        // catalog source jamás llegaban al maestro hasta que alguien
+        // disparara manualmente runImport con syncProducts:true.
+        await this.runImport(src.tenantId, { syncProducts, syncStock })
       } catch (err: any) {
         this.logger.error(`scheduledStockSync failed for ${src.provider}: ${err.message}`)
       }
