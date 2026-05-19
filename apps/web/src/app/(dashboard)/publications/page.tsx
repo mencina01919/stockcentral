@@ -2475,6 +2475,23 @@ function DirectPublishPanel({ connections }: { connections: any[] }) {
   const schema = isLider ? liderSchema : staticSchema
   const isML = selectedConnection?.provider === 'mercadolibre'
 
+  // Aplicar defaults del schema cuando llega/cambia el provider. Solo setea
+  // keys ausentes/vacías. Ej: warranty="6 meses" en ML.
+  useEffect(() => {
+    if (!schema?.fields?.length) return
+    setFormData((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const f of schema.fields) {
+        if (f.default !== undefined && (next[f.key] === undefined || next[f.key] === '')) {
+          next[f.key] = f.default
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [schema])
+
   const buildPayload = (fd: Record<string, any>, extra?: Record<string, any>) => {
     const imageUrls = Array.isArray(fd.images) ? fd.images.filter(Boolean) : []
     // Extract ml_attr_* keys into attributes array for ML.
@@ -2819,6 +2836,24 @@ function PublishForm({ product, connection, onClose, onSuccess }: any) {
   })
 
   const schema = isLider ? liderSchema : staticSchema
+
+  // Aplicar defaults del schema cuando llega. Solo setea las keys que están
+  // ausentes/vacías en formData — preserva lo que el usuario ya tipeó. Ej:
+  // warranty default "6 meses" para ML.
+  useEffect(() => {
+    if (!schema?.fields?.length) return
+    setFormData((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const f of schema.fields) {
+        if (f.default !== undefined && (next[f.key] === undefined || next[f.key] === '')) {
+          next[f.key] = f.default
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [schema])
 
   const buildPayload = (fd: Record<string, any>, extra?: Record<string, any>) => {
     const imageUrls = Array.isArray(fd.images) ? fd.images.filter(Boolean) : []

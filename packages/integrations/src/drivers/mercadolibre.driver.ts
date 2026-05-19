@@ -394,8 +394,16 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
         payload.catalog_product_id = catalogProductId
         if (familyName) payload.family_name = familyName
       } else {
-        payload.title = fd.title || product.title
-        if (familyName) payload.family_name = familyName
+        // Cuenta brand/large_seller: ML rechaza `title` ("The fields [title] are
+        // invalid for requested call"). Para esas cuentas, ML genera el título
+        // a partir de family_name + atributos de la categoría. Si tenemos
+        // family_name, lo mandamos y omitimos title. Si NO hay family_name,
+        // caemos al title (cuenta normal o categoría que sí lo acepta).
+        if (familyName) {
+          payload.family_name = familyName
+        } else {
+          payload.title = fd.title || product.title
+        }
       }
 
       if (attributes.length) payload.attributes = attributes
@@ -417,12 +425,32 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       return { success: true, externalId: itemId, rawResponse: res.data }
     } catch (err: any) {
       const data = err?.response?.data
-      const causes = Array.isArray(data?.cause)
-        ? data.cause.filter((c: any) => c.type !== 'warning').map((c: any) => `${c.code}: ${c.message}`).join(' | ')
-        : ''
+      // ML devuelve causes como Array (causes humanas con code+message),
+      // PERO también devuelve "body.invalid_fields" con un objeto top-level
+      // como { error: "body.invalid_fields", message: "...", cause: [...] }
+      // donde cause es un array de strings con los nombres de campos rechazados
+      // (no objetos). Manejamos ambos shapes.
+      let detail = ''
+      if (Array.isArray(data?.cause)) {
+        detail = data.cause
+          .map((c: any) => {
+            if (typeof c === 'string') return c
+            if (c?.type === 'warning') return null
+            return `${c?.code ?? '?'}: ${c?.message ?? c?.field ?? JSON.stringify(c)}`
+          })
+          .filter(Boolean)
+          .join(' | ')
+      }
+      // Log completo del response para debugging (queda en Railway/local logs)
+      console.error('[ML createProduct] failure', JSON.stringify({
+        status: err?.response?.status,
+        error: data?.error,
+        message: data?.message,
+        cause: data?.cause,
+      }))
       return {
         success: false,
-        error: causes || data?.message || data?.error || err.message,
+        error: detail || data?.message || data?.error || err.message,
         rawResponse: data,
       }
     }

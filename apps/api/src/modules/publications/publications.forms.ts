@@ -8,6 +8,7 @@ export interface FormField {
   hint?: string
   group?: string
   maxLength?: number
+  default?: string | number | boolean
 }
 
 export interface MarketplaceFormSchema {
@@ -41,7 +42,7 @@ export const MARKETPLACE_FORMS: Record<string, MarketplaceFormSchema> = {
       },
       { key: 'gtin',               label: 'GTIN / EAN / UPC',           type: 'text',    required: false, placeholder: '7891234567890', hint: 'Código de barras del producto (recomendado)', group: 'Información básica' },
       { key: 'brand',              label: 'Marca',                      type: 'text',    required: false, placeholder: 'Samsung', group: 'Información básica' },
-      { key: 'warranty',           label: 'Garantía',                   type: 'text',    required: true,  placeholder: '12 meses garantía del fabricante', hint: 'ML requiere garantía. Ej: "12 meses con el fabricante".', group: 'Información básica' },
+      { key: 'warranty',           label: 'Garantía',                   type: 'text',    required: true,  default: '6 meses', placeholder: '6 meses garantía del fabricante', hint: 'ML requiere garantía. Por defecto 6 meses.', group: 'Información básica' },
       { key: 'description',        label: 'Descripción',                type: 'textarea', required: false, hint: 'Solo texto plano. Si vinculás un producto del catálogo maestro, se auto-completa desde ahí.', group: 'Información básica' },
       // Precio y stock
       { key: 'price',              label: 'Precio de venta (CLP)',      type: 'number',  required: true,  group: 'Precio y stock' },
