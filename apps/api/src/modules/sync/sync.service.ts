@@ -853,39 +853,23 @@ export class SyncService {
     })
     const snapByExternalId = new Map(snapshots.map((s) => [s.externalId, s]))
 
-    // Filtro UNNAV: items con shelf=["UNNAV"] tienen el item setup interno
-    // de Walmart incompleto (publishedStatus=PUBLISHED pero no operables).
-    // El feed de inventory los rechaza con "No Item Found" y aparecen como
-    // errores en el portal Sellercenter. Los excluimos del bulk-sync
-    // hasta que Walmart termine el setup por su cuenta. Los UNNAV vuelven
-    // automáticamente al sync cuando Walmart les asigna shelves reales.
-    // Solo aplica a Lider — otros marketplaces no usan este concepto.
-    const isUnnav = (snap: any): boolean => {
-      const shelf = snap?.rawData?.shelf
-      if (!shelf) return false
-      const shelfStr = typeof shelf === 'string' ? shelf : JSON.stringify(shelf)
-      return shelfStr.includes('UNNAV')
-    }
-
-    // 2. Filtrar drift + excluir UNNAV
+    // 2. Filtrar drift
+    //
+    // Histórico: existió un filtro UNNAV (items con shelf=["UNNAV"]) porque
+    // los PUT /v3/inventory individuales los rechazaban con "No Item Found".
+    // Confirmado el 2026-05-19 que **el feed inventory + el feed price SÍ
+    // aceptan UNNAV** (probado con 5 SKUs reales, todos SUCCESS). Removido
+    // el filtro — el feed-based sync es robusto contra UNNAV.
     const stockItems: Array<{ sku: string; stock: number }> = []
     const priceItems: Array<{ sku: string; price: number }> = []
     const totalMappings = mappings.length
     let stockUnchanged = 0
     let priceUnchanged = 0
-    let skippedUnnav = 0
+    const skippedUnnav = 0
 
     for (const m of mappings) {
       const sku = m.marketplaceProductId!
       const snap = snapByExternalId.get(sku)
-
-      // Skip items UNNAV — Walmart los va a rechazar con "No Item Found".
-      // Cuando Walmart termine su setup interno, el shelf cambia y vuelven
-      // a entrar al sync automáticamente.
-      if (isUnnav(snap)) {
-        skippedUnnav++
-        continue
-      }
 
       const masterStock = m.product.inventory.reduce((s, i) => s + i.quantity, 0)
       const pricing = (m.product as any).marketplacePricing as Record<string, any> | null
