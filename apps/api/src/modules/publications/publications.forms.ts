@@ -28,6 +28,7 @@ export const MARKETPLACE_FORMS: Record<string, MarketplaceFormSchema> = {
     label: 'MercadoLibre',
     fields: [
       // Información básica
+      { key: 'sku',                label: 'SKU del maestro',            type: 'text',    required: true,  placeholder: 'Ej: 1977', hint: 'SKU único en el catálogo maestro de StockCentral. Si vinculás un producto del maestro, se completa automáticamente.', group: 'Información básica' },
       { key: 'categoryId',         label: 'Categoría',                   type: 'text',    required: true,  placeholder: 'Buscar...', hint: 'Busca por nombre. ML define los atributos según la categoría seleccionada.', group: 'Información básica' },
       { key: 'family_name',         label: 'Nombre de familia (family_name)', type: 'text', required: true, maxLength: 60, placeholder: 'Mouse Gamer RGB', hint: 'Determina el título generado por ML. Máximo 60 caracteres. Si elegiste un producto del catálogo, se completa automáticamente.', group: 'Información básica' },
       { key: 'condition',          label: 'Condición',                  type: 'select',  required: true,  group: 'Información básica',

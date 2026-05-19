@@ -14,6 +14,28 @@ export class ProductsService {
     @Inject(forwardRef(() => InventoryService)) private inventoryService: InventoryService,
   ) {}
 
+  // Sugiere el próximo SKU correlativo numérico (1977 → 1978 → 1979 ...).
+  // Para el flow "publicación directa" donde el usuario crea un producto
+  // nuevo y queremos darle un SKU automático que respete la secuencia.
+  async suggestNextSku(tenantId: string): Promise<{ sku: string }> {
+    // Buscamos todos los SKUs que son enteros puros y agarramos el max + 1.
+    // SKUs no-numéricos (Razer-XXX, etc) se ignoran para esta secuencia.
+    const products = await this.prisma.product.findMany({
+      where: { tenantId, sku: { not: '' } },
+      select: { sku: true },
+    })
+    let max = 0
+    for (const p of products) {
+      const n = Number(p.sku)
+      if (Number.isInteger(n) && n > 0 && String(n) === p.sku && n > max) {
+        max = n
+      }
+    }
+    // Si no hay correlativos numéricos, arrancamos en 1000.
+    const next = max > 0 ? max + 1 : 1000
+    return { sku: String(next) }
+  }
+
   private async generateSku(tenantId: string, name: string): Promise<string> {
     const base = name
       .toUpperCase()

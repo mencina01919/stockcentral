@@ -2475,8 +2475,19 @@ function DirectPublishPanel({ connections }: { connections: any[] }) {
   const schema = isLider ? liderSchema : staticSchema
   const isML = selectedConnection?.provider === 'mercadolibre'
 
+  // Sugerencia del próximo SKU correlativo del maestro. Cuando publicás
+  // directamente (sin elegir producto del maestro), precargamos el SKU
+  // con el siguiente correlativo (ej. 1977 → 1978) para que el operador
+  // no tenga que adivinar. Se carga una vez al montar.
+  const { data: nextSkuData } = useQuery<{ sku: string }>({
+    queryKey: ['next-sku'],
+    queryFn: () => api.get('/products/next-sku').then(r => r.data),
+    staleTime: 60 * 1000,
+  })
+
   // Aplicar defaults del schema cuando llega/cambia el provider. Solo setea
-  // keys ausentes/vacías. Ej: warranty="6 meses" en ML.
+  // keys ausentes/vacías. Ej: warranty="6 meses" en ML. También precarga
+  // el SKU sugerido si el field lo requiere y el usuario no lo tipeó.
   useEffect(() => {
     if (!schema?.fields?.length) return
     setFormData((prev) => {
@@ -2488,9 +2499,18 @@ function DirectPublishPanel({ connections }: { connections: any[] }) {
           changed = true
         }
       }
+      // Auto-sugerir SKU si el schema lo pide y aún no se llenó
+      if (
+        schema.fields.some((f: any) => f.key === 'sku') &&
+        (next.sku === undefined || next.sku === '') &&
+        nextSkuData?.sku
+      ) {
+        next.sku = nextSkuData.sku
+        changed = true
+      }
       return changed ? next : prev
     })
-  }, [schema])
+  }, [schema, nextSkuData])
 
   const buildPayload = (fd: Record<string, any>, extra?: Record<string, any>) => {
     const imageUrls = Array.isArray(fd.images) ? fd.images.filter(Boolean) : []

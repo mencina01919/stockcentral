@@ -36,6 +36,12 @@ export class ProductsController {
     res.send(buffer)
   }
 
+  @Get('next-sku')
+  @ApiOperation({ summary: 'Sugerir el próximo SKU correlativo numérico del catálogo maestro' })
+  nextSku(@TenantId() tenantId: string) {
+    return this.productsService.suggestNextSku(tenantId)
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Obtener producto por ID' })
   findOne(@TenantId() tenantId: string, @Param('id') id: string) {
