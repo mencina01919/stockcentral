@@ -19,9 +19,18 @@ export const MARKETPLACE_DEFAULTS: Record<string, { label: string; commission: n
   jumpseller:    { label: 'Jumpseller',     commission: 2,  shipping: 0,     color: 'bg-orange-500' },
 }
 
+// Calcula el precio de venta para marketplace. Redondeo psicológico
+// chileno: SIEMPRE termina en 990 (ej. 259.990, 1.601.990).
+// Estrategia: tomamos el techo a múltiplo de 1000 y restamos 10. Si el
+// valor crudo ya está debajo de XX.990 (ej. 259.500), redondeamos hacia
+// arriba a 259.990; nunca bajamos para no comer margen.
+// Edge: si raw < 1000 (cost 0 o negativo), devolvemos 990 mínimo.
 export function calcPrice(cost: number, commission: number, shipping: number, margin: number): number {
   if (commission + margin >= 100) return 0
-  return Math.ceil((cost + shipping) / (1 - (commission + margin) / 100) / 10) * 10
+  const raw = (cost + shipping) / (1 - (commission + margin) / 100)
+  if (raw <= 0) return 0
+  const result = Math.ceil(raw / 1000) * 1000 - 10
+  return result < 990 ? 990 : result
 }
 
 // Calculadora de precios por marketplace.
