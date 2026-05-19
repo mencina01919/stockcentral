@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -32,10 +32,16 @@ export function MarketplacePricingBlock({
   product,
   filterProviders,
   compact = false,
+  onCalculatedPriceChange,
 }: {
   product: any
   filterProviders?: string[]
   compact?: boolean
+  // Callback opcional: cuando el precio calculado cambia (porque cambió
+  // alguno de los inputs commission/shipping/margin/cost), lo notifica al
+  // padre. PublishForm lo usa para sincronizar formData.price en vivo.
+  // Se dispara para CADA provider visible si tiene enabled=true.
+  onCalculatedPriceChange?: (provider: string, calculatedPrice: number) => void
 }) {
   const queryClient = useQueryClient()
   const cost = Number(product.costPrice ?? 0)
@@ -80,6 +86,25 @@ export function MarketplacePricingBlock({
     }
     setPricing(init)
   }, [savedPricing, connections])
+
+  // Notificar precio calculado al padre cada vez que cambian los inputs.
+  // Para que el campo "price" de la publicación se sincronice con la
+  // calculadora sin que el usuario tenga que clickear "Guardar".
+  // Trackeo el último valor enviado por provider para no spamear con
+  // el mismo cálculo en re-renders.
+  const lastNotifiedRef = useRef<Record<string, number>>({})
+  useEffect(() => {
+    if (!onCalculatedPriceChange) return
+    for (const conn of visibleConnections) {
+      const p = pricing[conn.provider]
+      if (!p || !p.enabled) continue
+      const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
+      if (lastNotifiedRef.current[conn.provider] !== calculated) {
+        lastNotifiedRef.current[conn.provider] = calculated
+        onCalculatedPriceChange(conn.provider, calculated)
+      }
+    }
+  }, [pricing, cost, visibleConnections, onCalculatedPriceChange])
 
   const set = (provider: string, key: string, val: number | boolean) =>
     setPricing(p => ({ ...p, [provider]: { ...p[provider], [key]: val } }))

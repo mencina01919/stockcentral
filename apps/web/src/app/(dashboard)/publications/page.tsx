@@ -2883,12 +2883,23 @@ function PublishForm({ product, connection, onClose, onSuccess }: any) {
       <div className="p-5 space-y-6">
         {/* Calculadora de precio compartida con el catálogo maestro. Cualquier
             cambio acá actualiza Product.marketplacePricing[provider] y se
-            refleja también en el editor del maestro. */}
+            refleja también en el editor del maestro. onCalculatedPriceChange
+            sincroniza en vivo el campo `price` del form de publicación con
+            el precio sugerido — el usuario no tiene que retipear ni esperar
+            a guardar la calculadora. */}
         <div className="bg-white border border-gray-100 rounded-xl p-4">
           <MarketplacePricingBlock
             product={product}
             filterProviders={[connection.provider]}
             compact
+            onCalculatedPriceChange={(provider, calculatedPrice) => {
+              if (provider !== connection.provider) return
+              setFormData(f => ({
+                ...f,
+                price: calculatedPrice,
+                PriceFalabella: calculatedPrice,
+              }))
+            }}
           />
         </div>
 
