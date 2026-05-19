@@ -1039,13 +1039,20 @@ export class SyncService {
     const product = await this.prisma.product.findFirst({
       where: { id: productId, tenantId },
       include: {
-        inventory: { where: { variantId: null }, take: 1 },
+        // Stock publicable a marketplaces = SUMA de bodegas online + store.
+        // Antes traíamos { take: 1 } sin filtro de warehouseType, así que el
+        // .quantity podía caer en una bodega interna (warehouse) con 0,
+        // mandando 0 a ML aunque hubiera stock online. Bug del botón
+        // "Guardar y sincronizar" del editor maestro.
+        inventory: {
+          where: { variantId: null, warehouse: { warehouseType: { in: ['online', 'store'] } } },
+        },
         marketplaceMappings: { include: { connection: true } },
       },
     })
     if (!product) throw new NotFoundException(`Producto ${productId} no encontrado`)
 
-    const stock = product.inventory[0]?.quantity ?? 0
+    const stock = product.inventory.reduce((s, i) => s + i.quantity, 0)
     const images = (product.images as string[] | null) || []
     const results: any[] = []
     const pricing = (product as any).marketplacePricing as Record<string, any> | null
