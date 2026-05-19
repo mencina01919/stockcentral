@@ -178,10 +178,13 @@ export interface IMarketplaceDriver {
   //  - 0 matches → not published in this marketplace
   //  - 1 match  → auto-link
   //  - 2+ matches → ambiguous, user must resolve
+  // title (opcional) sirve de fallback cuando el marketplace no soporta
+  // filtro por SKU o cuando el seller_custom_field está vacío en el item.
   findBySku?(
     credentials: DriverCredentials,
     sku: string,
     config?: DriverConfig,
+    title?: string,
   ): Promise<MarketplaceProduct[]>
 
   createProduct(

@@ -302,37 +302,57 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     return { items, total: globalTotal, offset, limit, hasMore: offset + limit < globalTotal }
   }
 
-  async findBySku(credentials: DriverCredentials, sku: string): Promise<MarketplaceProduct[]> {
+  async findBySku(credentials: DriverCredentials, sku: string, _config?: DriverConfig, title?: string): Promise<MarketplaceProduct[]> {
     if (!sku) return []
     const client = this.buildClient(credentials.accessToken)
     const sellerId = credentials.sellerId
-    let ids: string[] = []
+
+    // Estrategia 1: filtro nativo `seller_custom_field`. Históricamente
+    // funcionaba, pero en mayo 2026 confirmamos que ML lo IGNORA en
+    // algunos casos (cuentas con muchos items) y devuelve toda la cuenta
+    // sin filtrar. Aún así lo intentamos primero — cuando funciona es lo
+    // más confiable.
+    let candidates: string[] = []
     try {
-      const searchRes = await client.get(`/users/${sellerId}/items/search`, {
+      const r = await client.get(`/users/${sellerId}/items/search`, {
         params: { seller_custom_field: sku, limit: 50 },
       })
-      ids = searchRes.data.results || []
-    } catch {
-      return []
-    }
-    if (!ids.length) return []
+      const results: string[] = r.data?.results || []
+      const total: number = r.data?.paging?.total ?? 0
+      // Si total es muy grande (>200) probablemente ML está devolviendo
+      // toda la cuenta. En ese caso descartamos esta estrategia.
+      if (total <= 200) candidates = results
+    } catch { /* sigue al fallback */ }
 
-    // Antes usábamos GET /items?ids=... (multi-get) pero a veces devuelve
-    // 400 cuando algún item del batch tiene un problema (vencido, sin
-    // permisos, etc.) y el batch entero falla.
-    // Más robusto: GET /items/{id} uno por uno con try/catch — si uno
-    // falla, igual devolvemos los demás.
+    // Estrategia 2 (fallback): si tenemos title, buscar por título. Útil
+    // cuando seller_custom_field está null en ML (catalog/brand items) o
+    // cuando ML aún no indexó el item recién publicado.
+    if (!candidates.length && title) {
+      try {
+        const r = await client.get(`/users/${sellerId}/items/search`, {
+          params: { q: title.slice(0, 80), limit: 20 },
+        })
+        candidates = r.data?.results || []
+      } catch { /* nada */ }
+    }
+
+    if (!candidates.length) return []
+
+    // GET /items/{id} single uno por uno (evita el bug del multi-get
+    // /items?ids=... que falla si algún item del batch tiene problema).
     const items: MarketplaceProduct[] = []
-    for (const id of ids) {
+    for (const id of candidates) {
       try {
         const r = await client.get(`/items/${id}`)
         const body = r.data
+        // Match estricto por seller_custom_field si está; si no, por
+        // coincidencia exacta de title (para items catalog sin sku).
         if (body?.seller_custom_field === sku) {
           items.push(this.mapProduct(body))
+        } else if (!body?.seller_custom_field && title && body?.title === title) {
+          items.push(this.mapProduct(body))
         }
-      } catch {
-        // saltamos items que ML no quiere devolvernos
-      }
+      } catch { /* saltamos */ }
     }
     return items
   }

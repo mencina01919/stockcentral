@@ -411,6 +411,7 @@ export class ProductsService {
       connection.credentials as Record<string, string>,
       product.sku,
       connection.config as Record<string, unknown> | undefined,
+      product.name,
     )
 
     if (matches.length === 0) {
