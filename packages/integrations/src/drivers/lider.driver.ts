@@ -147,20 +147,28 @@ export class LiderDriver implements IMarketplaceDriver {
     // paralelo no salgan al mismo tiempo. Sin esto el cron en paralelo
     // dispara 429 de Walmart aunque cada instancia individual respete su
     // propio gap.
+    //
+    // Safety net: cada lock tiene un auto-release a los 60s para que un
+    // error en el response interceptor (axios cancelado, network drop,
+    // etc.) no deje el mutex pegado y cuelgue todas las requests siguientes.
+    // Antes de este fix bastaba un timeout no manejado para colgar todo
+    // el driver hasta reiniciar el API.
+    const LOCK_TIMEOUT_MS = 60_000
     client.interceptors.request.use(async (cfg) => {
       const prev = this.requestChain.get(clientId) ?? Promise.resolve()
       let release!: () => void
       const next = new Promise<void>((r) => { release = r })
-      // Sumamos nuestro lock al final de la cadena ANTES de awaitear
       this.requestChain.set(clientId, prev.then(() => next))
+      // Auto-release fail-safe: si nadie llama release() en 60s, lo
+      // soltamos solo para no dejar la cadena colgada.
+      const autoRelease = setTimeout(() => release(), LOCK_TIMEOUT_MS)
+      const wrappedRelease = () => {
+        clearTimeout(autoRelease)
+        release()
+      }
       await prev
-      // Solo después de adquirir el lock dormimos el gap mínimo
       await new Promise((r) => setTimeout(r, MIN_REQUEST_GAP_MS))
-      // Liberar el lock al final del request (response interceptor) — pero
-      // como axios no expone hook directo post-response sincrónico, lo
-      // soltamos en el response success/error abajo y guardamos `release`
-      // en cfg para acceso desde el interceptor de respuesta.
-      ;(cfg as any).__release = release
+      ;(cfg as any).__release = wrappedRelease
       return cfg
     })
 

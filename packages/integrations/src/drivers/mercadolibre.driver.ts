@@ -306,16 +306,32 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     if (!sku) return []
     const client = this.buildClient(credentials.accessToken)
     const sellerId = credentials.sellerId
-    const searchRes = await client.get(`/users/${sellerId}/items/search`, {
-      params: { seller_custom_field: sku, limit: 50 },
-    })
-    const ids: string[] = searchRes.data.results || []
+    let ids: string[] = []
+    try {
+      const searchRes = await client.get(`/users/${sellerId}/items/search`, {
+        params: { seller_custom_field: sku, limit: 50 },
+      })
+      ids = searchRes.data.results || []
+    } catch {
+      return []
+    }
     if (!ids.length) return []
-    const detailRes = await client.get('/items', { params: { ids: ids.join(',') } })
+
+    // Antes usábamos GET /items?ids=... (multi-get) pero a veces devuelve
+    // 400 cuando algún item del batch tiene un problema (vencido, sin
+    // permisos, etc.) y el batch entero falla.
+    // Más robusto: GET /items/{id} uno por uno con try/catch — si uno
+    // falla, igual devolvemos los demás.
     const items: MarketplaceProduct[] = []
-    for (const entry of detailRes.data) {
-      if (entry.code === 200 && entry.body?.seller_custom_field === sku) {
-        items.push(this.mapProduct(entry.body))
+    for (const id of ids) {
+      try {
+        const r = await client.get(`/items/${id}`)
+        const body = r.data
+        if (body?.seller_custom_field === sku) {
+          items.push(this.mapProduct(body))
+        }
+      } catch {
+        // saltamos items que ML no quiere devolvernos
       }
     }
     return items

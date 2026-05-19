@@ -388,6 +388,25 @@ export class ProductsService {
       throw new ConflictException(`El driver ${connection.provider} no soporta detección por SKU`)
     }
 
+    // Si ya hay un mapping vinculado (marketplaceProductId no nulo),
+    // protegerlo: el detect-by-sku no debe sobrescribir un mapping bueno
+    // con sku_not_found. Ese mapping puede haberse hecho manualmente o
+    // por publicación directa donde el seller_custom_field no quedó
+    // seteado en el marketplace (ML deja seller_custom_field null para
+    // catalog items / brand accounts).
+    const existing = await this.prisma.marketplaceMapping.findUnique({
+      where: { productId_connectionId: { productId, connectionId } },
+    })
+    if (existing?.marketplaceProductId) {
+      return {
+        matched: 1,
+        status: 'connected',
+        marketplaceProductId: existing.marketplaceProductId,
+        title: null,
+        alreadyLinked: true,
+      }
+    }
+
     const matches = await driver.findBySku(
       connection.credentials as Record<string, string>,
       product.sku,
