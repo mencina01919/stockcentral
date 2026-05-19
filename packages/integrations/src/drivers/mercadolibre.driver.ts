@@ -438,6 +438,21 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       const client = this.buildClient(credentials.accessToken)
       const fd = (product as any).formData as Record<string, any> | undefined ?? {}
 
+      // Detectar items "catalog" (vinculados a un user_product_id del
+      // catálogo oficial de ML). Para esos items, ML rechaza con
+      // BODY_INVALID_FIELDS si mandamos title/pictures/attributes/etc —
+      // solo permite price y available_quantity. El title, atributos y
+      // fotos son los del catálogo oficial y solo se pueden cambiar
+      // republicando en otro user_product_id.
+      let isCatalogItem = false
+      try {
+        const cur = await client.get(`/items/${externalId}`)
+        isCatalogItem = !!cur.data?.user_product_id
+      } catch {
+        // Si el GET falla, asumimos no-catalog y dejamos que ML
+        // decida con BODY_INVALID_FIELDS si corresponde.
+      }
+
       const payload: Record<string, unknown> = {}
       const title = fd.title || product.title
       const price = fd.price ?? product.price
@@ -445,29 +460,37 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       const condition = fd.condition
       const listingTypeId = fd.listingTypeId
 
-      if (title !== undefined)       payload.title              = title
       if (price !== undefined)       payload.price              = price
       if (stock !== undefined)       payload.available_quantity = stock
-      if (condition !== undefined)   payload.condition          = condition
-      if (listingTypeId !== undefined) payload.listing_type_id  = listingTypeId
 
-      const pictures = product.images || []
-      if (pictures.length) payload.pictures = pictures.map((url) => ({ source: url }))
+      // Campos NO permitidos en catalog items — solo los mandamos para
+      // items custom del seller.
+      if (!isCatalogItem) {
+        if (title !== undefined)       payload.title              = title
+        if (condition !== undefined)   payload.condition          = condition
+        if (listingTypeId !== undefined) payload.listing_type_id  = listingTypeId
 
-      const productLevelAttrsUpdate = Array.isArray((product as any).attributes) ? (product as any).attributes : undefined
-      const attributes = this.buildAttributes(fd, productLevelAttrsUpdate)
-      if (attributes.length) payload.attributes = attributes
+        const pictures = product.images || []
+        if (pictures.length) payload.pictures = pictures.map((url) => ({ source: url }))
 
-      if (fd.warranty) {
-        payload.sale_terms = [{ id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' }, { id: 'WARRANTY_TIME', value_name: fd.warranty }]
+        const productLevelAttrsUpdate = Array.isArray((product as any).attributes) ? (product as any).attributes : undefined
+        const attributes = this.buildAttributes(fd, productLevelAttrsUpdate)
+        if (attributes.length) payload.attributes = attributes
+
+        if (fd.warranty) {
+          payload.sale_terms = [{ id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' }, { id: 'WARRANTY_TIME', value_name: fd.warranty }]
+        }
       }
 
       await client.put(`/items/${externalId}`, payload)
 
-      // Update description separately
-      const descText: string = fd.description || product.description || ''
-      if (descText) {
-        await client.put(`/items/${externalId}/description`, { plain_text: descText }).catch(() => {})
+      // Update description separately — solo para items custom. Catalog
+      // items tienen description heredada del producto del catálogo.
+      if (!isCatalogItem) {
+        const descText: string = fd.description || product.description || ''
+        if (descText) {
+          await client.put(`/items/${externalId}/description`, { plain_text: descText }).catch(() => {})
+        }
       }
 
       return { success: true, externalId }
