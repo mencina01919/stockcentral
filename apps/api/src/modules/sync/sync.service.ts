@@ -735,18 +735,42 @@ export class SyncService {
       },
     })
 
-    // Actualizar el snapshot del marketplace para que la vista refleje
-    // los cambios al toque, sin esperar al próximo cron de 30 min. Si el
-    // marketplace rechazó algún campo (stockOk=false), NO escribimos ese
-    // campo para no contaminar el cache con datos inexistentes en el
-    // marketplace real.
+    // Actualizar el snapshot con el ESTADO REAL del marketplace después del
+    // sync. Llamamos a driver.getProduct para releer el item — así obtenemos
+    // el status real (active/paused), el price/stock confirmados y cualquier
+    // cambio que ML/Lider/etc haya hecho automáticamente (ej. auto-pause
+    // por quedar sin stock, sub_status flags, etc.). El cron de cache de
+    // 30 min lo hace pero queremos UI fresca al toque.
     try {
-      const snapshotData: Record<string, any> = { lastFetchedAt: new Date() }
-      if (priceOk) snapshotData.price = price
-      if (stockOk) snapshotData.stock = stock
-      if (imagesRes?.success !== false && images.length > 0) {
-        snapshotData.images = images as any
+      let realState: any = null
+      if (driver.getProduct) {
+        try {
+          realState = await driver.getProduct(credentials, externalId, config)
+        } catch {
+          // si getProduct falla, caemos al snapshot armado con datos locales
+        }
       }
+
+      const snapshotData: Record<string, any> = { lastFetchedAt: new Date() }
+      if (realState) {
+        // Datos frescos del marketplace — fuente de verdad para status
+        snapshotData.status = realState.status || 'active'
+        if (realState.price != null) snapshotData.price = Number(realState.price)
+        if (realState.stock != null) snapshotData.stock = realState.stock
+        if (Array.isArray(realState.images) && realState.images.length) {
+          snapshotData.images = realState.images as any
+        }
+        if (realState.title) snapshotData.title = realState.title
+      } else {
+        // Fallback: datos locales. Si el sync fue OK probablemente está active.
+        if (priceOk) snapshotData.price = price
+        if (stockOk) snapshotData.stock = stock
+        if (imagesRes?.success !== false && images.length > 0) {
+          snapshotData.images = images as any
+        }
+        if (allOk) snapshotData.status = 'active'
+      }
+
       await this.prisma.marketplaceProductSnapshot.upsert({
         where: { connectionId_externalId: { connectionId, externalId } },
         create: {
@@ -1097,6 +1121,29 @@ export class SyncService {
           where: { id: mapping.id },
           data: { syncStatus: updateResult.success ? 'success' : 'error', lastSyncAt: new Date(), errorMessage: updateResult.success ? null : updateResult.error },
         })
+
+        // Releer el item del marketplace y refrescar el snapshot con el
+        // estado real (status, price, stock confirmados). Sin esto el
+        // snapshot se queda con valores viejos (ej. paused) hasta el
+        // próximo cron de 30 min. fire-and-forget — un fallo no aborta
+        // el push.
+        if (updateResult.success && driver.getProduct) {
+          try {
+            const realState = await driver.getProduct(credentials, externalId, config)
+            if (realState) {
+              await this.prisma.marketplaceProductSnapshot.update({
+                where: { connectionId_externalId: { connectionId: mapping.connectionId, externalId } },
+                data: {
+                  status: realState.status || 'active',
+                  price: realState.price != null ? Number(realState.price) : undefined,
+                  stock: realState.stock ?? undefined,
+                  title: realState.title || undefined,
+                  lastFetchedAt: new Date(),
+                },
+              }).catch(() => { /* snapshot puede no existir todavía */ })
+            }
+          } catch { /* no abortamos el push */ }
+        }
 
         results.push({ connection: connection.name, success: updateResult.success, error: updateResult.error })
       } catch (err: any) {
