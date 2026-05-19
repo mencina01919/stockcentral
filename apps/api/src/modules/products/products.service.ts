@@ -647,6 +647,29 @@ export class ProductsService {
       delete where.OR
     }
 
+    // Filtro linked/unlinked a nivel SQL para que paginación + total
+    // reflejen el subconjunto filtrado. Antes el filtro corría en JS
+    // sobre la página devuelta, así que cuando había linked=linked y los
+    // primeros 25 items del cache no estaban vinculados, la vista
+    // mostraba 0 ítems aunque hubiera otros vinculados más adelante.
+    if (linked === 'linked' || linked === 'unlinked') {
+      const linkedMappings = await this.prisma.marketplaceMapping.findMany({
+        where: { connectionId, marketplaceProductId: { not: null } },
+        select: { marketplaceProductId: true },
+      })
+      const linkedIds = linkedMappings
+        .map((m) => m.marketplaceProductId)
+        .filter((id): id is string => !!id)
+      if (linked === 'linked') {
+        // Si no hay mappings, no hay items vinculados → match imposible
+        // que devuelve 0 (en vez de devolver todo, que sería el default
+        // de un IN vacío en Prisma).
+        where.externalId = linkedIds.length > 0 ? { in: linkedIds } : { in: ['__none__'] }
+      } else {
+        where.externalId = linkedIds.length > 0 ? { notIn: linkedIds } : undefined
+      }
+    }
+
     const [data, total] = await Promise.all([
       this.prisma.marketplaceProductSnapshot.findMany({
         where,
