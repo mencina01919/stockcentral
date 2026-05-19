@@ -7,6 +7,7 @@ export interface FormField {
   placeholder?: string
   hint?: string
   group?: string
+  maxLength?: number
 }
 
 export interface MarketplaceFormSchema {
@@ -27,7 +28,7 @@ export const MARKETPLACE_FORMS: Record<string, MarketplaceFormSchema> = {
     fields: [
       // Información básica
       { key: 'categoryId',         label: 'Categoría',                   type: 'text',    required: true,  placeholder: 'Buscar...', hint: 'Busca por nombre. ML define los atributos según la categoría seleccionada.', group: 'Información básica' },
-      { key: 'family_name',         label: 'Nombre de familia (family_name)', type: 'text', required: true, placeholder: 'Mouse Gamer RGB', hint: 'Determina el título generado por ML. Si elegiste un producto del catálogo, se completa automáticamente.', group: 'Información básica' },
+      { key: 'family_name',         label: 'Nombre de familia (family_name)', type: 'text', required: true, maxLength: 60, placeholder: 'Mouse Gamer RGB', hint: 'Determina el título generado por ML. Máximo 60 caracteres. Si elegiste un producto del catálogo, se completa automáticamente.', group: 'Información básica' },
       { key: 'condition',          label: 'Condición',                  type: 'select',  required: true,  group: 'Información básica',
         options: [{ label: 'Nuevo', value: 'new' }, { label: 'Usado', value: 'used' }, { label: 'No especificado', value: 'not_specified' }],
       },
@@ -40,8 +41,8 @@ export const MARKETPLACE_FORMS: Record<string, MarketplaceFormSchema> = {
       },
       { key: 'gtin',               label: 'GTIN / EAN / UPC',           type: 'text',    required: false, placeholder: '7891234567890', hint: 'Código de barras del producto (recomendado)', group: 'Información básica' },
       { key: 'brand',              label: 'Marca',                      type: 'text',    required: false, placeholder: 'Samsung', group: 'Información básica' },
-      { key: 'warranty',           label: 'Garantía',                   type: 'text',    required: false, placeholder: '12 meses garantía del fabricante', group: 'Información básica' },
-      { key: 'description',        label: 'Descripción (HTML permitido)', type: 'textarea', required: false, group: 'Información básica' },
+      { key: 'warranty',           label: 'Garantía',                   type: 'text',    required: true,  placeholder: '12 meses garantía del fabricante', hint: 'ML requiere garantía. Ej: "12 meses con el fabricante".', group: 'Información básica' },
+      { key: 'description',        label: 'Descripción',                type: 'textarea', required: false, hint: 'Solo texto plano. Si vinculás un producto del catálogo maestro, se auto-completa desde ahí.', group: 'Información básica' },
       // Precio y stock
       { key: 'price',              label: 'Precio de venta (CLP)',      type: 'number',  required: true,  group: 'Precio y stock' },
       { key: 'availableQuantity',  label: 'Cantidad disponible',        type: 'number',  required: true,  placeholder: '10', group: 'Precio y stock' },

@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import api from '@/lib/api'
 import { cn, PROVIDER_LABELS, formatCurrency } from '@/lib/utils'
 import { ProviderLogo } from '@/components/provider-logo'
+import { MarketplacePricingBlock } from '@/components/marketplace-pricing/marketplace-pricing-block'
 
 // ─── ML Category Search ───────────────────────────────────────────────────────
 
@@ -1623,14 +1624,28 @@ function FieldRenderer({
   }
 
   if (field.type === 'textarea') {
+    const maxLength: number | undefined = field.maxLength
+    const len = typeof value === 'string' ? value.length : 0
     return (
-      <textarea
-        value={value ?? ''}
-        onChange={e => onChange(e.target.value)}
-        rows={3}
-        placeholder={field.placeholder}
-        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
-      />
+      <div>
+        <textarea
+          value={value ?? ''}
+          onChange={e => {
+            let v = e.target.value
+            if (maxLength && v.length > maxLength) v = v.slice(0, maxLength)
+            onChange(v)
+          }}
+          rows={3}
+          maxLength={maxLength}
+          placeholder={field.placeholder}
+          className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+        />
+        {maxLength && (
+          <p className={`mt-1 text-xs text-right ${len >= maxLength ? 'text-red-500 font-medium' : 'text-gray-400'}`}>
+            {len}/{maxLength}
+          </p>
+        )}
+      </div>
     )
   }
 
@@ -1649,14 +1664,35 @@ function FieldRenderer({
     )
   }
 
+  // Input de texto/número/url. Si el field define maxLength, mostramos un
+  // contador "X/MAX" debajo y limitamos el length nativamente. Crítico
+  // para family_name de ML (60 chars) — sin el contador el usuario no
+  // sabe cuánto le queda y ML rechaza la publicación al sobrepasarlo.
+  const isTextish = field.type !== 'number' && field.type !== 'url'
+  const maxLength: number | undefined = field.maxLength
+  const len = typeof value === 'string' ? value.length : 0
   return (
-    <input
-      type={field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'}
-      value={value ?? ''}
-      onChange={e => onChange(field.type === 'number' ? Number(e.target.value) : e.target.value)}
-      placeholder={field.placeholder}
-      className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-    />
+    <div>
+      <input
+        type={field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'}
+        value={value ?? ''}
+        onChange={e => {
+          let v: any = field.type === 'number' ? Number(e.target.value) : e.target.value
+          if (isTextish && maxLength && typeof v === 'string' && v.length > maxLength) {
+            v = v.slice(0, maxLength)
+          }
+          onChange(v)
+        }}
+        placeholder={field.placeholder}
+        maxLength={isTextish && maxLength ? maxLength : undefined}
+        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+      />
+      {isTextish && maxLength && (
+        <p className={`mt-1 text-xs text-right ${len >= maxLength ? 'text-red-500 font-medium' : 'text-gray-400'}`}>
+          {len}/{maxLength}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -2737,18 +2773,26 @@ function PublishForm({ product, connection, onClose, onSuccess }: any) {
   const calculatedPrice = product?.marketplacePricing?.[connection.provider]?.calculatedPrice
   const initialPrice = Number(calculatedPrice ?? product.salePrice ?? product.basePrice)
 
+  // Helpers: title corto para ML family_name (máx 60), descripción plain text
+  // para ML (no acepta HTML rico, mejor sin tags).
+  const stripHtml = (s: string) => s.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim()
+  const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s)
+  const familyNameFromMaster = truncate(product.name || '', 60)
+  const descriptionPlain = stripHtml(product.description || '')
+
   const [formData, setFormData] = useState<Record<string, any>>({
     productName: product.name,
     name: product.name,
     title: product.name,
+    family_name: familyNameFromMaster,  // ML usa este como base del título auto-generado
     price: initialPrice,
     PriceFalabella: initialPrice,
     QuantityFalabella: totalStock,
     sku: product.sku,
     sellerSku: product.sku,
     brand: product.brand || '',
-    shortDescription: product.description || '',
-    description: product.description || '',
+    shortDescription: descriptionPlain,
+    description: descriptionPlain,
     availableQuantity: totalStock,
     images: Array.isArray(product.images) ? product.images : [],
   })
@@ -2837,22 +2881,16 @@ function PublishForm({ product, connection, onClose, onSuccess }: any) {
         <button onClick={onClose}><X className="w-4 h-4 text-gray-400" /></button>
       </div>
       <div className="p-5 space-y-6">
-        {/* Aviso del precio sugerido por la calculadora */}
-        {calculatedPrice && (
-          <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 flex items-center justify-between text-sm">
-            <span className="text-emerald-800">
-              Precio sugerido (calculadora): <strong>{formatCurrency(Number(calculatedPrice))}</strong>
-            </span>
-            <span className="text-xs text-emerald-700 font-mono">
-              comisión {product?.marketplacePricing?.[connection.provider]?.commission ?? '?'}% · margen {product?.marketplacePricing?.[connection.provider]?.margin ?? '?'}%
-            </span>
-          </div>
-        )}
-        {!calculatedPrice && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-sm text-amber-800">
-            <strong>No hay precio calculado para {PROVIDER_LABELS[connection.provider] || connection.provider}.</strong> Configura los parámetros en la calculadora del catálogo maestro para definir comisión, envío y margen. Mientras tanto, se usa el precio base.
-          </div>
-        )}
+        {/* Calculadora de precio compartida con el catálogo maestro. Cualquier
+            cambio acá actualiza Product.marketplacePricing[provider] y se
+            refleja también en el editor del maestro. */}
+        <div className="bg-white border border-gray-100 rounded-xl p-4">
+          <MarketplacePricingBlock
+            product={product}
+            filterProviders={[connection.provider]}
+            compact
+          />
+        </div>
 
         {/* ML: selector de modo */}
         {isML && (

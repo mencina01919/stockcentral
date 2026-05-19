@@ -9,6 +9,7 @@ import { ImageUploader } from '@/components/sc/image-uploader'
 import { ImageGrid } from '@/components/sc/image-grid'
 import { formatCurrency } from '@/lib/utils'
 import { toast } from 'sonner'
+import { MarketplacePricingBlock as SharedPricingBlock } from '@/components/marketplace-pricing/marketplace-pricing-block'
 
 export function ProductEditModal({ product, onClose, onSuccess }: { product: any; onClose: () => void; onSuccess: () => void }) {
   const getStockByType = (type: string) => {
@@ -1118,198 +1119,14 @@ function MarketplaceSyncBlock({ productId, sku }: { productId: string; sku: stri
   )
 }
 
-// ─── Calculadora de precios por marketplace ───────────────────────────────────
-
-const MARKETPLACE_DEFAULTS: Record<string, { label: string; commission: number; shipping: number; color: string }> = {
-  lider:         { label: 'Lider',          commission: 12, shipping: 3500,  color: 'bg-blue-600' },
-  mercadolibre:  { label: 'MercadoLibre',   commission: 13, shipping: 2990,  color: 'bg-yellow-400' },
-  paris:         { label: 'Paris',          commission: 15, shipping: 3500,  color: 'bg-red-700' },
-  falabella:     { label: 'Falabella',      commission: 15, shipping: 3500,  color: 'bg-green-700' },
-  shopify:       { label: 'Shopify',        commission: 2,  shipping: 0,     color: 'bg-green-600' },
-  woocommerce:   { label: 'WooCommerce',    commission: 0,  shipping: 0,     color: 'bg-purple-600' },
-  jumpseller:    { label: 'Jumpseller',     commission: 2,  shipping: 0,     color: 'bg-orange-500' },
-}
-
-function calcPrice(cost: number, commission: number, shipping: number, margin: number): number {
-  if (commission + margin >= 100) return 0
-  return Math.ceil((cost + shipping) / (1 - (commission + margin) / 100) / 10) * 10
-}
+// ─── Calculadora de precios por marketplace ─────────────────────────────────
+// Componente compartido entre el editor maestro y publicaciones — vive en
+// components/marketplace-pricing/marketplace-pricing-block.tsx.
 
 function MarketplacePricingBlock({ product }: { product: any }) {
-  const queryClient = useQueryClient()
-  const cost = Number(product.costPrice ?? 0)
-  const basePrice = Number(product.basePrice ?? 0)
-
-  const { data: savedPricing } = useQuery<any>({
-    queryKey: ['marketplace-pricing', product.id],
-    queryFn: () => api.get(`/products/${product.id}/marketplace-pricing`).then(r => r.data),
-  })
-
-  // Solo destinos reales de sync — excluimos facturadores (Bsale, type='billing')
-  // y catalog sources (EYLSTORE, isCatalogSource=true), igual que en el
-  // módulo de Sincronización del mismo producto.
-  const { data: connections = [] } = useQuery<any[]>({
-    queryKey: ['connections-marketplace'],
-    queryFn: () => api.get('/connections').then(r =>
-      r.data.filter((c: any) =>
-        c.status === 'connected' &&
-        (c.type === 'marketplace' || c.type === 'ecommerce') &&
-        !c.isCatalogSource
-      )
-    ),
-  })
-
-  const [pricing, setPricing] = useState<Record<string, { commission: number; shipping: number; margin: number; enabled: boolean }>>({})
-  const [saving, setSaving] = useState(false)
-
-  // Inicializar con datos guardados o defaults
-  useEffect(() => {
-    if (!savedPricing || !connections.length) return
-    const saved = savedPricing.pricing || {}
-    const init: typeof pricing = {}
-    for (const conn of connections) {
-      const def = MARKETPLACE_DEFAULTS[conn.provider] || { commission: 12, shipping: 3500 }
-      const s = saved[conn.provider] || {}
-      init[conn.provider] = {
-        commission: s.commission ?? def.commission,
-        shipping:   s.shipping   ?? def.shipping,
-        margin:     s.margin     ?? 10,
-        enabled:    s.enabled    ?? true,
-      }
-    }
-    setPricing(init)
-  }, [savedPricing, connections])
-
-  const set = (provider: string, key: string, val: number | boolean) =>
-    setPricing(p => ({ ...p, [provider]: { ...p[provider], [key]: val } }))
-
-  const save = async () => {
-    setSaving(true)
-    try {
-      // Calcular y guardar el precio calculado por marketplace (basado en costo)
-      const payload: Record<string, any> = {}
-      for (const conn of connections) {
-        const p = pricing[conn.provider]
-        if (!p || !p.enabled) continue
-        const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
-        payload[conn.provider] = { ...p, calculatedPrice: calculated }
-      }
-      await api.patch(`/products/${product.id}/marketplace-pricing`, payload)
-      queryClient.invalidateQueries({ queryKey: ['marketplace-pricing', product.id] })
-      toast.success('Precios por marketplace guardados')
-    } catch {
-      toast.error('Error al guardar precios')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  if (!connections.length) return null
-
-  // Sin costo no se puede calcular nada útil
-  if (!cost) {
-    return (
-      <div>
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-          Calculadora de precios por marketplace
-        </p>
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
-          <p className="font-medium">Falta el precio de costo</p>
-          <p className="text-xs mt-1 text-amber-700">
-            Para calcular precios por marketplace, primero ingresa el costo del producto en la sección de precios.
-          </p>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div>
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-        Calculadora de precios por marketplace
-      </p>
-      <p className="text-xs text-gray-400 mb-3">
-        Costo base: <span className="font-semibold text-gray-700">{formatCurrency(cost)}</span>
-        {basePrice > 0 && <span className="ml-3">· Precio venta directa: <span className="font-semibold text-gray-700">{formatCurrency(basePrice)}</span></span>}
-      </p>
-      <div className="space-y-3">
-        {connections.map((conn: any) => {
-          const def = MARKETPLACE_DEFAULTS[conn.provider]
-          const p = pricing[conn.provider]
-          if (!p) return null
-          const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
-          const gain = calculated - cost - p.shipping
-          const gainPct = cost > 0 ? ((gain / cost) * 100).toFixed(1) : '0'
-
-          return (
-            <div key={conn.provider} className={`border rounded-xl overflow-hidden ${p.enabled ? 'border-gray-200' : 'border-gray-100 opacity-50'}`}>
-              <div className="flex items-center justify-between px-3 py-2 bg-gray-50">
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${def?.color || 'bg-gray-400'}`} />
-                  <span className="text-sm font-medium text-gray-800">{def?.label || conn.provider}</span>
-                </div>
-                <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input type="checkbox" checked={p.enabled} onChange={e => set(conn.provider, 'enabled', e.target.checked)}
-                    className="w-3.5 h-3.5 rounded border-gray-300 text-sky-600 focus:ring-sky-500" />
-                  <span className="text-xs text-gray-500">Activo</span>
-                </label>
-              </div>
-
-              {p.enabled && (
-                <div className="px-3 py-3 space-y-2">
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">Comisión %</label>
-                      <input type="number" min="0" max="50" step="0.5"
-                        value={p.commission}
-                        onChange={e => set(conn.provider, 'commission', Number(e.target.value))}
-                        className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 text-center" />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">Despacho $</label>
-                      <input type="number" min="0" step="100"
-                        value={p.shipping}
-                        onChange={e => set(conn.provider, 'shipping', Number(e.target.value))}
-                        className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 text-center" />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">Margen %</label>
-                      <input type="number" min="0" max="80" step="1"
-                        value={p.margin}
-                        onChange={e => set(conn.provider, 'margin', Number(e.target.value))}
-                        className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-sky-500 text-center" />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-1 border-t border-gray-100">
-                    <div>
-                      <p className="text-xs text-gray-400">Precio sugerido</p>
-                      <p className="text-base font-bold text-sky-700">{formatCurrency(calculated)}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs text-gray-400">Ganancia estimada</p>
-                      <p className={`text-sm font-semibold ${gain > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        {formatCurrency(gain)} ({gainPct}%)
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-      <button
-        onClick={save}
-        disabled={saving}
-        className="mt-3 w-full px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-      >
-        {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-        Guardar precios
-      </button>
-    </div>
-  )
+  return <SharedPricingBlock product={product} />
 }
+
 
 function ParisConfigBlock({ product }: { product: any }) {
   const queryClient = useQueryClient()
