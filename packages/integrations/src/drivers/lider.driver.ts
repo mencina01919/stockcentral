@@ -768,11 +768,26 @@ export class LiderDriver implements IMarketplaceDriver {
   // así que el caller debe agrupar por precio antes de llamar a esta
   // función. Devolvemos un resumen con el total de SKUs actualizados.
   //
-  // OPTIMIZACIÓN: el endpoint /v3/price es muy liviano y Walmart tolera
-  // burst de 10-20 requests sin 429 (los caps de rate-limit aplican a
-  // /v3/inventory PUT y /v3/items GET, NO al PUT /v3/price). Bypaseamos
-  // el mutex normal del driver creando un cliente nuevo SIN throttle —
-  // sino 56 grupos × 500ms = 28s solo en mutex.
+  // Walmart Chile recomienda **siempre usar bulk feed APIs** (no PUT /v3/price
+  // individual). El PUT /v3/price tiene rate-limit muy estricto (con
+  // CONCURRENCY=1 + backoff 5/15/45s, 73% de 196 requests dan 429). En cambio,
+  // el feed XML procesa N precios en 1 sola request HTTP sin rate-limit.
+  //
+  // POST /v3/feeds?feedType=price con XML body. Walmart procesa async; al
+  // recibir devuelve un feedId y nosotros polleamos GET /v3/feeds/{feedId}
+  // para confirmar que todos los items quedaron en SUCCESS.
+  //
+  // El XSD del PriceFeed para Chile usa estructura:
+  //   <PriceFeed xmlns:gmp="http://walmart.com/">
+  //     <PriceHeader><version>1.5</version></PriceHeader>
+  //     <Price>
+  //       <itemIdentifier><sku>X</sku></itemIdentifier>
+  //       <pricingList><pricing><currentPrice><value currency="CLP" amount="N"/></currentPrice><currentPriceType>BASE</currentPriceType></pricing></pricingList>
+  //     </Price>
+  //     ...
+  //   </PriceFeed>
+  //
+  // Validado con prod: feedStatus=PROCESSED, itemsSucceeded=N, en ~10s.
   async bulkUpdatePrice(
     credentials: DriverCredentials,
     groups: Array<{ price: number; skus: string[] }>,
@@ -782,86 +797,96 @@ export class LiderDriver implements IMarketplaceDriver {
     updated: number
     failed: number
     errors: string[]
-    failedSkus: string[] // SKUs específicos que NO se aplicaron — el caller los excluye del snapshot update
+    failedSkus: string[]
   }> {
     if (!groups.length) return { success: true, updated: 0, failed: 0, errors: [], failedSkus: [] }
-    // Cliente axios "fast" — usa el token cacheado pero sin el mutex de
-    // 500ms entre requests. Solo lo usamos para PUT /v3/price que es
-    // idempotente y Walmart no aplica throttle agresivo en él.
-    const { clientId, clientSecret } = this.getClientCredentials(credentials, config)
-    const token = await this.getAccessToken(credentials, config)
-    const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
-    // fastClient: pasa el token cacheado y todos los headers obligatorios de
-    // Walmart Chile. Necesita WM_QOS.CORRELATION_ID (sin él Walmart trata las
-    // requests como sospechosas → más 429). Se regenera por cada request en
-    // el interceptor de abajo para tener un UUID único por PUT.
-    const fastClient = axios.create({
-      baseURL: this.getBaseUrl(config),
-      timeout: 30000,
-      headers: {
-        Authorization: `Basic ${encoded}`,
-        'WM_SEC.ACCESS_TOKEN': token,
-        'WM_MARKET': 'cl',
-        'WM_SVC.NAME': 'Walmart Marketplace',
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-    })
-    fastClient.interceptors.request.use((cfg) => {
-      cfg.headers['WM_QOS.CORRELATION_ID'] = randomUUID()
-      return cfg
-    })
 
+    // Expandir grupos a lista plana de {sku, price} — el feed no necesita
+    // agrupar por precio igual, cada Price element es independiente.
+    const items: Array<{ sku: string; price: number }> = []
+    for (const g of groups) {
+      for (const sku of g.skus) items.push({ sku, price: Math.round(g.price) })
+    }
+
+    const escapeXml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+    const priceElements = items.map((it) => `
+  <Price>
+    <itemIdentifier><sku>${escapeXml(it.sku)}</sku></itemIdentifier>
+    <pricingList><pricing><currentPrice><value currency="CLP" amount="${it.price}"/></currentPrice><currentPriceType>BASE</currentPriceType></pricing></pricingList>
+  </Price>`).join('')
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<PriceFeed xmlns:gmp="http://walmart.com/">
+  <PriceHeader><version>1.5</version></PriceHeader>${priceElements}
+</PriceFeed>`
+
+    const client = await this.buildClient(credentials, config)
+
+    let feedId: string
+    try {
+      const res = await client.post('/v3/feeds?feedType=price', xml, {
+        headers: { 'Content-Type': 'application/xml', Accept: 'application/json' },
+      })
+      feedId = res.data?.feedId
+      if (!feedId) {
+        return {
+          success: false,
+          updated: 0,
+          failed: items.length,
+          errors: ['Walmart no devolvió feedId en POST /v3/feeds?feedType=price'],
+          failedSkus: items.map((i) => i.sku),
+        }
+      }
+    } catch (err: any) {
+      const msg = err?.response?.data?.error?.[0]?.description || err?.response?.data?.errors?.[0]?.description || err?.message
+      return {
+        success: false,
+        updated: 0,
+        failed: items.length,
+        errors: [`POST /v3/feeds?feedType=price falló: ${msg}`],
+        failedSkus: items.map((i) => i.sku),
+      }
+    }
+
+    // Pollear estado del feed cada 5s hasta PROCESSED/ERROR (máx 2 min).
     let updated = 0
     let failed = 0
-    const errors: string[] = []
     const failedSkus: string[] = []
-
-    // Walmart Chile aplica rate-limit muy estricto a PUT /v3/price:
-    // con CONCURRENCY=2 + backoff 1s/2s/4s, 73% de 196 requests dieron 429.
-    // Pasamos a SECUENCIAL (CONCURRENCY=1) + backoff agresivo (5/15/45/120s
-    // × 5 retries) para dejar que Walmart libere el bucket entre intentos.
-    // Tiempo esperado: 196 precios × ~600ms = ~2 min en happy path. Si hay
-    // 429, cada uno espera 5s mínimo. El bucket se libera y el 99% pasa al
-    // segundo retry.
-    const CONCURRENCY = 1
-    const MAX_RETRIES = 5
-    const BACKOFF_MS = [5000, 15000, 45000, 120000, 300000]
-    const queue = [...groups]
-    async function putWithRetry(g: { price: number; skus: string[] }, attempt = 0): Promise<void> {
+    const errors: string[] = []
+    const maxPolls = 24 // 24 × 5s = 2 min
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise((r) => setTimeout(r, 5000))
       try {
-        await fastClient.put('/v3/price', {
-          amount: String(Math.round(g.price)),
-          skus: g.skus,
-        })
-        updated += g.skus.length
-      } catch (err: any) {
-        const status = err?.response?.status
-        if (status === 429 && attempt < MAX_RETRIES) {
-          const retryAfter = parseFloat(err.response.headers?.['retry-after'] ?? '')
-          const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-            ? Math.max(retryAfter * 1000, BACKOFF_MS[attempt])
-            : BACKOFF_MS[attempt]
-          await new Promise((r) => setTimeout(r, waitMs))
-          return putWithRetry(g, attempt + 1)
+        const stat = await client.get(`/v3/feeds/${encodeURIComponent(feedId)}?includeDetails=true`)
+        const d = stat.data || {}
+        if (d.feedStatus === 'PROCESSED' || d.feedStatus === 'ERROR') {
+          updated = d.itemsSucceeded ?? 0
+          failed = d.itemsFailed ?? 0
+          const itemDetails = d.itemDetails?.itemIngestionStatus || []
+          for (const it of itemDetails) {
+            if (it.ingestionStatus !== 'SUCCESS') {
+              failedSkus.push(it.sku)
+              errors.push(`sku=${it.sku}: ${it.ingestionStatus} ${it.ingestionErrors?.ingestionError?.[0]?.description || ''}`)
+            }
+          }
+          return { success: failed === 0, updated, failed, errors, failedSkus }
         }
-        failed += g.skus.length
-        failedSkus.push(...g.skus)
-        const msg = err?.response?.data?.errors?.[0]?.description || err?.response?.data?.message || err.message
-        // Loguear cada fallo individual con sku+price para poder hacer retry
-        // incremental fuera del batch (script de convergencia, debugging).
-        errors.push(`price=${g.price} skus=[${g.skus.join(',')}]: ${msg}`)
+      } catch {
+        // Sigue polleando hasta el max
       }
     }
-    async function worker() {
-      while (queue.length) {
-        const g = queue.shift()
-        if (!g || !g.skus.length) continue
-        await putWithRetry(g)
-      }
+    // Timeout: marcamos como pendiente (los items siguen en el feed,
+    // Walmart va a procesarlos eventualmente; el próximo run del cron
+    // detectará el drift y reaplicará si hace falta).
+    return {
+      success: false,
+      updated: 0,
+      failed: items.length,
+      errors: [`Feed ${feedId} no terminó en 2 min. feedStatus desconocido, los items quedan en limbo. El próximo run reintentará si hay drift.`],
+      failedSkus: items.map((i) => i.sku),
     }
-    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
-    return { success: failed === 0, updated, failed, errors, failedSkus }
   }
 
   // GET /v3/inventory?sku=<sku> — estado actual del inventario de un SKU.
