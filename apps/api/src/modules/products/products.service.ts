@@ -1,15 +1,17 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common'
+import { Injectable, NotFoundException, ConflictException, BadRequestException, Inject, forwardRef } from '@nestjs/common'
 import * as ExcelJS from 'exceljs'
 import { PrismaService } from '../../prisma/prisma.service'
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto/product.dto'
 import { getDriver, ParisDriver } from '@stockcentral/integrations'
 import { MarketplaceCacheService } from './marketplace-cache.service'
+import { InventoryService } from '../inventory/inventory.service'
 
 @Injectable()
 export class ProductsService {
   constructor(
     private prisma: PrismaService,
     private marketplaceCache: MarketplaceCacheService,
+    @Inject(forwardRef(() => InventoryService)) private inventoryService: InventoryService,
   ) {}
 
   private async generateSku(tenantId: string, name: string): Promise<string> {
@@ -183,6 +185,9 @@ export class ProductsService {
       store: stockStore,
     }
 
+    // Solo trackear cambio de stock para los warehouses online/store
+    // (warehouse internal no se publica, no necesita fan-out).
+    let onlineStoreStockChanged = false
     for (const [warehouseType, qty] of Object.entries(stockUpdates)) {
       if (qty === undefined) continue
       const wh = await this.prisma.warehouse.findFirst({
@@ -193,12 +198,22 @@ export class ProductsService {
         where: { productId: id, warehouseId: wh.id, variantId: null },
       })
       if (inv) {
-        await this.prisma.inventory.update({ where: { id: inv.id }, data: { quantity: qty } })
+        if (inv.quantity !== qty) {
+          await this.prisma.inventory.update({ where: { id: inv.id }, data: { quantity: qty } })
+          if (warehouseType === 'online' || warehouseType === 'store') onlineStoreStockChanged = true
+        }
       } else {
         await this.prisma.inventory.create({
           data: { tenantId, productId: id, warehouseId: wh.id, quantity: qty, reservedQuantity: 0 },
         })
+        if (warehouseType === 'online' || warehouseType === 'store') onlineStoreStockChanged = true
       }
+    }
+
+    // Fan-out a marketplaces si cambió stock publicable
+    if (onlineStoreStockChanged) {
+      const newTotal = await this.inventoryService.totalStockForProduct(tenantId, id)
+      await this.inventoryService.pushStockToMarketplaces(tenantId, id, newTotal)
     }
 
     return this.findOne(tenantId, id)

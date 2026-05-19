@@ -3,8 +3,11 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common'
 import { PrismaService } from '../../prisma/prisma.service'
+import { InventoryService } from '../inventory/inventory.service'
 import {
   CreateWarehouseDto,
   UpdateWarehouseDto,
@@ -15,7 +18,10 @@ import {
 
 @Injectable()
 export class WarehousesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => InventoryService)) private inventoryService: InventoryService,
+  ) {}
 
   async findAll(tenantId: string, query: WarehouseQueryDto) {
     const where: any = { tenantId }
@@ -221,6 +227,13 @@ export class WarehousesService {
         },
       })
     })
+
+    // Push del stock total (online + store) a marketplaces vinculados.
+    // Una transferencia puede cambiar el total publicado si involucra una
+    // bodega online/store (ej. transferir de internal → online suma; al
+    // revés resta). Pushar siempre garantiza consistencia.
+    const newTotal = await this.inventoryService.totalStockForProduct(tenantId, dto.productId)
+    await this.inventoryService.pushStockToMarketplaces(tenantId, dto.productId, newTotal)
 
     return { success: true, message: `Transferencia de ${dto.quantity} unidades completada` }
   }

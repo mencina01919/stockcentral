@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common'
+import { Injectable, NotFoundException, BadRequestException, Logger, Inject, forwardRef } from '@nestjs/common'
 import { Cron, CronExpression } from '@nestjs/schedule'
 import { PrismaService } from '../../prisma/prisma.service'
 import { getDriver } from '@stockcentral/integrations'
+import { InventoryService } from '../inventory/inventory.service'
 
 // Generic catalog source service. Works for ANY connection whose driver
 // declares `catalogCapabilities.canBeCatalogSource = true`. No provider-specific
@@ -20,7 +21,10 @@ export interface ImportStats {
 export class CatalogSourceService {
   private readonly logger = new Logger(CatalogSourceService.name)
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => InventoryService)) private inventoryService: InventoryService,
+  ) {}
 
   // ── Selection ────────────────────────────────────────────────────────────
 
@@ -297,15 +301,29 @@ export class CatalogSourceService {
         where: { productId: product.id, variantId: null, warehouseId },
       })
       const qty = remote.stock ?? 0
+      let stockChanged = false
       if (existing) {
-        await this.prisma.inventory.update({
-          where: { id: existing.id },
-          data: { quantity: qty },
-        })
+        if (existing.quantity !== qty) {
+          await this.prisma.inventory.update({
+            where: { id: existing.id },
+            data: { quantity: qty },
+          })
+          stockChanged = true
+        }
       } else {
         await this.prisma.inventory.create({
           data: { tenantId, productId: product.id, warehouseId, quantity: qty },
         })
+        stockChanged = true
+      }
+
+      // Si el stock cambió, fan-out inmediato a todos los marketplaces vinculados
+      // (excluye la propia connection del catalog source — no se publica a sí mismo).
+      // El check de stockChanged evita spamear cuando el cron corre cada 5 min sobre
+      // un catálogo que no se movió.
+      if (stockChanged) {
+        const newTotal = await this.inventoryService.totalStockForProduct(tenantId, product.id)
+        await this.inventoryService.pushStockToMarketplaces(tenantId, product.id, newTotal, connectionId)
       }
     }
 

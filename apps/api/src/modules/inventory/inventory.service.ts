@@ -13,11 +13,13 @@ export class InventoryService {
   ) {}
 
   // Encolar push de stock a todos los marketplaces vinculados al producto.
-  // Llamado tras cambios de inventario o movimientos.
-  // Encola sync de stock hacia cada marketplace vinculado del producto.
-  // skipConnectionId permite excluir uno (típicamente el que originó una
-  // venta — ese sistema ya descontó por su lado).
-  private async pushStockToMarketplaces(
+  // Es public para que cualquier servicio que modifique Inventory (warehouses,
+  // catalog-source, products bulk) dispare el fan-out sin tener que duplicar
+  // la lógica de buscar mappings y armar el job.
+  //
+  // skipConnectionId: excluye uno (típicamente el que originó una venta —
+  // ese sistema ya descontó por su lado).
+  async pushStockToMarketplaces(
     tenantId: string,
     productId: string,
     totalStock: number,
@@ -142,7 +144,7 @@ export class InventoryService {
     return { consumed, missing }
   }
 
-  private async totalStockForProduct(tenantId: string, productId: string): Promise<number> {
+  async totalStockForProduct(tenantId: string, productId: string): Promise<number> {
     const agg = await this.prisma.inventory.aggregate({
       where: { tenantId, productId, warehouse: { warehouseType: { in: ['online', 'store'] } } },
       _sum: { quantity: true },
