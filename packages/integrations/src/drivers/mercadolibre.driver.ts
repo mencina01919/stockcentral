@@ -307,54 +307,115 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     const client = this.buildClient(credentials.accessToken)
     const sellerId = credentials.sellerId
 
-    // Estrategia 1: filtro nativo `seller_custom_field`. Históricamente
-    // funcionaba, pero en mayo 2026 confirmamos que ML lo IGNORA en
-    // algunos casos (cuentas con muchos items) y devuelve toda la cuenta
-    // sin filtrar. Aún así lo intentamos primero — cuando funciona es lo
-    // más confiable.
-    let candidates: string[] = []
+    // Helper: dado un item completo, ¿matchea con el SKU buscado? ML guarda
+    // el SKU del seller en DOS lugares según cómo lo cargaron:
+    //  1. seller_custom_field (campo top-level, vía API)
+    //  2. attributes[id=SELLER_SKU].value_name (form del portal seller)
+    // Hacemos match si CUALQUIERA coincide.
+    const matchesSku = (body: any): boolean => {
+      if (!body) return false
+      if (body.seller_custom_field === sku) return true
+      const attrSku = Array.isArray(body.attributes)
+        ? body.attributes.find((a: any) => a?.id === 'SELLER_SKU')?.value_name
+        : undefined
+      return attrSku === sku
+    }
+
+    // Estrategia 1: filtro nativo `seller_custom_field`. Cuando funciona
+    // es la más eficiente. Pero ML lo IGNORA en cuentas con muchos items
+    // (>200 results) y devuelve toda la cuenta sin filtrar. Lo intentamos
+    // y validamos: si total es razonable, los probamos.
     try {
       const r = await client.get(`/users/${sellerId}/items/search`, {
         params: { seller_custom_field: sku, limit: 50 },
       })
-      const results: string[] = r.data?.results || []
       const total: number = r.data?.paging?.total ?? 0
-      // Si total es muy grande (>200) probablemente ML está devolviendo
-      // toda la cuenta. En ese caso descartamos esta estrategia.
-      if (total <= 200) candidates = results
-    } catch { /* sigue al fallback */ }
+      const ids: string[] = r.data?.results || []
+      if (total > 0 && total <= 200 && ids.length) {
+        const items: MarketplaceProduct[] = []
+        for (const id of ids) {
+          try {
+            const detail = await client.get(`/items/${id}`)
+            if (matchesSku(detail.data)) items.push(this.mapProduct(detail.data))
+          } catch { /* saltamos */ }
+        }
+        if (items.length) return items
+      }
+    } catch { /* sigue */ }
 
-    // Estrategia 2 (fallback): si tenemos title, buscar por título. Útil
-    // cuando seller_custom_field está null en ML (catalog/brand items) o
-    // cuando ML aún no indexó el item recién publicado.
-    if (!candidates.length && title) {
+    // Estrategia 2: scan completo de items del seller con paginación scroll.
+    // ML expone search_type=scan que recorre toda la cuenta sin el límite
+    // de offset=1000. Filtramos a status=active para reducir N. Recorremos
+    // hasta encontrar el primer match. Es la única forma robusta cuando
+    // el filtro nativo está roto y el SKU está en attributes[SELLER_SKU].
+    let scrollId: string | undefined
+    const MAX_PAGES = 30 // 30 pages × 100 = 3000 items, suficiente para cuentas medianas
+    for (let page = 0; page < MAX_PAGES; page++) {
+      try {
+        const params: Record<string, any> = {
+          search_type: 'scan',
+          status: 'active',
+          limit: 100,
+        }
+        if (scrollId) params.scroll_id = scrollId
+        const r = await client.get(`/users/${sellerId}/items/search`, { params })
+        const ids: string[] = r.data?.results || []
+        scrollId = r.data?.scroll_id
+        if (!ids.length) break
+
+        // Para cada candidate, traemos detalle y matcheamos.
+        // GET /items/{id} es ~100-200ms; con 100 paralelo overload a ML.
+        // Hacemos batches de 10 con Promise.all para acelerar.
+        for (let i = 0; i < ids.length; i += 10) {
+          const batch = ids.slice(i, i + 10)
+          const results = await Promise.all(
+            batch.map((id) =>
+              client.get(`/items/${id}`).then((r) => r.data).catch(() => null),
+            ),
+          )
+          for (const body of results) {
+            if (matchesSku(body)) return [this.mapProduct(body)]
+          }
+        }
+        if (!scrollId) break
+      } catch {
+        break
+      }
+    }
+
+    // Estrategia 3 (último fallback): match por título exacto. Útil para
+    // catalog items que NO permiten setear seller_custom_field/SELLER_SKU.
+    if (title) {
       try {
         const r = await client.get(`/users/${sellerId}/items/search`, {
           params: { q: title.slice(0, 80), limit: 20 },
         })
-        candidates = r.data?.results || []
+        const ids: string[] = r.data?.results || []
+        for (const id of ids) {
+          try {
+            const detail = await client.get(`/items/${id}`)
+            const body = detail.data
+            if (body?.title === title) return [this.mapProduct(body)]
+          } catch { /* nada */ }
+        }
       } catch { /* nada */ }
     }
 
-    if (!candidates.length) return []
+    return []
+  }
 
-    // GET /items/{id} single uno por uno (evita el bug del multi-get
-    // /items?ids=... que falla si algún item del batch tiene problema).
-    const items: MarketplaceProduct[] = []
-    for (const id of candidates) {
-      try {
-        const r = await client.get(`/items/${id}`)
-        const body = r.data
-        // Match estricto por seller_custom_field si está; si no, por
-        // coincidencia exacta de title (para items catalog sin sku).
-        if (body?.seller_custom_field === sku) {
-          items.push(this.mapProduct(body))
-        } else if (!body?.seller_custom_field && title && body?.title === title) {
-          items.push(this.mapProduct(body))
-        }
-      } catch { /* saltamos */ }
-    }
-    return items
+  // Setea el seller_custom_field (SKU del maestro) en un item ya publicado
+  // de ML. Útil para vincular publicaciones históricas que se crearon antes
+  // que existiera la integración con StockCentral. ML acepta este campo
+  // tanto en items custom como catalog (a diferencia de title/pictures que
+  // los catalog rechazan).
+  async setSellerSku(
+    credentials: DriverCredentials,
+    externalId: string,
+    sku: string,
+  ): Promise<void> {
+    const client = this.buildClient(credentials.accessToken)
+    await client.put(`/items/${externalId}`, { seller_custom_field: sku })
   }
 
   async getProduct(credentials: DriverCredentials, externalId: string): Promise<MarketplaceProduct | null> {

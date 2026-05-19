@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Search, Package, Loader2, AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, X, Zap } from 'lucide-react'
+import { Search, Package, Loader2, AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, X, Zap, Link2 } from 'lucide-react'
 import { toast } from 'sonner'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
@@ -22,6 +22,7 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
   const [refreshing, setRefreshing] = useState(false)
   const [selectedExternalId, setSelectedExternalId] = useState<string | null>(null)
   const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
+  const [linkingItem, setLinkingItem] = useState<any | null>(null) // item de ML a vincular
   const limit = 25
 
   const handleSyncRow = async (masterProductId: string) => {
@@ -408,7 +409,17 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
                           )}
                         </button>
                       ) : (
-                        <span className="text-xs text-gray-300">—</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setLinkingItem(p)
+                          }}
+                          title="Buscar un producto del maestro y vincularlo a esta publicación"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-amber-200 bg-amber-50 text-amber-700 text-xs font-medium hover:bg-amber-100 transition-colors"
+                        >
+                          <Link2 className="w-3 h-3" />
+                          Vincular
+                        </button>
                       )}
                     </td>
                   </tr>
@@ -450,6 +461,143 @@ export default function ProductsByMarketplacePage({ params }: { params: { provid
           onClose={() => setSelectedExternalId(null)}
         />
       )}
+
+      {linkingItem && connection?.id && (
+        <LinkMasterModal
+          item={linkingItem}
+          connectionId={connection.id}
+          providerLabel={providerLabel}
+          onClose={() => setLinkingItem(null)}
+          onLinked={() => {
+            setLinkingItem(null)
+            queryClient.invalidateQueries({ queryKey: ['marketplace-products', provider] })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Modal: vincular publicación del marketplace con un producto del maestro ──
+// El operador busca por SKU/nombre en el catálogo maestro; al elegir uno,
+// hacemos POST /products/:id/marketplaces/:conn/link que crea el mapping y
+// (cuando el driver lo soporta) setea seller_custom_field en el marketplace
+// remoto para que el SKU quede registrado allá también.
+
+function LinkMasterModal({
+  item,
+  connectionId,
+  providerLabel,
+  onClose,
+  onLinked,
+}: {
+  item: any
+  connectionId: string
+  providerLabel: string
+  onClose: () => void
+  onLinked: () => void
+}) {
+  const [search, setSearch] = useState(item.externalSku || item.title?.slice(0, 30) || '')
+  const [debounced, setDebounced] = useState(search)
+  const [linking, setLinking] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => setDebounced(search), 300)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [search])
+
+  const { data, isLoading } = useQuery<any>({
+    queryKey: ['link-master-search', debounced],
+    queryFn: () =>
+      api.get('/products', { params: { search: debounced, limit: 20 } }).then((r) => r.data),
+    enabled: debounced.length >= 2,
+  })
+
+  const candidates: any[] = data?.data || []
+
+  const handleLink = async (product: any) => {
+    setLinking(true)
+    try {
+      const res = await api.post(`/products/${product.id}/marketplaces/${connectionId}/link`, {
+        externalId: item.externalId,
+        title: item.title,
+        price: item.price,
+      })
+      const r = res.data || {}
+      if (r.sellerSkuPushed) {
+        toast.success(`Vinculado: ${product.sku} ↔ ${item.externalId}. SKU registrado en ${providerLabel}.`)
+      } else if (r.sellerSkuError) {
+        toast.warning(`Vinculado localmente, pero no se pudo escribir el SKU en ${providerLabel}: ${r.sellerSkuError}`)
+      } else {
+        toast.success(`Vinculado: ${product.sku} ↔ ${item.externalId}`)
+      }
+      onLinked()
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'No se pudo vincular')
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Vincular publicación con producto del maestro</p>
+            <p className="text-xs text-gray-500 mt-0.5 truncate max-w-md">{item.title} ({item.externalId})</p>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded">
+            <X className="w-4 h-4 text-gray-500" />
+          </button>
+        </div>
+
+        <div className="p-5 flex-1 overflow-y-auto">
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar por SKU o nombre del producto del maestro…"
+              className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+          </div>
+
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-sky-500" />
+            </div>
+          ) : candidates.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-8">
+              {debounced.length < 2 ? 'Escribí al menos 2 caracteres para buscar' : 'No hay coincidencias en el maestro'}
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {candidates.map((p: any) => (
+                <button
+                  key={p.id}
+                  disabled={linking}
+                  onClick={() => handleLink(p)}
+                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-sky-50 border border-gray-100 hover:border-sky-200 transition-colors disabled:opacity-50"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{p.name}</p>
+                      <p className="text-xs text-gray-500 font-mono">SKU: {p.sku}</p>
+                    </div>
+                    <span className="text-xs text-gray-500 whitespace-nowrap">
+                      {formatCurrency(Number(p.basePrice), 'CLP')}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

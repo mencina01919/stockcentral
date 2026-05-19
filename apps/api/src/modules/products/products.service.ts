@@ -510,11 +510,35 @@ export class ProductsService {
       }
     }
 
+    // Push del SKU del maestro al marketplace cuando el driver lo soporta
+    // (ej. ML: seller_custom_field). Esto deja consistente el lado remoto
+    // con el local — el próximo findBySku va a poder encontrarlo. Si el
+    // driver no implementa setSellerSku, se ignora silenciosamente y el
+    // mapping local sigue siendo válido.
+    let sellerSkuPushed = false
+    let sellerSkuError: string | null = null
+    try {
+      const driver = getDriver(connection.provider)
+      const driverAny = driver as any
+      if (typeof driverAny.setSellerSku === 'function') {
+        await driverAny.setSellerSku(
+          connection.credentials as Record<string, string>,
+          externalId,
+          product.sku,
+          connection.config as Record<string, unknown> | undefined,
+        )
+        sellerSkuPushed = true
+      }
+    } catch (err: any) {
+      sellerSkuError = err?.response?.data?.message || err?.message || 'error desconocido'
+      console.warn(`[linkMarketplace] No se pudo setear sellerSku=${product.sku} en ${externalId}: ${sellerSkuError}`)
+    }
+
     const mapping = await this.prisma.marketplaceMapping.upsert({
       where: { productId_connectionId: { productId, connectionId } },
       update: {
         marketplaceProductId: externalId,
-        marketplaceSku: resolvedSku ?? product.sku,
+        marketplaceSku: product.sku,
         marketplacePrice: resolvedPrice ?? Number(product.basePrice),
         syncStatus: 'connected',
         errorMessage: null,
@@ -524,7 +548,7 @@ export class ProductsService {
         productId,
         connectionId,
         marketplaceProductId: externalId,
-        marketplaceSku: resolvedSku ?? product.sku,
+        marketplaceSku: product.sku,
         marketplacePrice: resolvedPrice ?? Number(product.basePrice),
         syncStatus: 'connected',
         lastSyncAt: new Date(),
@@ -537,6 +561,8 @@ export class ProductsService {
       marketplaceProductId: externalId,
       title: resolvedTitle,
       mapping,
+      sellerSkuPushed,
+      sellerSkuError,
     }
   }
 
