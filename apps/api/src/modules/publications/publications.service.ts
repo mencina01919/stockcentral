@@ -165,6 +165,42 @@ export class PublicationsService {
         },
       })
 
+      // Crear/actualizar el snapshot al toque para que la vista
+      // /products/<provider> muestre el producto recién publicado sin
+      // esperar al cron de cache (30 min). Usamos los datos que recién
+      // mandamos a ML — el cron va a refrescar con datos reales después.
+      if (externalId) {
+        const snapshotTitle =
+          restFormData.title ??
+          restFormData.name ??
+          restFormData.family_name ??
+          product.name
+        await this.prisma.marketplaceProductSnapshot.upsert({
+          where: { connectionId_externalId: { connectionId, externalId } },
+          create: {
+            connectionId,
+            externalId,
+            externalSku: restFormData.sku ?? product.sku,
+            title: snapshotTitle,
+            price: finalPrice,
+            stock: totalStock,
+            status: 'active',
+            images: (images as any) ?? [],
+            categoryId: dto.formData.categoryId ?? dto.formData.productType ?? null,
+            lastFetchedAt: new Date(),
+          },
+          update: {
+            title: snapshotTitle,
+            price: finalPrice,
+            stock: totalStock,
+            status: 'active',
+            images: (images as any) ?? [],
+            categoryId: dto.formData.categoryId ?? dto.formData.productType ?? null,
+            lastFetchedAt: new Date(),
+          },
+        })
+      }
+
       this.logger.log(`Published product ${productId} to ${connection.provider}: ${externalId}`)
       return { success: true, mapping }
     } catch (err: any) {

@@ -106,6 +106,37 @@ export function MarketplacePricingBlock({
     }
   }, [pricing, cost, visibleConnections, onCalculatedPriceChange])
 
+  // Autosave con debounce: cualquier cambio en commission/shipping/margin/enabled
+  // se persiste en Product.marketplacePricing[provider] después de 1s sin tocar.
+  // Sin esto, si el usuario publica antes de hacer clic en "Guardar", el backend
+  // no encuentra calculatedPrice y publica con basePrice (precio equivocado).
+  const lastSavedSerializedRef = useRef<string>('')
+  useEffect(() => {
+    if (!Object.keys(pricing).length || !connections.length) return
+    if (!product?.id) return
+    const payload: Record<string, any> = {}
+    for (const conn of connections) {
+      const p = pricing[conn.provider]
+      if (!p || !p.enabled) continue
+      payload[conn.provider] = {
+        ...p,
+        calculatedPrice: calcPrice(cost, p.commission, p.shipping, p.margin),
+      }
+    }
+    const serialized = JSON.stringify(payload)
+    if (serialized === lastSavedSerializedRef.current) return
+
+    const handle = setTimeout(() => {
+      lastSavedSerializedRef.current = serialized
+      api.patch(`/products/${product.id}/marketplace-pricing`, payload)
+        .then(() => {
+          queryClient.invalidateQueries({ queryKey: ['marketplace-pricing', product.id] })
+        })
+        .catch(() => { /* fallback al botón manual "Guardar precios" */ })
+    }, 1000)
+    return () => clearTimeout(handle)
+  }, [pricing, cost, connections, product?.id, queryClient])
+
   const set = (provider: string, key: string, val: number | boolean) =>
     setPricing(p => ({ ...p, [provider]: { ...p[provider], [key]: val } }))
 
