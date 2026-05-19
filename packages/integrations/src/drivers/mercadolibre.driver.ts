@@ -404,37 +404,67 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     return []
   }
 
-  // Setea el SKU del maestro en un item ya publicado de ML. ML guarda el
-  // SKU en DOS lugares:
+  // Setea el SKU del maestro en un item ya publicado de ML.
+  //
+  // ML guarda el SKU del seller en DOS lugares:
   //   1. seller_custom_field (campo top-level, vía API)
   //   2. attributes[id=SELLER_SKU].value_name (form del portal seller)
   // Escribimos AMBOS para que el SKU sea visible tanto al usar la API
   // (findBySku, syncs) como al revisar el item en el portal seller.
   //
-  // Casos:
-  // - Items custom: ML acepta ambos campos en el mismo PUT → todo OK.
-  // - Items catalog: ML acepta seller_custom_field, pero a veces rechaza
-  //   attributes (con warning, no error). Intentamos los dos en paralelo
-  //   con try/catch separado: si attributes falla, seller_custom_field
-  //   queda igual seteado (que es lo que findBySku usa primero).
+  // Además: ML permite que un mismo producto tenga DOS publicaciones
+  // (una custom + una catalog vinculada al catalog_product_id oficial).
+  // Esas publicaciones están relacionadas vía item_relations en el body.
+  // Propagamos el SKU a TODAS para que ambas publicaciones queden
+  // vinculadas al mismo SKU del maestro.
   async setSellerSku(
     credentials: DriverCredentials,
     externalId: string,
     sku: string,
   ): Promise<void> {
     const client = this.buildClient(credentials.accessToken)
-    // PUT combinado: ML lo acepta en items custom y en algunos catalog.
+
+    // Helper que escribe SKU en un item. Intenta seller_custom_field +
+    // attributes en un solo PUT; si ML rechaza el combinado (catalog
+    // restrictivo), cae a solo seller_custom_field.
+    const writeOne = async (id: string) => {
+      try {
+        await client.put(`/items/${id}`, {
+          seller_custom_field: sku,
+          attributes: [{ id: 'SELLER_SKU', value_name: sku }],
+        })
+      } catch {
+        await client.put(`/items/${id}`, { seller_custom_field: sku })
+      }
+    }
+
+    // Escribimos en el item principal primero. De su response sacamos
+    // item_relations para propagar el SKU a las publicaciones hermanas.
+    let mainBody: any = null
     try {
-      await client.put(`/items/${externalId}`, {
+      const r = await client.put(`/items/${externalId}`, {
         seller_custom_field: sku,
         attributes: [{ id: 'SELLER_SKU', value_name: sku }],
       })
-      return
+      mainBody = r.data
     } catch {
-      // Fallback: si ML rechaza el combinado (ej. catalog item que no
-      // permite attributes editables), mandamos solo seller_custom_field.
-      // Eso es suficiente para que findBySku encuentre el item.
-      await client.put(`/items/${externalId}`, { seller_custom_field: sku })
+      const r = await client.put(`/items/${externalId}`, { seller_custom_field: sku })
+      mainBody = r.data
+    }
+
+    // Item relations: cada entry tiene { id, variation_id, stock_relation }.
+    // Recorremos los ids hermanos (excluyendo el principal) y les seteamos
+    // el mismo SKU. Si alguna falla, seguimos con las otras.
+    const relations = Array.isArray(mainBody?.item_relations) ? mainBody.item_relations : []
+    const siblingIds: string[] = relations
+      .map((r: any) => r?.id)
+      .filter((id: any) => typeof id === 'string' && id !== externalId)
+    for (const id of siblingIds) {
+      try {
+        await writeOne(id)
+      } catch {
+        // saltamos siblings que ML no permita escribir
+      }
     }
   }
 
