@@ -164,10 +164,16 @@ export class EylstoreDriver implements IMarketplaceDriver {
 
   private mapProduct(data: any): MarketplaceProduct {
     const prices = data.prices || {}
+    // EYLSTORE devuelve 3 precios: normal, card, transfer.
+    // El sitio público (eylstore.cl) muestra `transfer` como precio de venta.
+    // `normal` es un valor interno de lista que NO siempre coincide con el
+    // precio real (a veces más bajo, a veces igual). Usamos transfer como
+    // basePrice del maestro para consistencia con lo que ve el cliente.
+    // Fallback a normal/card solo si transfer falta.
     const price =
+      Number(prices.transfer) ||
       Number(prices.normal) ||
       Number(prices.card) ||
-      Number(prices.transfer) ||
       0
     const stock = Number(data.stock?.total ?? 0)
     const images: string[] = []

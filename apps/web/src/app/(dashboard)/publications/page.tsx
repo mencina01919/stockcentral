@@ -755,13 +755,21 @@ const LIDER_CATEGORY_LABELS: Record<string, string> = {
 }
 
 const SYNC_STATUS_INFO: Record<string, { label: string; color: string; icon: any }> = {
-  connected:     { label: 'Publicado',         color: 'text-green-600',  icon: CheckCircle2 },
+  // Estados "vinculados" — el producto YA está en el marketplace. Aceptamos
+  // tanto 'connected' (estado al publicar) como 'success' (estado tras el
+  // último sync OK). Antes solo manejábamos 'connected' y los items con
+  // 'success' caían al fallback 'unlinked' mostrando "Sin vincular".
+  connected:     { label: 'Publicado',          color: 'text-green-600',  icon: CheckCircle2 },
+  success:       { label: 'Publicado',          color: 'text-green-600',  icon: CheckCircle2 },
   error:         { label: 'Error',              color: 'text-red-600',    icon: XCircle },
   pending:       { label: 'Pendiente',          color: 'text-yellow-600', icon: AlertCircle },
-  sku_not_found: { label: 'SKU no encontrado', color: 'text-gray-400',   icon: AlertCircle },
+  sku_not_found: { label: 'SKU no encontrado',  color: 'text-gray-400',   icon: AlertCircle },
   sku_duplicate: { label: 'SKU duplicado',      color: 'text-orange-500', icon: AlertCircle },
   unlinked:      { label: 'Sin vincular',       color: 'text-gray-400',   icon: AlertCircle },
 }
+
+// Statuses que cuentan como "el producto está vinculado al marketplace"
+const LINKED_STATUSES = new Set(['connected', 'success'])
 
 // ─── Falabella Category Search ───────────────────────────────────────────────
 
@@ -2266,6 +2274,16 @@ function PublicationsPageInner() {
               <div className="divide-y max-h-[600px] overflow-y-auto">
                 {products.map((p: any) => {
                   const totalStock = p.inventory?.reduce((s: number, i: any) => s + i.quantity, 0) || 0
+                  // Resolver providers vinculados a este producto cruzando los
+                  // mappings que ya vienen con connectionId. Excluimos catalog
+                  // sources (EYLSTORE) porque NO son destinos de venta —
+                  // distorsionan el conteo y los logos visibles.
+                  const linkedProviders: string[] = (p.marketplaceMappings || [])
+                    .map((m: any) => {
+                      const conn = (connections || []).find((c: any) => c.id === m.connectionId)
+                      return conn?.provider
+                    })
+                    .filter((prov: string | undefined): prov is string => !!prov)
                   return (
                     <button key={p.id} onClick={() => { setSelectedProduct(p); setShowForm(false) }}
                       className={cn(
@@ -2279,10 +2297,12 @@ function PublicationsPageInner() {
                       </div>
                       <div className="flex items-center justify-between mt-1">
                         <span className="text-xs text-gray-400">Stock: {totalStock}</span>
-                        {p._count?.marketplaceMappings > 0 && (
-                          <span className="text-xs bg-sky-100 text-sky-600 px-1.5 py-0.5 rounded-full">
-                            {p._count.marketplaceMappings} market
-                          </span>
+                        {linkedProviders.length > 0 && (
+                          <div className="flex items-center gap-1" title={`Publicado en: ${linkedProviders.map((p) => PROVIDER_LABELS[p] || p).join(', ')}`}>
+                            {linkedProviders.map((prov) => (
+                              <ProviderLogo key={prov} provider={prov} size="sm" className="w-5 h-5 rounded-full ring-1 ring-white" />
+                            ))}
+                          </div>
                         )}
                       </div>
                     </button>
@@ -2333,6 +2353,7 @@ function PublicationsPageInner() {
                         const status = pub?.syncStatus || 'unlinked'
                         const info = SYNC_STATUS_INFO[status] || SYNC_STATUS_INFO.unlinked
                         const Icon = info.icon
+                        const isLinked = LINKED_STATUSES.has(status)
                         return (
                           <div key={conn.id} className="px-5 py-4">
                             <div className="flex items-center justify-between">
@@ -2343,6 +2364,9 @@ function PublicationsPageInner() {
                                   <p className="text-xs text-gray-400">{PROVIDER_LABELS[conn.provider] || conn.provider}</p>
                                   {pub?.marketplaceSku && (
                                     <p className="text-xs text-gray-400 font-mono">SKU: {pub.marketplaceSku}</p>
+                                  )}
+                                  {pub?.marketplaceProductId && isLinked && (
+                                    <p className="text-xs text-gray-400 font-mono">ID: {pub.marketplaceProductId}</p>
                                   )}
                                 </div>
                               </div>
@@ -2357,10 +2381,19 @@ function PublicationsPageInner() {
                                     {showDetail?.id === pub.id ? 'Ocultar' : 'Ver detalle'}
                                   </button>
                                 )}
+                                {/* Si el producto YA está vinculado, no permitimos "Publicar" otra vez
+                                    (evita duplicados accidentales en ML). Para cambiar precio/stock se
+                                    usa el sync automático del cron y la calculadora; para editar campos
+                                    de la publicación, "Actualizar" abre el form. */}
                                 <button
                                   onClick={() => { setSelectedConnection(conn); setShowDetail(null); setShowForm(true) }}
-                                  className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-medium hover:bg-sky-700">
-                                  {status === 'connected' ? 'Actualizar' : 'Publicar'}
+                                  className={cn(
+                                    'px-3 py-1.5 rounded-lg text-xs font-medium',
+                                    isLinked
+                                      ? 'border border-gray-200 text-gray-700 hover:bg-gray-50'
+                                      : 'bg-sky-600 text-white hover:bg-sky-700',
+                                  )}>
+                                  {isLinked ? 'Actualizar' : 'Publicar'}
                                 </button>
                               </div>
                             </div>
