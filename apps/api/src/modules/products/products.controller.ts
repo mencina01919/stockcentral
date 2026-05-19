@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query } from '@nestjs/common'
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Res } from '@nestjs/common'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
+import { Response } from 'express'
 import { ProductsService } from './products.service'
 import { SyncService } from '../sync/sync.service'
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto/product.dto'
@@ -24,6 +25,15 @@ export class ProductsController {
   @ApiOperation({ summary: 'Estadísticas de productos' })
   getStats(@TenantId() tenantId: string) {
     return this.productsService.getStats(tenantId)
+  }
+
+  @Get('export.xlsx')
+  @ApiOperation({ summary: 'Descargar Excel con catálogo de productos activos (SKU, nombre, costo, precio base, stock)' })
+  async exportActiveCatalog(@TenantId() tenantId: string, @Res() res: Response) {
+    const { buffer, filename } = await this.productsService.exportActiveCatalog(tenantId)
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buffer)
   }
 
   @Get(':id')

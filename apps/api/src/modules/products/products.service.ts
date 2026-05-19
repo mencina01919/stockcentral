@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common'
+import * as ExcelJS from 'exceljs'
 import { PrismaService } from '../../prisma/prisma.service'
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto/product.dto'
 import { getDriver, ParisDriver } from '@stockcentral/integrations'
@@ -232,6 +233,54 @@ export class ProductsService {
     // keep their denormalized sku/name and survive the deletion.
     await this.prisma.product.delete({ where: { id } })
     return { message: 'Producto eliminado' }
+  }
+
+  async exportActiveCatalog(tenantId: string): Promise<{ buffer: Buffer; filename: string }> {
+    const products = await this.prisma.product.findMany({
+      where: { tenantId, status: 'active' },
+      orderBy: { sku: 'asc' },
+      select: {
+        sku: true,
+        name: true,
+        costPrice: true,
+        basePrice: true,
+        inventory: {
+          where: { variantId: null },
+          select: { quantity: true },
+        },
+      },
+    })
+
+    const workbook = new ExcelJS.Workbook()
+    workbook.creator = 'StockCentral'
+    workbook.created = new Date()
+    const sheet = workbook.addWorksheet('Catálogo activo')
+
+    sheet.columns = [
+      { header: 'SKU', key: 'sku', width: 16 },
+      { header: 'Nombre', key: 'name', width: 60 },
+      { header: 'Precio Costo', key: 'costPrice', width: 16, style: { numFmt: '#,##0' } },
+      { header: 'Precio Base', key: 'basePrice', width: 16, style: { numFmt: '#,##0' } },
+      { header: 'Stock', key: 'stock', width: 10 },
+    ]
+    sheet.getRow(1).font = { bold: true }
+    sheet.getRow(1).alignment = { vertical: 'middle' }
+
+    for (const p of products) {
+      const stock = p.inventory.reduce((s, i) => s + i.quantity, 0)
+      sheet.addRow({
+        sku: p.sku,
+        name: p.name,
+        costPrice: p.costPrice ? Number(p.costPrice) : null,
+        basePrice: Number(p.basePrice),
+        stock,
+      })
+    }
+
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer())
+    const today = new Date().toISOString().slice(0, 10)
+    const filename = `catalogo-activos-${today}.xlsx`
+    return { buffer, filename }
   }
 
   async getStats(tenantId: string) {

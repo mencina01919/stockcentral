@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Search, Loader2, Package, Edit, Trash2, RefreshCw, X, Image as ImageIcon, ExternalLink, Database, Check, Upload } from 'lucide-react'
+import { Plus, Search, Loader2, Package, Edit, Trash2, RefreshCw, X, Image as ImageIcon, ExternalLink, Database, Check, Upload, Download } from 'lucide-react'
 import Link from 'next/link'
 import api from '@/lib/api'
 import { Header } from '@/components/layout/header'
@@ -23,6 +23,29 @@ export default function ProductsPage() {
   const [status, setStatus] = useState<ProductStatus>('all')
   const [page, setPage] = useState(1)
   const [showForm, setShowForm] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+
+  const handleDownloadExcel = async () => {
+    try {
+      setDownloading(true)
+      const res = await api.get('/products/export.xlsx', { responseType: 'blob' })
+      const cd = res.headers['content-disposition'] || ''
+      const match = cd.match(/filename="?([^"]+)"?/)
+      const filename = match?.[1] || `catalogo-activos-${new Date().toISOString().slice(0, 10)}.xlsx`
+      const url = window.URL.createObjectURL(new Blob([res.data]))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'No se pudo descargar el Excel')
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ['products', search, status, page],
@@ -136,6 +159,15 @@ export default function ProductsPage() {
                 <Database className="w-4 h-4" />
                 Fuente
               </Link>
+              <button
+                onClick={handleDownloadExcel}
+                disabled={downloading}
+                className="flex items-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Descargar Excel con catálogo de productos activos"
+              >
+                {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                Descargar Excel
+              </button>
               <button
                 onClick={() => setShowForm(true)}
                 className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
