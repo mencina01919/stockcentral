@@ -2140,11 +2140,34 @@ function PublicationsPageInner() {
   const [showForm, setShowForm] = useState(false)
   const [showDetail, setShowDetail] = useState<any>(null)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [linkFilter, setLinkFilter] = useState('') // '', '<connectionId>' = vinculado a ese market
+  const [page, setPage] = useState(1)
   const [deepLinkApplied, setDeepLinkApplied] = useState(false)
+  const PAGE_SIZE = 30
+
+  // Debounce de la búsqueda — 400ms tras dejar de tipear
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+    searchDebounceRef.current = setTimeout(() => { setDebouncedSearch(search); setPage(1) }, 400)
+    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current) }
+  }, [search])
 
   const { data: productsData, isLoading: loadingProducts } = useQuery<any>({
-    queryKey: ['products-pub', search],
-    queryFn: () => api.get(`/products?limit=100&search=${search}`).then(r => r.data),
+    queryKey: ['products-pub', debouncedSearch, statusFilter, linkFilter, page],
+    queryFn: () =>
+      api.get('/products', {
+        params: {
+          page,
+          limit: PAGE_SIZE,
+          ...(debouncedSearch ? { search: debouncedSearch } : {}),
+          ...(statusFilter ? { status: statusFilter } : {}),
+          ...(linkFilter ? { connectionId: linkFilter } : {}),
+        },
+      }).then(r => r.data),
+    placeholderData: (prev: any) => prev,
   })
 
   const { data: connections = [] } = useQuery<any[]>({
@@ -2252,14 +2275,42 @@ function PublicationsPageInner() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Panel izquierdo — lista de productos */}
           <div className="bg-white border rounded-xl overflow-hidden">
-            <div className="px-4 py-3 border-b bg-gray-50">
-              <p className="text-sm font-semibold text-gray-700 mb-2">Catálogo maestro</p>
+            <div className="px-4 py-3 border-b bg-gray-50 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-700">Catálogo maestro</p>
+                {productsData?.meta && (
+                  <span className="text-xs text-gray-400">{productsData.meta.total} productos</span>
+                )}
+              </div>
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Buscar producto..."
+                placeholder="Buscar por nombre, SKU, marca..."
                 className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
               />
+              <div className="flex gap-2">
+                <select
+                  value={statusFilter}
+                  onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+                  className="flex-1 px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  <option value="">Todos los estados</option>
+                  <option value="active">Activo</option>
+                  <option value="out_of_stock">Agotado</option>
+                  <option value="coming_soon">Próximamente</option>
+                  <option value="unavailable">No disponible</option>
+                </select>
+                <select
+                  value={linkFilter}
+                  onChange={e => { setLinkFilter(e.target.value); setPage(1) }}
+                  className="flex-1 px-2 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                >
+                  <option value="">Todos (vínculo)</option>
+                  {connections.map((c: any) => (
+                    <option key={c.id} value={c.id}>Vinculado a {PROVIDER_LABELS[c.provider] || c.provider}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             {loadingProducts ? (
               <div className="flex items-center justify-center py-10">
@@ -2268,7 +2319,7 @@ function PublicationsPageInner() {
             ) : products.length === 0 ? (
               <div className="px-4 py-10 text-center">
                 <Package className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                <p className="text-sm text-gray-400">No hay productos en el catálogo</p>
+                <p className="text-sm text-gray-400">No hay productos que coincidan</p>
               </div>
             ) : (
               <div className="divide-y max-h-[600px] overflow-y-auto">
@@ -2308,6 +2359,30 @@ function PublicationsPageInner() {
                     </button>
                   )
                 })}
+              </div>
+            )}
+            {/* Paginación */}
+            {productsData?.meta && productsData.meta.total > PAGE_SIZE && (
+              <div className="px-4 py-3 border-t bg-gray-50 flex items-center justify-between">
+                <span className="text-xs text-gray-500">
+                  Pág {page} de {Math.ceil(productsData.meta.total / PAGE_SIZE)}
+                </span>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => setPage((x) => Math.max(1, x - 1))}
+                    disabled={page === 1}
+                    className="px-2.5 py-1 text-xs border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-white"
+                  >
+                    Anterior
+                  </button>
+                  <button
+                    onClick={() => setPage((x) => x + 1)}
+                    disabled={page >= Math.ceil(productsData.meta.total / PAGE_SIZE)}
+                    className="px-2.5 py-1 text-xs border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-white"
+                  >
+                    Siguiente
+                  </button>
+                </div>
               </div>
             )}
           </div>
