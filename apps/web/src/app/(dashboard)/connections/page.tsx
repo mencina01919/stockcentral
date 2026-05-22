@@ -289,6 +289,79 @@ export default function ConnectionsPage() {
     onError: (e: any) => toast.error(e?.response?.data?.message || 'Error al eliminar'),
   })
 
+  // Sincronización masiva de precios + stock a TODAS las conexiones
+  // marketplace activas. Encola un job por conexión (bulk-sync para Lider,
+  // products-outbound para ML/Paris/Falabella) y polleamos progreso para
+  // dar feedback al toque. El cron de 15 min hace lo mismo automático,
+  // pero este botón es para cuando el operador quiere ver precios
+  // actualizados YA en los markets (ej. acaba de tocar la calculadora).
+  const [syncingAll, setSyncingAll] = useState(false)
+  const syncAllPriceStock = async () => {
+    setSyncingAll(true)
+    const toastId = toast.loading('Sincronizando precios y stock en todos los marketplaces…')
+    try {
+      const r = await api.post('/connections/sync-all-price-stock')
+      const results = (r.data?.results || []) as Array<{ connectionId: string; name: string; provider: string; jobId?: string; status: string; error?: string }>
+      const queued = results.filter((x) => x.status === 'queued')
+      const errored = results.filter((x) => x.status === 'error')
+      const jobIds = queued.map((x) => x.jobId).filter(Boolean) as string[]
+
+      if (!queued.length) {
+        toast.error(
+          `No se encolaron jobs. Errores: ${errored.map((e) => `${e.name}: ${e.error}`).join(' | ') || 'sin detalles'}`,
+          { id: toastId, duration: 10000 },
+        )
+        return
+      }
+
+      toast.loading(
+        `Encolado en ${queued.length} marketplace(s): ${queued.map((q) => q.name).join(', ')}. Procesando…`,
+        { id: toastId },
+      )
+
+      // Poll de progreso: pedimos status por cada conexión. Esperamos
+      // hasta que todos done o timeout 10 min.
+      const startedAt = Date.now()
+      const MAX_WAIT_MS = 10 * 60 * 1000
+      while (Date.now() - startedAt < MAX_WAIT_MS && jobIds.length) {
+        await new Promise((r) => setTimeout(r, 5000))
+        // No tenemos un endpoint global de progreso — consultamos por conexión.
+        const progresses = await Promise.all(
+          queued.map((q) =>
+            api
+              .get(`/connections/${q.connectionId}/sync-progress`, {
+                params: { jobs: q.jobId },
+              })
+              .then((r) => r.data)
+              .catch(() => null),
+          ),
+        )
+        const allDone = progresses.every((p) => p?.done)
+        if (allDone) {
+          const totalOk = progresses.flatMap((p) => p?.jobs || []).filter((j: any) => j.state === 'completed').length
+          const totalFail = progresses.flatMap((p) => p?.jobs || []).filter((j: any) => j.state === 'failed').length
+          if (totalFail === 0) {
+            toast.success(`Sincronización completada en ${queued.length} marketplace(s)`, { id: toastId })
+          } else {
+            toast.warning(`Sincronización: ${totalOk} OK, ${totalFail} con errores`, { id: toastId })
+          }
+          queryClient.invalidateQueries({ queryKey: ['connections'] })
+          queryClient.invalidateQueries({ queryKey: ['marketplace-products'] })
+          return
+        }
+      }
+
+      toast.warning('La sincronización sigue corriendo en segundo plano. Revisa el panel de estado.', {
+        id: toastId,
+      })
+      queryClient.invalidateQueries({ queryKey: ['connections'] })
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || 'Error al sincronizar', { id: toastId })
+    } finally {
+      setSyncingAll(false)
+    }
+  }
+
   const [auditing, setAuditing] = useState(false)
   const runAudit = async () => {
     setAuditing(true)
@@ -336,6 +409,20 @@ export default function ConnectionsPage() {
           }
           actions={
             <>
+              <button
+                onClick={syncAllPriceStock}
+                disabled={syncingAll}
+                title="Empuja precio y stock del catálogo maestro a TODOS los marketplaces activos (Lider, ML, Paris, Falabella) al mismo tiempo"
+                className="sc-btn-ghost"
+                style={{ padding: '8px 14px', fontSize: 12 }}
+              >
+                {syncingAll ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Zap className="w-3.5 h-3.5" />
+                )}
+                Sincronizar precios y stock
+              </button>
               <button
                 onClick={runAudit}
                 disabled={auditing}

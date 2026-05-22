@@ -107,13 +107,13 @@ export function MarketplacePricingBlock({
     for (const conn of visibleConnections) {
       const p = pricing[conn.provider]
       if (!p || !p.enabled) continue
-      const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
+      const calculated = calcPrice(basePrice, p.commission, p.shipping, p.margin)
       if (lastNotifiedRef.current[conn.provider] !== calculated) {
         lastNotifiedRef.current[conn.provider] = calculated
         onCalculatedPriceChange(conn.provider, calculated)
       }
     }
-  }, [pricing, cost, visibleConnections, onCalculatedPriceChange])
+  }, [pricing, basePrice, visibleConnections, onCalculatedPriceChange])
 
   // Autosave con debounce: cualquier cambio en commission/shipping/margin/enabled
   // se persiste en Product.marketplacePricing[provider] después de 1s sin tocar.
@@ -129,7 +129,7 @@ export function MarketplacePricingBlock({
       if (!p || !p.enabled) continue
       payload[conn.provider] = {
         ...p,
-        calculatedPrice: calcPrice(cost, p.commission, p.shipping, p.margin),
+        calculatedPrice: calcPrice(basePrice, p.commission, p.shipping, p.margin),
       }
     }
     const serialized = JSON.stringify(payload)
@@ -144,7 +144,7 @@ export function MarketplacePricingBlock({
         .catch(() => { /* fallback al botón manual "Guardar precios" */ })
     }, 1000)
     return () => clearTimeout(handle)
-  }, [pricing, cost, connections, product?.id, queryClient])
+  }, [pricing, basePrice, connections, product?.id, queryClient])
 
   const set = (provider: string, key: string, val: number | boolean) =>
     setPricing(p => ({ ...p, [provider]: { ...p[provider], [key]: val } }))
@@ -156,7 +156,7 @@ export function MarketplacePricingBlock({
       for (const conn of connections) {
         const p = pricing[conn.provider]
         if (!p || !p.enabled) continue
-        const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
+        const calculated = calcPrice(basePrice, p.commission, p.shipping, p.margin)
         payload[conn.provider] = { ...p, calculatedPrice: calculated }
       }
       await api.patch(`/products/${product.id}/marketplace-pricing`, payload)
@@ -171,16 +171,16 @@ export function MarketplacePricingBlock({
 
   if (!visibleConnections.length) return null
 
-  if (!cost) {
+  if (!basePrice) {
     return (
       <div>
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
           Calculadora de precios por marketplace
         </p>
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
-          <p className="font-medium">Falta el precio de costo</p>
+          <p className="font-medium">Falta el precio base</p>
           <p className="text-xs mt-1 text-amber-700">
-            Para calcular precios por marketplace, primero ingresa el costo del producto en el catálogo maestro.
+            Para calcular precios por marketplace, primero ingresa el precio base del producto en el catálogo maestro.
           </p>
         </div>
       </div>
@@ -195,17 +195,21 @@ export function MarketplacePricingBlock({
         </p>
       )}
       <p className="text-xs text-gray-400 mb-3">
-        Costo base: <span className="font-semibold text-gray-700">{formatCurrency(cost)}</span>
-        {basePrice > 0 && <span className="ml-3">· Precio venta directa: <span className="font-semibold text-gray-700">{formatCurrency(basePrice)}</span></span>}
+        Precio base (cálculo): <span className="font-semibold text-gray-700">{formatCurrency(basePrice)}</span>
+        {cost > 0 && <span className="ml-3">· Costo: <span className="font-semibold text-gray-700">{formatCurrency(cost)}</span></span>}
       </p>
       <div className="space-y-3">
         {visibleConnections.map((conn: any) => {
           const def = MARKETPLACE_DEFAULTS[conn.provider]
           const p = pricing[conn.provider]
           if (!p) return null
-          const calculated = calcPrice(cost, p.commission, p.shipping, p.margin)
-          const gain = calculated - cost - p.shipping
-          const gainPct = cost > 0 ? ((gain / cost) * 100).toFixed(1) : '0'
+          const calculated = calcPrice(basePrice, p.commission, p.shipping, p.margin)
+          // Ganancia estimada sobre el COSTO real del producto (si está
+          // cargado): precio final − costo − despacho. Si no hay costo,
+          // mostramos margen sobre el precio base.
+          const ref = cost > 0 ? cost : basePrice
+          const gain = calculated - ref - p.shipping
+          const gainPct = ref > 0 ? ((gain / ref) * 100).toFixed(1) : '0'
 
           return (
             <div key={conn.provider} className={`border rounded-xl overflow-hidden ${p.enabled ? 'border-gray-200' : 'border-gray-100 opacity-50'}`}>

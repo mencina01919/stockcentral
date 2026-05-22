@@ -230,6 +230,73 @@ export class ConnectionsService {
     return this.syncService.triggerFullSync(tenantId, id)
   }
 
+  // Sincronización masiva enfocada SOLO en precio + stock para todas las
+  // conexiones marketplace activas del tenant. No corre orders inbound ni
+  // refresh de cache (esos vienen por sus propios crons). Devuelve un
+  // jobId por conexión para que la UI polleé progreso con el endpoint
+  // sync-progress existente.
+  //
+  // Estrategia por driver:
+  // - Lider: bulk-sync (feed XML inventory + feed XML price, 1 batch).
+  // - ML/Paris/Falabella: enqueueProductsOutbound (cron-style worker que
+  //   itera mappings y pushea por SKU, usa el path de pushProductToMarketplace
+  //   con el fix de stock filtrado por online+store).
+  async syncAllPriceStock(tenantId: string) {
+    const connections = await this.prisma.connection.findMany({
+      where: {
+        tenantId,
+        type: 'marketplace',
+        syncEnabled: true,
+        status: 'connected',
+        isCatalogSource: false,
+      },
+      select: { id: true, name: true, provider: true },
+    })
+
+    const results: Array<{ connectionId: string; provider: string; name: string; jobId?: string; status: 'queued' | 'error'; error?: string }> = []
+
+    for (const conn of connections) {
+      try {
+        // Lider tiene un endpoint dedicado de bulk con drift filter +
+        // feeds XML (mucho más eficiente que enqueueProductsOutbound).
+        if (conn.provider === 'lider') {
+          const bulk = await this.syncService.bulkSyncStockAndPrice(tenantId, conn.id)
+          results.push({
+            connectionId: conn.id,
+            provider: conn.provider,
+            name: conn.name,
+            jobId: bulk?.jobId,
+            status: 'queued',
+          })
+        } else {
+          // Otros markets: enqueueProductsOutbound encola un job que
+          // itera mappings y hace pushProductToMarketplace por SKU.
+          const job = await this.syncService.enqueueProductsOutbound(tenantId, conn.id)
+          results.push({
+            connectionId: conn.id,
+            provider: conn.provider,
+            name: conn.name,
+            jobId: String(job.id),
+            status: 'queued',
+          })
+        }
+      } catch (err: any) {
+        results.push({
+          connectionId: conn.id,
+          provider: conn.provider,
+          name: conn.name,
+          status: 'error',
+          error: err?.message || 'error desconocido',
+        })
+      }
+    }
+
+    return {
+      message: `Sincronización de precios y stock encolada en ${results.filter(r => r.status === 'queued').length}/${results.length} conexiones`,
+      results,
+    }
+  }
+
   // Devuelve el estado agregado de un conjunto de jobs. El frontend invoca
   // este endpoint repetidamente con los IDs devueltos por triggerSync hasta
   // recibir `done: true`, momento en el que muestra el toast de cierre.

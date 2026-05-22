@@ -88,6 +88,14 @@ export class ConnectionsController {
     return this.connectionsService.triggerSync(tenantId, id)
   }
 
+  @Post('sync-all-price-stock')
+  @ApiOperation({
+    summary: 'Sincronización masiva: pushea precio + stock del maestro a TODAS las conexiones marketplace activas',
+  })
+  syncAllPriceStock(@TenantId() tenantId: string) {
+    return this.connectionsService.syncAllPriceStock(tenantId)
+  }
+
   @Get(':id/sync-progress')
   @ApiOperation({ summary: 'Consultar progreso de jobs lanzados por /sync' })
   @ApiQuery({ name: 'jobs', required: true, description: 'IDs de jobs separados por coma' })
