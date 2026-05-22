@@ -521,6 +521,13 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       const productLevelAttrs = Array.isArray((product as any).attributes) ? (product as any).attributes : undefined
       const attributes = this.buildAttributes(fd, productLevelAttrs)
 
+      // SKU del seller también como atributo SELLER_SKU (campo "SKU" del
+      // portal). seller_custom_field ya va en el payload abajo; este lo
+      // complementa para que el SKU sea visible en el portal seller.
+      if (product.sku && !attributes.some((a: any) => a?.id === 'SELLER_SKU')) {
+        attributes.push({ id: 'SELLER_SKU', value_name: String(product.sku) })
+      }
+
       const catalogProductId = fd.catalog_product_id || (product as any).catalog_product_id
       const familyName = fd.family_name || (product as any).family_name
 
@@ -638,6 +645,15 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       if (price !== undefined)       payload.price              = price
       if (stock !== undefined)       payload.available_quantity = stock
 
+      // SKU del seller: lo mandamos SIEMPRE (también en catalog items, ML lo
+      // acepta) para que el SKU del maestro quede registrado en ML al
+      // sincronizar, sin depender de que el operador haya usado "Vincular".
+      // product.sku viene del maestro. seller_custom_field es el campo
+      // top-level; attributes[SELLER_SKU] es el que muestra el portal.
+      if (product.sku) {
+        payload.seller_custom_field = product.sku
+      }
+
       // Campos NO permitidos en catalog items — solo los mandamos para
       // items custom del seller.
       if (!isCatalogItem) {
@@ -650,6 +666,11 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
 
         const productLevelAttrsUpdate = Array.isArray((product as any).attributes) ? (product as any).attributes : undefined
         const attributes = this.buildAttributes(fd, productLevelAttrsUpdate)
+        // Agregamos SELLER_SKU al array de attributes (el campo "SKU" del
+        // portal seller). Si ya venía en attributes, no lo duplicamos.
+        if (product.sku && !attributes.some((a: any) => a?.id === 'SELLER_SKU')) {
+          attributes.push({ id: 'SELLER_SKU', value_name: String(product.sku) })
+        }
         if (attributes.length) payload.attributes = attributes
 
         if (fd.warranty) {
