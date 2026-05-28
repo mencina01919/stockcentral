@@ -293,10 +293,13 @@ export class BsaleDriver implements ITaxDocumentEmitter {
           if (Object.keys(patch).length > 0) {
             try {
               await c.put(`/clients/${found.id}.json`, patch)
-            } catch {
+            } catch (err: any) {
               // Si la actualización falla, igual seguimos con el cliente
               // existente — quizás el documento se rechace, pero al menos
-              // intentamos.
+              // intentamos. Logueamos el error para diagnosticar (antes
+              // se tragaba silenciosamente).
+              const msg = err?.response?.data?.error || err?.message
+              console.warn(`[bsale upsertClient] PUT /clients/${found.id} falló: ${msg}`)
             }
           }
           return { externalClientId: String(found.id), created: false }
@@ -398,8 +401,42 @@ export class BsaleDriver implements ITaxDocumentEmitter {
       })
     }
 
+    // Retry sobre "client attributes required": Bsale a veces rechaza la
+    // primera emisión porque el cliente recién patcheado en upsertClient
+    // todavía no refleja los campos nuevos (delay interno de Bsale entre
+    // PUT /clients y POST /documents). Reintentamos forzando un re-patch
+    // del cliente con los datos del input.client y esperando 2s.
+    const tryEmit = async (): Promise<any> => {
+      try {
+        return await c.post('/documents.json', body)
+      } catch (err: any) {
+        const errorMsg: string = err?.response?.data?.error || err?.message || ''
+        const isClientAttrError = /client attributes required/i.test(errorMsg)
+        if (!isClientAttrError) throw err
+
+        // Forzar PATCH del cliente con los campos exigidos. Si Bsale aún
+        // los rechaza, el throw cae al catch externo y la emisión falla
+        // (legítimo: no se pudo, no es un bug nuestro).
+        const repatch: Record<string, unknown> = {}
+        if (input.client.address) repatch.address = input.client.address
+        if (input.client.city) repatch.city = input.client.city
+        const muni = input.client.municipality || input.client.city
+        if (muni) repatch.municipality = muni
+        if (Object.keys(repatch).length > 0) {
+          try {
+            await c.put(`/clients/${externalClientId}.json`, repatch)
+          } catch (e: any) {
+            const m = e?.response?.data?.error || e?.message
+            console.warn(`[bsale emitDocument] PATCH cliente ${externalClientId} falló: ${m}`)
+          }
+        }
+        await new Promise((r) => setTimeout(r, 2000))
+        return await c.post('/documents.json', body)
+      }
+    }
+
     try {
-      const res = await c.post('/documents.json', body)
+      const res = await tryEmit()
       const data = res.data || {}
       const docId = String(data.id)
 
