@@ -619,30 +619,49 @@ export class TaxDocumentsService {
   private buildClient(sale: any, type: 'boleta' | 'factura'): TaxClientInput {
     // Bsale exige city + address + municipality para emitir factura. Tomamos
     // billingAddress primero (datos comerciales) y caemos a shippingAddress.
-    // Los drivers entregan las direcciones como Json arbitrario; aceptamos
-    // tanto las claves canónicas (address1/city/state) como las que algunos
-    // marketplaces guardan (street, comuna, region).
+    //
+    // Mapeo de direcciones (orden de prioridad por campo):
+    //   municipality (COMUNA) ← municipality | comuna | district | city | locality
+    //   city        (CIUDAD/REGIÓN) ← state | region
+    //
+    // Razón del mapeo: ML/Paris/Falabella guardan la COMUNA en `addr.city`
+    // ("Providencia") y la REGIÓN en `addr.state` ("RM Metropolitana").
+    // SII Chile usa "comuna" como ubicación tributaria — debe ir en
+    // `municipality`. El campo `city` en Bsale se imprime como Ciudad
+    // (típicamente la región a nivel macro). Antes el código mapeaba al
+    // revés (city=comuna, municipality=state) y el resultado era una
+    // factura con "Ciudad: Providencia, Comuna: RM Metropolitana".
     const addr = (sale.billingAddress || sale.shippingAddress || {}) as any
     const address: string | undefined =
       addr.address1 || addr.address || addr.street || undefined
-    const city: string | undefined = addr.city || addr.locality || undefined
     const municipality: string | undefined =
-      addr.municipality || addr.comuna || addr.district || addr.state || undefined
+      addr.municipality ||
+      addr.comuna ||
+      addr.district ||
+      addr.city ||
+      addr.locality ||
+      undefined
+    const city: string | undefined =
+      addr.state || addr.region || undefined
 
     if (type === 'factura') {
-      const fullName: string = sale.billingName || sale.customerName || ''
-      const [firstName, ...rest] = fullName.split(' ')
+      // Persona jurídica (factura): el cliente es la empresa.
+      // - businessName: razón social (lo que se imprime como nombre).
+      // - firstName/lastName: contacto persona física. Si NO hay un campo
+      //   separado de contacto, dejamos firstName = razón social también
+      //   y lastName vacío (Bsale lo acepta).
+      const businessName: string = sale.billingName || sale.customerName || ''
       return {
         rut: sale.billingDocNumber || sale.customerDocNumber,
-        firstName: firstName || fullName || 'Cliente',
-        lastName: rest.join(' '),
+        firstName: businessName || 'Cliente',
+        lastName: '',
         email: sale.billingEmail || sale.customerEmail,
         phone: sale.billingPhone || sale.customerPhone,
-        businessName: sale.billingName,
+        businessName,
         economicActivity: sale.economicActivity,
         address,
-        city: city || municipality,
-        municipality: municipality || city,
+        city,
+        municipality,
         isCompany: true,
       }
     }
@@ -666,8 +685,8 @@ export class TaxDocumentsService {
       email: sale.billingEmail || sale.customerEmail,
       phone: sale.billingPhone || sale.customerPhone,
       address,
-      city: city || municipality,
-      municipality: municipality || city,
+      city,
+      municipality,
     }
   }
 

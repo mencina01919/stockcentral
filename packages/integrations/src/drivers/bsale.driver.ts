@@ -256,10 +256,34 @@ export class BsaleDriver implements ITaxDocumentEmitter {
           if (client.lastName != null && found.lastName !== client.lastName) {
             patch.lastName = client.lastName
           }
-          if (!found.address && client.address) patch.address = client.address
-          if (!found.city && client.city) patch.city = client.city
-          if (!found.municipality && (client.municipality || client.city)) {
-            patch.municipality = client.municipality || client.city
+          // Empresa: corregir company/companyOrPerson/activity SIEMPRE que
+          // el cliente nuevo sea empresa. Antes solo se seteaban al crear,
+          // así que clientes creados antes de tener billingName quedaban
+          // como persona física y la factura salía con "firstName lastName"
+          // (partido del nombre de la empresa) en vez de razón social.
+          if (client.isCompany) {
+            if (found.companyOrPerson !== 1) patch.companyOrPerson = 1
+            if (client.businessName && found.company !== client.businessName) {
+              patch.company = client.businessName
+            }
+            if (client.economicActivity && found.activity !== client.economicActivity) {
+              patch.activity = client.economicActivity
+            }
+          }
+          // Dirección: sobrescribir SIEMPRE que el cliente nuevo traiga
+          // datos distintos. Antes solo escribíamos cuando found.X estaba
+          // vacío, así que un cliente con dirección vieja mal cargada
+          // (ej. comuna="RM Metropolitana") nunca se corregía aunque el
+          // sale nuevo trajera la comuna correcta.
+          if (client.address && found.address !== client.address) {
+            patch.address = client.address
+          }
+          if (client.city && found.city !== client.city) {
+            patch.city = client.city
+          }
+          const newMuni = client.municipality || client.city
+          if (newMuni && found.municipality !== newMuni) {
+            patch.municipality = newMuni
           }
           if (!found.email && client.email) patch.email = client.email
           if (!found.phone && client.phone) patch.phone = client.phone
