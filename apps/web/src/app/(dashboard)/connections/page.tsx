@@ -59,6 +59,13 @@ const PROVIDER_META: Record<string, {
       { key: 'apiKey', label: 'API Key', placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', secret: true, hint: 'Token externo emitido desde EYLSTORE' },
     ],
   },
+  wonderstore: {
+    label: 'WonderStore', type: 'ecommerce', color: 'text-fuchsia-700', bg: 'bg-fuchsia-50',
+    authType: 'apikey',
+    fields: [
+      { key: 'apiKey', label: 'Bearer Token', placeholder: 'ws_...', secret: true, hint: 'Token de WonderStore con scopes products:read + stock:read + stock:write' },
+    ],
+  },
   mercadolibre: {
     label: 'Mercado Libre', type: 'marketplace', color: 'text-yellow-600', bg: 'bg-yellow-50',
     authType: 'oauth_manual' as any,
@@ -1021,11 +1028,13 @@ function MLOAuthFlow({ onSuccess, onBack }: { onSuccess: () => void; onBack: () 
         <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700 space-y-1">
           <p className="font-semibold">Redirect URI que debes registrar en tu app de ML:</p>
           <p className="font-mono break-all select-all bg-white border border-blue-200 rounded px-2 py-1">
-            {process.env.NEXT_PUBLIC_API_URL
-              ? `${process.env.NEXT_PUBLIC_API_URL}/connections/oauth/mercadolibre/callback`
-              : 'http://localhost:3001/api/v1/connections/oauth/mercadolibre/callback'}
+            {process.env.NEXT_PUBLIC_ML_REDIRECT_URI
+              || (process.env.NEXT_PUBLIC_API_URL
+                  ? `${process.env.NEXT_PUBLIC_API_URL}/connections/oauth/mercadolibre/callback`
+                  : 'http://localhost:3001/api/v1/connections/oauth/mercadolibre/callback')}
           </p>
           <p>Ve a <strong>developers.mercadolibre.cl</strong> → Tu app → Editar → Redirect URI y agrega esta URL.</p>
+          <p className="text-blue-600">ML exige HTTPS. En local usá un túnel (ngrok) y registrá la URL del túnel.</p>
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">App ID <span className="text-gray-400 font-normal">(Client ID)</span></label>

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef,
 import { PrismaService } from '../../prisma/prisma.service'
 import { UpdateInventoryDto, StockMovementDto, InventoryQueryDto } from './dto/inventory.dto'
 import { SyncService } from '../sync/sync.service'
+import { getDriver } from '@stockcentral/integrations'
 
 @Injectable()
 export class InventoryService {
@@ -25,18 +26,26 @@ export class InventoryService {
     totalStock: number,
     skipConnectionId?: string,
   ) {
+    // Traemos TODOS los mappings activos (incl. catalog sources). Filtramos
+    // catalog sources puros en memoria via driver.catalogCapabilities.acceptsStockSync,
+    // así un híbrido como WonderStore (catalog source + write de stock) entra
+    // al fan-out, y EYLSTORE (puro read-only) queda fuera.
     const mappings = await this.prisma.marketplaceMapping.findMany({
       where: {
         productId,
         syncStatus: { in: ['connected', 'success', 'error'] },
         marketplaceProductId: { not: null },
-        connection: { syncEnabled: true, status: 'connected', isCatalogSource: false },
+        connection: { syncEnabled: true, status: 'connected' },
         ...(skipConnectionId ? { connectionId: { not: skipConnectionId } } : {}),
       },
       include: { connection: true },
     })
 
     for (const m of mappings) {
+      if (m.connection.isCatalogSource) {
+        const driver = getDriver(m.connection.provider)
+        if (!driver.catalogCapabilities?.acceptsStockSync) continue
+      }
       try {
         await this.syncService.enqueueStockSync(
           tenantId,

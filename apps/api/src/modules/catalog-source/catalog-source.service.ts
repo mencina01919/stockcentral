@@ -195,8 +195,9 @@ export class CatalogSourceService {
 
       offset += page.items.length
       if (!page.hasMore) break
-      // Safety brake: stop after 5000 to avoid runaway imports.
-      if (offset >= 5000) break
+      // Safety brake: stop después de 50k para evitar imports descontrolados.
+      // WonderStore puede tener catálogos >15k; EYLSTORE ~750.
+      if (offset >= 50000) break
     }
 
     await this.prisma.connection.update({

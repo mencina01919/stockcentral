@@ -86,6 +86,7 @@ export const PROVIDER_LABELS: Record<string, string> = {
   woocommerce: 'WooCommerce',
   jumpseller: 'Jumpseller',
   eylstore: 'EYLSTORE',
+  wonderstore: 'WonderStore',
   prestashop: 'PrestaShop',
   mercadolibre: 'Mercado Libre',
   falabella: 'Falabella',

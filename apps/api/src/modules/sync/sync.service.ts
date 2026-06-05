@@ -184,6 +184,17 @@ export class SyncService {
       return { synced: 0, errors: 0, suspiciousSkipped: 0, circuitTripped: false, total: 0, skipped: true }
     }
 
+    // Catalog sources que aceptan stock-sync (ej. WonderStore) NO reciben
+    // outbound de catálogo (createProduct/updateProduct). El catálogo lo
+    // gestiona el propio operador en su panel; nosotros solo descontamos
+    // stock vía el fan-out (pushStockToMarketplaces → enqueueStockSync →
+    // driver.updateStock). Sin este guard, el loop intenta updateProduct
+    // por cada SKU mappeado y dispara el circuit breaker.
+    if ((connection as any).isCatalogSource && driver.catalogCapabilities?.acceptsStockSync) {
+      this.logger.log(`Skipping outbound product sync for catalog source with stock-sync: ${connection.provider}`)
+      return { synced: 0, errors: 0, suspiciousSkipped: 0, circuitTripped: false, total: 0, skipped: true }
+    }
+
     // Walmart Chile aplica rate-limit fuerte a PUT /v3/price y /v3/inventory.
     // El loop tradicional (1 PUT por SKU × 394 productos = 788 requests) dispara
     // 429 sostenido y el circuit breaker. Para Lider usamos el path bulk que
@@ -613,16 +624,26 @@ export class SyncService {
     const connection = await this.getConnection(tenantId, connectionId)
 
     let isReadOnly = false
+    let isCatalogSourceWithStock = false
     try {
       const driver = getDriver(connection.provider)
       isReadOnly = driver.supportsWriteSync === false
+      // Catalog sources que aceptan stock (WonderStore): NO outbound de
+      // catálogo (no podemos crear/actualizar productos en su panel), pero
+      // SÍ inbound (importar su catálogo al maestro). El fan-out de stock
+      // ocurre por otra ruta (pushStockToMarketplaces → updateStock).
+      isCatalogSourceWithStock =
+        (connection as any).isCatalogSource &&
+        !!driver.catalogCapabilities?.acceptsStockSync
     } catch {
       // Unknown provider: fall through and try all jobs.
     }
 
     // For read-only catalog sources (EYLSTORE) there's nothing to push out
     // and no orders to fetch — only the inbound product sync makes sense.
-    const jobs: Promise<any>[] = isReadOnly
+    // For hybrid catalog sources (WonderStore) lo mismo: inbound catálogo
+    // sí, outbound y órdenes inbound no.
+    const jobs: Promise<any>[] = (isReadOnly || isCatalogSourceWithStock)
       ? [this.enqueueProductsInbound(tenantId, connectionId)]
       : [
           this.enqueueOrdersInbound(tenantId, connectionId),
@@ -633,7 +654,7 @@ export class SyncService {
     const results = await Promise.all(jobs)
     return {
       message: 'Sincronización encolada',
-      jobs: isReadOnly
+      jobs: (isReadOnly || isCatalogSourceWithStock)
         ? { productsIn: results[0].id }
         : { orders: results[0].id, productsIn: results[1].id, productsOut: results[2].id },
     }

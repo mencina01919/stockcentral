@@ -15,3 +15,5 @@ export type {
 } from './drivers/paris.driver'
 export { LiderDriver } from './drivers/lider.driver'
 export { BsaleDriver } from './drivers/bsale.driver'
+export { EylstoreDriver } from './drivers/eylstore.driver'
+export { WonderStoreDriver } from './drivers/wonderstore.driver'

@@ -7,6 +7,7 @@ import { JumpsellerDriver } from './jumpseller.driver'
 import { ParisDriver } from './paris.driver'
 import { LiderDriver } from './lider.driver'
 import { EylstoreDriver } from './eylstore.driver'
+import { WonderStoreDriver } from './wonderstore.driver'
 
 const drivers = new Map<string, IMarketplaceDriver>()
 drivers.set('mercadolibre', new MercadoLibreDriver())
@@ -17,6 +18,7 @@ drivers.set('jumpseller', new JumpsellerDriver())
 drivers.set('paris', new ParisDriver())
 drivers.set('lider', new LiderDriver())
 drivers.set('eylstore', new EylstoreDriver())
+drivers.set('wonderstore', new WonderStoreDriver())
 
 export function getDriver(provider: string): IMarketplaceDriver {
   const driver = drivers.get(provider.toLowerCase())
@@ -28,4 +30,4 @@ export function getSupportedProviders(): string[] {
   return Array.from(drivers.keys())
 }
 
-export { MercadoLibreDriver, ShopifyDriver, WooCommerceDriver, FalabellaDriver, JumpsellerDriver, ParisDriver, LiderDriver, EylstoreDriver }
+export { MercadoLibreDriver, ShopifyDriver, WooCommerceDriver, FalabellaDriver, JumpsellerDriver, ParisDriver, LiderDriver, EylstoreDriver, WonderStoreDriver }

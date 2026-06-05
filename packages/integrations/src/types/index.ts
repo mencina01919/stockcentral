@@ -146,6 +146,11 @@ export interface CatalogCapabilities {
   providesImages: boolean
   // The driver exposes a single-product endpoint for refresh-by-id.
   supportsSingleProductFetch: boolean
+  // El driver es catalog source pero TAMBIÉN recibe fan-out de stock cuando
+  // se vende algo en otros markets (ej. WonderStore: importa catálogo y
+  // expone POST /stock/reduce). Por default (undefined/false), un catalog
+  // source es solo-lectura y queda excluido del fan-out de stock.
+  acceptsStockSync?: boolean
 }
 
 export interface IMarketplaceDriver {
