@@ -238,6 +238,7 @@ export class SyncService {
     // syncEnabled to protect the marketplace account from getting flagged.
     const ERROR_THRESHOLD = 10
     let consecutiveErrors = 0
+    let consecutiveAuthErrors = 0  // solo cuenta errores de auth real (401/403/token)
     let circuitTripped = false
 
     for (const product of products) {
@@ -303,6 +304,7 @@ export class SyncService {
 
         if (result.success) {
           consecutiveErrors = 0
+          consecutiveAuthErrors = 0
           await this.prisma.marketplaceMapping.upsert({
             where: { productId_connectionId: { productId: product.id, connectionId } },
             update: {
@@ -324,25 +326,47 @@ export class SyncService {
           await this.updateMappingError(product.id, connectionId, result.error || 'Unknown error')
           errors++
           consecutiveErrors++
+          // Detectar errores de auth/token vs errores de payload.
+          const errStr = String(result.error || '').toLowerCase()
+          if (/401|403|unauthorized|forbidden|invalid.{0,10}token|expired/.test(errStr)) {
+            consecutiveAuthErrors++
+          } else {
+            consecutiveAuthErrors = 0  // reset si es error de payload (400/422)
+          }
         }
       } catch (err: any) {
         await this.updateMappingError(product.id, connectionId, err.message)
         errors++
         consecutiveErrors++
+        const errStr = String(err.message || '').toLowerCase()
+        if (/401|403|unauthorized|forbidden|invalid.{0,10}token|expired/.test(errStr)) {
+          consecutiveAuthErrors++
+        }
       }
 
-      if (consecutiveErrors >= ERROR_THRESHOLD) {
+      // Solo dispara el circuit breaker si los errores son de AUTH real.
+      // Errores de payload (missing attribute, invalid value) NO deben
+      // desactivar la conexión — solo afectan al SKU específico.
+      if (consecutiveAuthErrors >= ERROR_THRESHOLD) {
         circuitTripped = true
         this.logger.error(
-          `Circuit breaker tripped for connection ${connectionId} (${connection.provider}) after ${consecutiveErrors} consecutive errors. Auto-disabling syncEnabled.`,
+          `Circuit breaker tripped for connection ${connectionId} (${connection.provider}) after ${consecutiveAuthErrors} consecutive AUTH errors. Auto-disabling syncEnabled.`,
         )
         await this.prisma.connection.update({
           where: { id: connectionId },
           data: {
             syncEnabled: false,
-            lastError: `Auto-desactivado: ${consecutiveErrors} errores consecutivos en sync. Revisa la conexión y reactivar manualmente.`,
+            lastError: `Auto-desactivado: ${consecutiveAuthErrors} errores de auth consecutivos. Reconectá la conexión.`,
           },
         })
+      }
+      // Stop loop si MUCHOS errores no-auth seguidos (probablemente bad payloads en serie)
+      // — log warning pero no desactiva la conexión.
+      if (consecutiveErrors >= ERROR_THRESHOLD * 3) {
+        this.logger.warn(
+          `Skipping rest of batch: ${consecutiveErrors} consecutive errors (not auth). Connection sigue activa.`,
+        )
+        break
       }
     }
 
@@ -592,9 +616,20 @@ export class SyncService {
     const credentials = connection.credentials as Record<string, string>
     const config = (connection.config as Record<string, unknown> | undefined) || {}
 
-    if (!driver.refreshToken || !credentials.refreshToken) return
+    if (!driver.refreshToken) return
+    // Si NO hay refresh_token guardado, igual intentamos refresh — el driver
+    // ML soporta client_credentials cuando no hay refresh_token (apps tipo
+    // "Application"). Sin esto la conexión muere cada 6h sin remediación.
+    const refreshTokenArg = credentials.refreshToken || ''
+    // Para client_credentials necesitamos clientId+secret en config; si el
+    // driver los espera en config, asegurar que estén disponibles.
+    const refreshConfig = {
+      ...config,
+      clientId: config.clientId || credentials.clientId,
+      clientSecret: config.clientSecret || credentials.clientSecret,
+    }
 
-    const tokens = await driver.refreshToken(credentials.refreshToken, config)
+    const tokens = await driver.refreshToken(refreshTokenArg, refreshConfig as any)
     const updatedCredentials = {
       ...credentials,
       accessToken: tokens.accessToken,

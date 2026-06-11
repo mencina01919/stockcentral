@@ -97,6 +97,11 @@ export class ConnectionsService {
     const credentials: Record<string, string> = { accessToken: tokens.accessToken }
     if (tokens.refreshToken) credentials.refreshToken = tokens.refreshToken
     if (tokens.sellerId) credentials.sellerId = tokens.sellerId
+    // Persistir clientId + clientSecret para que refreshToken() pueda llamarse
+    // después sin pedirlos de nuevo. Sin esto la conexión queda "huérfana"
+    // cuando el access_token expira (ML access vive 6h).
+    if (config.clientId) credentials.clientId = config.clientId
+    if (config.clientSecret) credentials.clientSecret = config.clientSecret
 
     const testResult = await driver.testConnection(credentials)
     if (!testResult.success) {
@@ -110,6 +115,8 @@ export class ConnectionsService {
     const connConfig: Record<string, unknown> = {}
     if (tokens.expiresAt) connConfig.tokenExpiresAt = tokens.expiresAt.toISOString()
     if (tokens.siteId) connConfig.siteId = tokens.siteId
+    // Guardar también en config como respaldo / para inspección.
+    if (config.clientId) connConfig.clientId = config.clientId
 
     if (existing) {
       return this.prisma.connection.update({

@@ -127,17 +127,26 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
 
   async refreshToken(refreshToken: string, config: DriverConfig): Promise<OAuthTokens> {
     const { clientId, clientSecret } = config as Record<string, string>
-    const res = await axios.post(`${ML_API}/oauth/token`, {
-      grant_type: 'refresh_token',
+    // Si tenemos refresh_token, usar el flujo estándar.
+    // Si NO (caso típico cuando la app no devolvió refresh en exchange),
+    // intentar client_credentials que algunas apps ML soportan y no requiere
+    // intervención del usuario. Solo funciona con apps configuradas para ello.
+    const body: Record<string, string> = {
       client_id: clientId,
       client_secret: clientSecret,
-      refresh_token: refreshToken,
-    })
+    }
+    if (refreshToken) {
+      body.grant_type = 'refresh_token'
+      body.refresh_token = refreshToken
+    } else {
+      body.grant_type = 'client_credentials'
+    }
+    const res = await axios.post(`${ML_API}/oauth/token`, body)
     return {
       accessToken: res.data.access_token,
       refreshToken: res.data.refresh_token,
       expiresAt: new Date(Date.now() + res.data.expires_in * 1000),
-      sellerId: String(res.data.user_id),
+      sellerId: res.data.user_id ? String(res.data.user_id) : undefined,
     }
   }
 
@@ -491,18 +500,28 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
         return attr
       })
     }
-    const map = new Map<string, string>()
+    // Mapa id → attr completo (preserva value_id/value_struct cuando vienen).
+    // ML rechaza atributos con lista cerrada si no se manda value_id (ej.
+    // EMPTY_GTIN_REASON, SCALE, ITEM_CONDITION).
+    const map = new Map<string, Record<string, unknown>>()
     // Static known attributes from form fields
-    if (fd.brand)   map.set('BRAND',   String(fd.brand))
-    if (fd.gtin)    map.set('GTIN',    String(fd.gtin))
-    if (fd.model)   map.set('MODEL',   String(fd.model))
+    if (fd.brand)   map.set('BRAND',   { id: 'BRAND',   value_name: String(fd.brand) })
+    if (fd.gtin)    map.set('GTIN',    { id: 'GTIN',    value_name: String(fd.gtin) })
+    if (fd.model)   map.set('MODEL',   { id: 'MODEL',   value_name: String(fd.model) })
     // Dynamic attributes captured from MLAttributeFields (category-specific)
     if (Array.isArray(fd.mlAttributes)) {
       for (const a of fd.mlAttributes) {
-        if (a.id && a.value_name) map.set(String(a.id), String(a.value_name))
+        if (!a.id) continue
+        const attr: Record<string, unknown> = { id: String(a.id) }
+        if (a.value_id !== undefined) attr.value_id = a.value_id
+        if (a.value_name !== undefined) attr.value_name = a.value_name
+        if (a.value_struct !== undefined) attr.value_struct = a.value_struct
+        if (attr.value_id || attr.value_name || attr.value_struct) {
+          map.set(String(a.id), attr)
+        }
       }
     }
-    return Array.from(map.entries()).map(([id, value_name]) => ({ id, value_name }))
+    return Array.from(map.values())
   }
 
   async createProduct(
