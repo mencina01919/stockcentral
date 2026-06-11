@@ -2335,26 +2335,37 @@ function PublicationsPageInner() {
                       return conn?.provider
                     })
                     .filter((prov: string | undefined): prov is string => !!prov)
+                  const thumb = Array.isArray(p.images) && p.images.length > 0 ? p.images[0] : null
                   return (
                     <button key={p.id} onClick={() => { setSelectedProduct(p); setShowForm(false) }}
                       className={cn(
-                        'w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors',
+                        'w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors flex gap-3',
                         selectedProduct?.id === p.id && 'bg-sky-50 border-r-2 border-sky-500'
                       )}>
-                      <p className="text-sm font-medium text-gray-900 truncate">{p.name}</p>
-                      <div className="flex items-center justify-between mt-0.5">
-                        <p className="text-xs text-gray-400 font-mono">{p.sku}</p>
-                        <p className="text-xs text-gray-500">{formatCurrency(Number(p.basePrice))}</p>
-                      </div>
-                      <div className="flex items-center justify-between mt-1">
-                        <span className="text-xs text-gray-400">Stock: {totalStock}</span>
-                        {linkedProviders.length > 0 && (
-                          <div className="flex items-center gap-1" title={`Publicado en: ${linkedProviders.map((p) => PROVIDER_LABELS[p] || p).join(', ')}`}>
-                            {linkedProviders.map((prov) => (
-                              <ProviderLogo key={prov} provider={prov} size="sm" className="w-5 h-5 rounded-full ring-1 ring-white" />
-                            ))}
-                          </div>
+                      <div className="w-12 h-12 flex-shrink-0 rounded-lg bg-gray-50 border border-gray-100 overflow-hidden flex items-center justify-center">
+                        {thumb ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={thumb} alt={p.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                        ) : (
+                          <Package className="w-5 h-5 text-gray-300" />
                         )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">{p.name}</p>
+                        <div className="flex items-center justify-between mt-0.5">
+                          <p className="text-xs text-gray-400 font-mono">{p.sku}</p>
+                          <p className="text-xs text-gray-500">{formatCurrency(Number(p.basePrice))}</p>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="text-xs text-gray-400">Stock: {totalStock}</span>
+                          {linkedProviders.length > 0 && (
+                            <div className="flex items-center gap-1" title={`Publicado en: ${linkedProviders.map((p) => PROVIDER_LABELS[p] || p).join(', ')}`}>
+                              {linkedProviders.map((prov) => (
+                                <ProviderLogo key={prov} provider={prov} size="sm" className="w-5 h-5 rounded-full ring-1 ring-white" />
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </button>
                   )
@@ -2398,8 +2409,22 @@ function PublicationsPageInner() {
               <>
                 {/* Cabecera producto */}
                 <div className="bg-white border rounded-xl p-5">
-                  <div className="flex items-start justify-between">
-                    <div>
+                  <div className="flex items-start gap-4">
+                    {(() => {
+                      const imgs = Array.isArray(selectedProduct.images) ? selectedProduct.images : []
+                      const main = imgs[0]
+                      return (
+                        <div className="w-24 h-24 flex-shrink-0 rounded-xl bg-gray-50 border border-gray-100 overflow-hidden flex items-center justify-center">
+                          {main ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={main} alt={selectedProduct.name} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                          ) : (
+                            <Package className="w-8 h-8 text-gray-300" />
+                          )}
+                        </div>
+                      )
+                    })()}
+                    <div className="flex-1 min-w-0">
                       <h2 className="font-bold text-gray-900">{selectedProduct.name}</h2>
                       <div className="flex items-center gap-3 mt-1">
                         <p className="text-sm text-gray-500 font-mono">SKU: {selectedProduct.sku}</p>
@@ -2408,6 +2433,17 @@ function PublicationsPageInner() {
                         )}
                       </div>
                       <p className="text-sm font-semibold text-gray-900 mt-1">{formatCurrency(Number(selectedProduct.basePrice))}</p>
+                      {Array.isArray(selectedProduct.images) && selectedProduct.images.length > 1 && (
+                        <div className="flex items-center gap-1.5 mt-2">
+                          {selectedProduct.images.slice(1, 6).map((url: string, i: number) => (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img key={i} src={url} alt="" className="w-10 h-10 rounded-md object-cover border border-gray-100" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                          ))}
+                          {selectedProduct.images.length > 6 && (
+                            <span className="text-xs text-gray-400 ml-1">+{selectedProduct.images.length - 6}</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
