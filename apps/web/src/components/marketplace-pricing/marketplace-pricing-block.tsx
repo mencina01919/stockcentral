@@ -11,7 +11,7 @@ import { formatCurrency } from '@/lib/utils'
 // commission/shipping son los típicos de cada Chile market.
 export const MARKETPLACE_DEFAULTS: Record<string, { label: string; commission: number; shipping: number; color: string }> = {
   lider:         { label: 'Lider',          commission: 12, shipping: 3500,  color: 'bg-blue-600' },
-  mercadolibre:  { label: 'MercadoLibre',   commission: 13, shipping: 2990,  color: 'bg-yellow-400' },
+  mercadolibre:  { label: 'MercadoLibre',   commission: 15, shipping: 3990,  color: 'bg-yellow-400' },
   paris:         { label: 'Paris',          commission: 15, shipping: 3500,  color: 'bg-red-700' },
   falabella:     { label: 'Falabella',      commission: 15, shipping: 3500,  color: 'bg-green-700' },
   shopify:       { label: 'Shopify',        commission: 2,  shipping: 0,     color: 'bg-green-600' },
@@ -89,7 +89,7 @@ export function MarketplacePricingBlock({
       init[conn.provider] = {
         commission: s.commission ?? def.commission,
         shipping:   s.shipping   ?? def.shipping,
-        margin:     s.margin     ?? 10,
+        margin:     s.margin     ?? 5,
         enabled:    s.enabled    ?? true,
       }
     }
