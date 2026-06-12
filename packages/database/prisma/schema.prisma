@@ -424,6 +424,7 @@ model Connection {
   marketplaceOffers   MarketplaceOffer[]
   productSnapshots    MarketplaceProductSnapshot[]
   syncLogs            SyncLog[]
+  cronRuns            CronRun[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -432,6 +433,32 @@ model Connection {
   @@index([tenantId])
   @@index([type])
   @@index([tenantId, isCatalogSource])
+}
+
+// Historial de ejecuciones de crons del backend. Se inserta una fila por
+// cada ejecución de un cron tageable (catalog_source_sync, ml_outbound, etc.)
+// con startedAt + finishedAt + duración + status + stats serializados. Sirve
+// para la vista "Monitor de Sync" y para la lógica de alerta cuando un cron
+// pasa más de N min sin correr exitosamente.
+model CronRun {
+  id           String    @id @default(uuid())
+  tenantId     String?
+  connectionId String?
+  cron         String    // identificador: 'catalog_source_sync', 'ml_outbound_products', etc.
+  provider     String?   // wonderstore, eylstore, mercadolibre, etc.
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  durationMs   Int?
+  status       String    @default("running") // 'running' | 'success' | 'error'
+  stats        Json?     // { scanned, created, updated, unchanged, errors, ... }
+  errorMessage String?
+
+  connection Connection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+
+  @@index([cron, startedAt(sort: Desc)])
+  @@index([tenantId, startedAt(sort: Desc)])
+  @@index([connectionId, startedAt(sort: Desc)])
+  @@index([status])
 }
 
 model MarketplaceMapping {

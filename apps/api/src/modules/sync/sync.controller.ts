@@ -3,13 +3,45 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { TenantId } from '../../common/decorators/tenant-id.decorator'
 import { SyncService } from './sync.service'
+import { CronMonitorService } from './cron-monitor.service'
 
 @ApiTags('Sync')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('sync')
 export class SyncController {
-  constructor(private readonly syncService: SyncService) {}
+  constructor(
+    private readonly syncService: SyncService,
+    private readonly cronMonitor: CronMonitorService,
+  ) {}
+
+  @Get('cron-runs')
+  @ApiOperation({ summary: 'Listar runs recientes de crons (catalog source, etc.)' })
+  listCronRuns(
+    @TenantId() tenantId: string,
+    @Query('connectionId') connectionId?: string,
+    @Query('cron') cron?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.cronMonitor.listRecent({
+      tenantId,
+      connectionId,
+      cron,
+      limit: limit ? Math.min(parseInt(limit, 10), 500) : 50,
+    })
+  }
+
+  @Get('cron-stats')
+  @ApiOperation({ summary: 'Stats agregados por cron en últimas N horas' })
+  cronStats(@TenantId() tenantId: string, @Query('hours') hours?: string) {
+    return this.cronMonitor.stats(tenantId, hours ? parseInt(hours, 10) : 24)
+  }
+
+  @Get('cron-health')
+  @ApiOperation({ summary: 'Alertas: crons inactivos (catalog source > 15 min sin éxito)' })
+  cronHealth(@TenantId() tenantId: string) {
+    return this.cronMonitor.checkHealth(tenantId)
+  }
 
   @Post('connections/:id')
   @ApiOperation({ summary: 'Disparar sincronización completa (órdenes + productos)' })

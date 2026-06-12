@@ -7,7 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Package, ShoppingCart, Warehouse, Plug, BarChart3,
   Settings, LogOut, Webhook, Receipt, ChevronDown, ChevronRight,
-  Store, RefreshCw, Percent,
+  Store, RefreshCw, Percent, Activity,
 } from 'lucide-react'
 import api from '@/lib/api'
 import { cn, PROVIDER_LABELS } from '@/lib/utils'
@@ -134,6 +134,7 @@ export function Sidebar() {
     { type: 'leaf', href: '/publications', label: 'Publicaciones', icon: Package },
     { type: 'leaf', href: '/offers', label: 'Ofertas', icon: Percent },
     { type: 'leaf', href: '/stock-sync', label: 'Sync de Stock', icon: RefreshCw },
+    { type: 'leaf', href: '/sync-monitor', label: 'Monitor Sync', icon: Activity },
     { type: 'leaf', href: '/connections', label: 'Conexiones', icon: Plug },
     { type: 'leaf', href: '/reports', label: 'Reportes', icon: BarChart3 },
     { type: 'leaf', href: '/webhooks', label: 'Webhooks', icon: Webhook },

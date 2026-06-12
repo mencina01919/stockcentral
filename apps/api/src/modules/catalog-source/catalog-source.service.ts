@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule'
 import { PrismaService } from '../../prisma/prisma.service'
 import { getDriver } from '@stockcentral/integrations'
 import { InventoryService } from '../inventory/inventory.service'
+import { CronMonitorService } from '../sync/cron-monitor.service'
 
 // Generic catalog source service. Works for ANY connection whose driver
 // declares `catalogCapabilities.canBeCatalogSource = true`. No provider-specific
@@ -24,6 +25,7 @@ export class CatalogSourceService {
   constructor(
     private prisma: PrismaService,
     @Inject(forwardRef(() => InventoryService)) private inventoryService: InventoryService,
+    private cronMonitor: CronMonitorService,
   ) {}
 
   // ── Selection ────────────────────────────────────────────────────────────
@@ -370,7 +372,15 @@ export class CatalogSourceService {
         // sincronizaba stock y los cambios de name/desc/images del
         // catalog source jamás llegaban al maestro hasta que alguien
         // disparara manualmente runImport con syncProducts:true.
-        await this.runImport(src.tenantId, { syncProducts, syncStock })
+        // Wrap con CronMonitor para historial visible en /sync Monitor.
+        await this.cronMonitor.wrap(
+          'catalog_source_sync',
+          { tenantId: src.tenantId, connectionId: src.id, provider: src.provider },
+          async () => {
+            const stats = await this.runImport(src.tenantId, { syncProducts, syncStock })
+            return { stats }
+          },
+        )
       } catch (err: any) {
         this.logger.error(`scheduledStockSync failed for ${src.provider}: ${err.message}`)
       }

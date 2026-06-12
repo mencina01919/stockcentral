@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bull'
 import { SyncService } from './sync.service'
 import { SyncController } from './sync.controller'
 import { SyncProcessor } from './sync.processor'
+import { CronMonitorService } from './cron-monitor.service'
 import { SYNC_QUEUE } from './sync.constants'
 import { BillingModule } from '../billing/billing.module'
 import { InventoryModule } from '../inventory/inventory.module'
@@ -20,7 +21,7 @@ import { InventoryModule } from '../inventory/inventory.module'
     forwardRef(() => InventoryModule),
   ],
   controllers: [SyncController],
-  providers: [SyncService, SyncProcessor],
-  exports: [SyncService],
+  providers: [SyncService, SyncProcessor, CronMonitorService],
+  exports: [SyncService, CronMonitorService],
 })
 export class SyncModule {}
