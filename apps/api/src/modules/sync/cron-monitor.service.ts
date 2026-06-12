@@ -105,16 +105,30 @@ export class CronMonitorService {
     }))
   }
 
+  // Marca como 'error' los runs que quedaron 'running' más de N minutos
+  // (proceso reiniciado a mitad, o import muerto). Evita runs huérfanos
+  // eternos. Se llama al inicio de checkHealth.
+  async sweepStaleRuns(maxMinutes = 40) {
+    const cutoff = new Date(Date.now() - maxMinutes * 60 * 1000)
+    const res = await this.prisma.cronRun.updateMany({
+      where: { status: 'running', startedAt: { lt: cutoff } },
+      data: { status: 'error', errorMessage: 'Run abandonado (sin cierre tras timeout)' },
+    })
+    return res.count
+  }
+
   // Detecta crons "inactivos": catalog_source_sync que pasó más del threshold
   // sin un run exitoso. Devuelve lista para alertar.
   async checkHealth(tenantId: string) {
+    await this.sweepStaleRuns()
     const conns = await this.prisma.connection.findMany({
       where: { tenantId, isCatalogSource: true, syncEnabled: true },
       select: { id: true, provider: true, name: true },
     })
     const alerts: { connectionId: string; provider: string; name: string; lastSuccessAt: Date | null; minutesSinceLastSuccess: number | null; reason: string }[] = []
-    // Catalog source corre cada 5 min. Threshold: 15 min sin éxito.
-    const THRESHOLD_MS = 15 * 60 * 1000
+    // Catalog source corre cada 15 min y un import grande tarda ~15-18 min.
+    // Threshold: 45 min sin un run exitoso = algo está mal de verdad.
+    const THRESHOLD_MS = 45 * 60 * 1000
     const now = Date.now()
     for (const c of conns) {
       const last = await this.prisma.cronRun.findFirst({

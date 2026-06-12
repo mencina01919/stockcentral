@@ -22,6 +22,12 @@ export interface ImportStats {
 export class CatalogSourceService {
   private readonly logger = new Logger(CatalogSourceService.name)
 
+  // Guard de solapamiento: el import de catálogos grandes (WonderStore ~15k
+  // productos) tarda 13-18 min, más que el intervalo del cron. Sin esto, el
+  // siguiente tick arranca otro run encima y quedan runs "running" huérfanos.
+  // Set de connectionIds con un import en vuelo.
+  private readonly importing = new Set<string>()
+
   constructor(
     private prisma: PrismaService,
     @Inject(forwardRef(() => InventoryService)) private inventoryService: InventoryService,
@@ -358,7 +364,10 @@ export class CatalogSourceService {
 
   // ── Cron: stock + product sync for tenants that opted in ─────────────────
 
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  // Cada 15 min: los catálogos grandes tardan ~15 min en importar, así que
+  // un intervalo más corto solo generaba solapamientos. El guard `importing`
+  // saltea cualquier source que todavía tenga un run en vuelo.
+  @Cron('0 */15 * * * *')
   async scheduledStockSync() {
     const sources = await this.prisma.connection.findMany({
       where: { isCatalogSource: true, syncEnabled: true, status: 'connected' },
@@ -371,6 +380,12 @@ export class CatalogSourceService {
       const syncProducts = cfg.autoSyncProducts === true
       // Si ambos están false (raro), no hay nada que hacer.
       if (!syncStock && !syncProducts) continue
+      // Skip si ya hay un import en vuelo para esta conexión.
+      if (this.importing.has(src.id)) {
+        this.logger.warn(`scheduledStockSync: ${src.provider} todavía corriendo, salteando este tick`)
+        continue
+      }
+      this.importing.add(src.id)
       try {
         // Una sola pasada respeta los dos flags. Antes el cron solo
         // sincronizaba stock y los cambios de name/desc/images del
@@ -387,6 +402,8 @@ export class CatalogSourceService {
         )
       } catch (err: any) {
         this.logger.error(`scheduledStockSync failed for ${src.provider}: ${err.message}`)
+      } finally {
+        this.importing.delete(src.id)
       }
     }
   }
