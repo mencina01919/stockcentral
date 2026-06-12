@@ -53,24 +53,28 @@ export class WonderStoreDriver implements IMarketplaceDriver {
     const baseURL = (config?.baseUrl as string) || DEFAULT_BASE_URL
     const client = axios.create({
       baseURL,
-      timeout: 20000,
+      // 45s: bajo carga (import de ~300 páginas) wonderstore.cl a veces tarda
+      // >20s en responder una página. El timeout previo cortaba el import.
+      timeout: 45000,
       headers: {
         Authorization: `Bearer ${credentials.apiKey}`,
         Accept: 'application/json',
         'Content-Type': 'application/json',
       },
     })
-    // Reintento para 429 honrando Retry-After con backoff exponencial.
-    // Catálogos grandes (WonderStore ~15k productos = ~300 páginas) rate-limitean
-    // fuerte; 2 reintentos no alcanzaban. Subimos a 5 con backoff creciente.
+    // Reintento para 429 y timeouts con backoff exponencial. Catálogos
+    // grandes (WonderStore ~15k productos = ~300 páginas) rate-limitean fuerte
+    // y a veces tardan >20s; 2 reintentos no alcanzaban. 5 con backoff.
     client.interceptors.response.use(undefined, async (error) => {
       const cfg: any = error.config
-      if (!cfg || error.response?.status !== 429) return Promise.reject(error)
-      cfg.__retry429 = (cfg.__retry429 || 0) + 1
-      if (cfg.__retry429 > 5) return Promise.reject(error)
+      const isRateLimit = error.response?.status === 429
+      const isTimeout = error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')
+      if (!cfg || (!isRateLimit && !isTimeout)) return Promise.reject(error)
+      cfg.__retry = (cfg.__retry || 0) + 1
+      if (cfg.__retry > 5) return Promise.reject(error)
       // Retry-After del server si viene; si no, backoff 3s,6s,12s,24s,30s.
-      const retryAfter = Number(error.response.headers?.['retry-after'])
-      const backoff = retryAfter || Math.min(3 * 2 ** (cfg.__retry429 - 1), 30)
+      const retryAfter = Number(error.response?.headers?.['retry-after'])
+      const backoff = retryAfter || Math.min(3 * 2 ** (cfg.__retry - 1), 30)
       await new Promise((r) => setTimeout(r, Math.min(backoff, 30) * 1000))
       return client.request(cfg)
     })
