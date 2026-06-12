@@ -40,6 +40,9 @@ export class WonderStoreDriver implements IMarketplaceDriver {
     // WonderStore es catalog source PERO recibe fan-out de stock vía
     // POST /stock/reduce. Distinto de EYLSTORE (puro read-only).
     acceptsStockSync: true,
+    // ~300 páginas → wonderstore.cl rate-limitea sin pausa. 250ms entre
+    // páginas mantiene el import bajo el límite.
+    pageDelayMs: 250,
   }
 
   // Cache slug→sku para evitar 1 GET extra por cada updateStock.
@@ -57,14 +60,18 @@ export class WonderStoreDriver implements IMarketplaceDriver {
         'Content-Type': 'application/json',
       },
     })
-    // Reintento simple para 429 honrando Retry-After. Max 2 reintentos.
+    // Reintento para 429 honrando Retry-After con backoff exponencial.
+    // Catálogos grandes (WonderStore ~15k productos = ~300 páginas) rate-limitean
+    // fuerte; 2 reintentos no alcanzaban. Subimos a 5 con backoff creciente.
     client.interceptors.response.use(undefined, async (error) => {
       const cfg: any = error.config
       if (!cfg || error.response?.status !== 429) return Promise.reject(error)
       cfg.__retry429 = (cfg.__retry429 || 0) + 1
-      if (cfg.__retry429 > 2) return Promise.reject(error)
-      const retryAfter = Number(error.response.headers?.['retry-after']) || 2
-      await new Promise((r) => setTimeout(r, Math.min(retryAfter, 30) * 1000))
+      if (cfg.__retry429 > 5) return Promise.reject(error)
+      // Retry-After del server si viene; si no, backoff 3s,6s,12s,24s,30s.
+      const retryAfter = Number(error.response.headers?.['retry-after'])
+      const backoff = retryAfter || Math.min(3 * 2 ** (cfg.__retry429 - 1), 30)
+      await new Promise((r) => setTimeout(r, Math.min(backoff, 30) * 1000))
       return client.request(cfg)
     })
     return client

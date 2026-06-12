@@ -151,6 +151,11 @@ export interface CatalogCapabilities {
   // expone POST /stock/reduce). Por default (undefined/false), un catalog
   // source es solo-lectura y queda excluido del fan-out de stock.
   acceptsStockSync?: boolean
+  // Pausa en ms entre páginas durante el import masivo. Algunos upstreams
+  // rate-limitean lecturas seguidas (WonderStore con ~300 páginas pega 429).
+  // Si se omite, el import itera sin pausa (eylstore ~750 productos no lo
+  // necesita). WonderStore usa ~250ms para no saturar.
+  pageDelayMs?: number
 }
 
 export interface IMarketplaceDriver {

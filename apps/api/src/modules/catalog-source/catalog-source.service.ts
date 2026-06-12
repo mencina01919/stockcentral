@@ -171,6 +171,8 @@ export class CatalogSourceService {
 
     let offset = 0
     const pageSize = 50
+    // Pausa entre páginas si el driver la pide (WonderStore rate-limitea).
+    const pageDelayMs = driver.catalogCapabilities?.pageDelayMs ?? 0
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -200,6 +202,8 @@ export class CatalogSourceService {
       // Safety brake: stop después de 50k para evitar imports descontrolados.
       // WonderStore puede tener catálogos >15k; EYLSTORE ~750.
       if (offset >= 50000) break
+      // Respeta el rate-limit del upstream entre páginas.
+      if (pageDelayMs > 0) await new Promise((r) => setTimeout(r, pageDelayMs))
     }
 
     await this.prisma.connection.update({
