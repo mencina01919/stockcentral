@@ -65,8 +65,6 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       timeout: 15000,
     })
 
-    if (!this.onTokenRefresh) return client
-
     let refreshing: Promise<string> | null = null
     const refreshHandler = this.onTokenRefresh
 
@@ -75,24 +73,47 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       async (error) => {
         const status = error?.response?.status
         const config = error?.config as any
-        if (status !== 401 || !config || config._retried) {
-          return Promise.reject(error)
-        }
-        config._retried = true
-        try {
-          // Coalescing: varios 401 simultáneos comparten una sola promesa.
-          if (!refreshing) {
-            refreshing = refreshHandler()
-              .then((r) => r.accessToken)
-              .finally(() => { refreshing = null })
-          }
-          const newToken = await refreshing
-          config.headers = { ...(config.headers || {}), Authorization: `Bearer ${newToken}` }
-          ;(client.defaults.headers as any).Authorization = `Bearer ${newToken}`
+        if (!config) return Promise.reject(error)
+
+        // 429 rate-limit: ML no documenta Retry-After garantizado y manda body
+        // vacío. Backoff exponencial con jitter, honrando RateLimit-Reset si
+        // viene. PUT /items y /user-products tienen una cuota por app estricta;
+        // sin este retry, los syncs masivos disparan throttle extendido.
+        if (status === 429) {
+          config._429retry = (config._429retry || 0) + 1
+          if (config._429retry > 5) return Promise.reject(error)
+          const resetHdr = Number(
+            error?.response?.headers?.['ratelimit-reset'] ||
+              error?.response?.headers?.['retry-after'],
+          )
+          const base = resetHdr && !Number.isNaN(resetHdr)
+            ? Math.min(resetHdr * 1000, 60000)
+            : Math.min(2000 * 2 ** (config._429retry - 1), 30000)
+          const jitter = base * (0.8 + Math.random() * 0.4)
+          await new Promise((r) => setTimeout(r, jitter))
           return client.request(config)
-        } catch (refreshErr) {
-          return Promise.reject(refreshErr)
         }
+
+        // 401: refresh de token + reintento (1 vez).
+        if (status === 401 && refreshHandler && !config._retried) {
+          config._retried = true
+          try {
+            // Coalescing: varios 401 simultáneos comparten una sola promesa.
+            if (!refreshing) {
+              refreshing = refreshHandler()
+                .then((r) => r.accessToken)
+                .finally(() => { refreshing = null })
+            }
+            const newToken = await refreshing
+            config.headers = { ...(config.headers || {}), Authorization: `Bearer ${newToken}` }
+            ;(client.defaults.headers as any).Authorization = `Bearer ${newToken}`
+            return client.request(config)
+          } catch (refreshErr) {
+            return Promise.reject(refreshErr)
+          }
+        }
+
+        return Promise.reject(error)
       },
     )
     return client
@@ -727,7 +748,52 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     externalId: string,
     stock: number,
   ): Promise<SyncResult> {
-    return this.updateProduct(credentials, externalId, { stock })
+    try {
+      const client = this.buildClient(credentials.accessToken)
+      // Detectar si es un catalog item (vinculado a un user_product del
+      // catálogo oficial de ML). Para esos items, ML IGNORA el stock enviado
+      // vía PUT /items/{id} (lo acepta con 200 pero no lo persiste — el item
+      // hereda el stock del user_product). El stock real se gestiona en el
+      // user_product con PUT /user-products/{id}/stock/type/{location_type},
+      // que requiere el header X-Version obtenido del GET previo (optimistic
+      // locking). Sin esto, las publicaciones de catálogo quedaban pausadas
+      // por out_of_stock para siempre aunque hubiera stock en el maestro.
+      const itemRes = await client.get(`/items/${externalId}`, {
+        params: { attributes: 'id,user_product_id' },
+      })
+      const userProductId: string | undefined = itemRes.data?.user_product_id
+
+      if (userProductId) {
+        // 1. GET stock del user_product → x-version (header) + location type
+        const stockRes = await client.get(`/user-products/${userProductId}/stock`)
+        const version = stockRes.headers?.['x-version']
+        const locationType =
+          stockRes.data?.locations?.[0]?.type || 'selling_address'
+        // 2. PUT stock con X-Version
+        await client.put(
+          `/user-products/${userProductId}/stock/type/${locationType}`,
+          { quantity: stock },
+          { headers: version ? { 'X-Version': String(version) } : {} },
+        )
+        return { success: true, externalId }
+      }
+
+      // Custom item: el PUT directo de available_quantity sí funciona.
+      return this.updateProduct(credentials, externalId, { stock })
+    } catch (err: any) {
+      const data = err?.response?.data
+      const causes = Array.isArray(data?.cause)
+        ? data.cause
+            .filter((c: any) => c.type !== 'warning')
+            .map((c: any) => `${c.code}: ${c.message}`)
+            .join(' | ')
+        : ''
+      return {
+        success: false,
+        error: causes || data?.message || data?.error || err.message,
+        rawResponse: data,
+      }
+    }
   }
 
   async getOrders(
