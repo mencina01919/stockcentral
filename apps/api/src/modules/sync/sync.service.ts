@@ -89,30 +89,57 @@ export class SyncService {
   // y refresh_tokens; si no se renuevan, el sync empieza a fallar con 401
   // silenciosamente. Corremos cada 30min y refrescamos cualquier token que
   // expire en menos de 1h.
+  //
+  // IMPORTANTE: NO filtramos por syncEnabled. El circuit breaker desactiva
+  // conexiones tras 10 errores de auth — si el cron de refresh las salteara,
+  // el token nunca se renueva y la conexión queda muerta en un loop (el bug
+  // que pausó 12k publicaciones de WonderStore). Refrescamos TODAS las
+  // conexiones con driver que soporte refresh; si el refresh tiene éxito en
+  // una conexión auto-desactivada por auth, la re-habilitamos.
   @Cron(CronExpression.EVERY_30_MINUTES)
   async scheduledRefreshOAuthTokens() {
     const connections = await this.prisma.connection.findMany({
-      where: { syncEnabled: true },
-      select: { id: true, tenantId: true, provider: true, config: true },
+      where: { status: { not: 'disconnected' } },
+      select: { id: true, tenantId: true, provider: true, config: true, syncEnabled: true, lastError: true },
     })
     const now = Date.now()
     const oneHourMs = 60 * 60 * 1000
     for (const conn of connections) {
-      const cfg = (conn.config as any) || {}
-      const expiresAtRaw = cfg?.tokenExpiresAt
-      if (!expiresAtRaw) continue
-      const expiresAt = new Date(expiresAtRaw).getTime()
-      if (Number.isNaN(expiresAt)) continue
-      if (expiresAt - now > oneHourMs) continue
+      let driver
       try {
-        const driver = getDriver(conn.provider)
+        driver = getDriver(conn.provider)
         if (!driver.refreshToken) continue
       } catch {
         continue
       }
+      const cfg = (conn.config as any) || {}
+      const expiresAtRaw = cfg?.tokenExpiresAt
+      // Si la conexión está desactivada por error de AUTH, intentamos refrescar
+      // SIEMPRE (sin importar expiry) para auto-recuperarla. Si está activa,
+      // solo refrescamos cuando el token está por expirar.
+      const disabledByAuth =
+        !conn.syncEnabled && /auth|401|403|token|expir|desactiv/i.test(conn.lastError || '')
+      if (!disabledByAuth) {
+        if (!expiresAtRaw) continue
+        const expiresAt = new Date(expiresAtRaw).getTime()
+        if (Number.isNaN(expiresAt)) continue
+        if (expiresAt - now > oneHourMs) continue
+      }
       try {
         await this.refreshOAuthToken(conn.tenantId, conn.id)
-        this.logger.log(`OAuth token refreshed for ${conn.provider} (${conn.id})`)
+        // Auto-recuperación: si estaba desactivada por auth y el refresh
+        // funcionó, la re-habilitamos y limpiamos el error.
+        if (disabledByAuth) {
+          await this.prisma.connection.update({
+            where: { id: conn.id },
+            data: { syncEnabled: true, lastError: null },
+          })
+          this.logger.log(
+            `OAuth token refreshed + connection RE-ENABLED for ${conn.provider} (${conn.id})`,
+          )
+        } else {
+          this.logger.log(`OAuth token refreshed for ${conn.provider} (${conn.id})`)
+        }
       } catch (err: any) {
         this.logger.error(
           `OAuth refresh failed for ${conn.provider} (${conn.id}): ${err?.message || err}`,
