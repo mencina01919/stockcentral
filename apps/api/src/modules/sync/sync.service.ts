@@ -238,19 +238,33 @@ export class SyncService {
     const whereClause: any = { tenantId, status: 'active' }
     if (productIds?.length) whereClause.id = { in: productIds }
 
-    // BATCH LIMIT: sin productIds explícitos (cron periódico), procesamos solo
-    // los productos cuyo mapping necesita sync (no 'synced') y limitamos a un
-    // batch. Catálogos grandes (WonderStore ~13k mappings) hacían que el cron
-    // iterara los 13k con ~5 requests c/u por ciclo (>60k requests) → el worker
-    // single-threaded se colgaba indefinidamente y bloqueaba los jobs de
-    // órdenes (riesgo de sobreventa). El fan-out en-vivo (venta/edición de
-    // stock → enqueueStockSync) mantiene el stock al día en segundos; el cron
-    // es solo el catch-up de los que quedaron pendientes.
+    // BATCH LIMIT: sin productIds explícitos (cron periódico) limitamos a un
+    // batch y rotamos por los mappings más rancios. Catálogos grandes
+    // (WonderStore ~14k mappings) hacían que el cron iterara los 14k con
+    // ~5 requests c/u por ciclo (>60k requests) → el worker single-threaded
+    // se colgaba indefinidamente y bloqueaba los jobs de órdenes (riesgo de
+    // sobreventa). El fan-out en-vivo (venta/edición de stock →
+    // enqueueStockSync) mantiene el stock al día en segundos; el cron es solo
+    // el catch-up / reconciliación de los que quedaron rancios o con error.
+    //
+    // Solo procesamos productos que YA tienen un mapping publicado en esta
+    // conexión (marketplaceProductId != null); los no publicados no tienen
+    // nada que actualizar. Ordenamos por lastSyncAt asc (nulls first) para
+    // que cada ciclo tome los más rancios y los que quedaron en error, rotando
+    // por todo el catálogo a lo largo de varios ciclos (cada 15 min).
     const isFullScan = !productIds?.length
     if (isFullScan) {
-      whereClause.marketplaceMappings = {
-        some: { connectionId, marketplaceProductId: { not: null }, syncStatus: { not: 'synced' } },
-      }
+      const batch = await this.prisma.marketplaceMapping.findMany({
+        where: {
+          connectionId,
+          marketplaceProductId: { not: null },
+          product: { tenantId, status: 'active' },
+        },
+        select: { productId: true },
+        orderBy: [{ lastSyncAt: { sort: 'asc', nulls: 'first' } }],
+        take: 300,
+      })
+      whereClause.id = { in: batch.map((b) => b.productId) }
     }
 
     const products = await this.prisma.product.findMany({
@@ -262,9 +276,6 @@ export class SyncService {
         },
         marketplaceMappings: { where: { connectionId } },
       },
-      // Límite de batch en full-scan para no colgar el worker. Los restantes se
-      // procesan en ciclos siguientes del cron (cada 15 min).
-      ...(isFullScan ? { take: 300, orderBy: { updatedAt: 'asc' } } : {}),
     })
 
     // El cron usa el precio calculado por marketplace (comisión + margen +
