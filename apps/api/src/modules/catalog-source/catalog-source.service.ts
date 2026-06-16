@@ -180,13 +180,28 @@ export class CatalogSourceService {
     // Pausa entre páginas si el driver la pide (WonderStore rate-limitea).
     const pageDelayMs = driver.catalogCapabilities?.pageDelayMs ?? 0
 
+    // SKUs que el origen efectivamente devolvió en esta corrida. Al final, los
+    // productos publicados que NO estén en este set son candidatos a eliminados
+    // del origen (ver bloque de detección de eliminados más abajo).
+    const seenSkus = new Set<string>()
+    // Si el scan no llegó hasta el final (rompió por error de paginación o por
+    // el safety brake), NO podemos confiar en seenSkus para purgar: un import
+    // parcial marcaría como "ausentes" productos que sí existen. Solo purgamos
+    // cuando el catálogo se recorrió completo.
+    let fullScanCompleted = false
+
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const page = await driver.getProducts(credentials, config, offset, pageSize)
-      if (!page.items.length) break
+      if (!page.items.length) {
+        fullScanCompleted = true
+        break
+      }
 
       for (const remote of page.items) {
         stats.scanned++
+        const seen = remote.externalSku || remote.externalId
+        if (seen) seenSkus.add(String(seen))
         try {
           await this.upsertProductFromRemote(tenantId, conn.id, warehouse.id, remote, {
             syncProducts: shouldSyncProducts,
@@ -204,12 +219,38 @@ export class CatalogSourceService {
       }
 
       offset += page.items.length
-      if (!page.hasMore) break
+      if (!page.hasMore) {
+        fullScanCompleted = true
+        break
+      }
       // Safety brake: stop después de 50k para evitar imports descontrolados.
       // WonderStore puede tener catálogos >15k; EYLSTORE ~750.
       if (offset >= 50000) break
       // Respeta el rate-limit del upstream entre páginas.
       if (pageDelayMs > 0) await new Promise((r) => setTimeout(r, pageDelayMs))
+    }
+
+    // ── Detección de productos eliminados del origen ─────────────────────────
+    // Regla del negocio: si un producto deja de estar en la API del catalog
+    // source (el operador lo "saca" del origen), debe quedar en stock 0 en los
+    // marketplaces para que no se siga vendiendo algo que ya no existe. El
+    // import normal NO lo cubre porque solo actualiza lo que el origen devuelve;
+    // un producto borrado simplemente deja de visitarse y su stock queda
+    // congelado. Aquí cerramos ese gap.
+    if (shouldSyncStock && fullScanCompleted) {
+      try {
+        const removed = await this.deactivateRemovedProducts(
+          tenantId,
+          conn.id,
+          driver,
+          credentials,
+          config,
+          seenSkus,
+        )
+        ;(stats as any).removedFromSource = removed
+      } catch (err: any) {
+        this.logger.error(`deactivateRemovedProducts [${conn.provider}] failed: ${err?.message}`)
+      }
     }
 
     await this.prisma.connection.update({
@@ -221,9 +262,100 @@ export class CatalogSourceService {
     })
 
     this.logger.log(
-      `Catalog import [${conn.provider}] tenant=${tenantId} scanned=${stats.scanned} created=${stats.created} updated=${stats.updated} unchanged=${stats.unchanged} errors=${stats.errors}`,
+      `Catalog import [${conn.provider}] tenant=${tenantId} scanned=${stats.scanned} created=${stats.created} updated=${stats.updated} unchanged=${stats.unchanged} errors=${stats.errors} removed=${(stats as any).removedFromSource ?? 0}`,
     )
     return stats
+  }
+
+  // Pone en stock 0 (y por fan-out, pausa en los marketplaces) los productos
+  // publicados desde este catalog source que YA NO aparecieron en la última
+  // corrida completa del origen y que se confirman ausentes por findBySku
+  // (404). Devuelve cuántos se desactivaron.
+  //
+  // Salvaguardas:
+  //  - Solo corre tras un scan COMPLETO (fullScanCompleted) — un import parcial
+  //    no debe purgar.
+  //  - Doble confirmación por findBySku: si el driver todavía lo encuentra, NO
+  //    se toca (el listado paginado puede tener falsos negativos; by-sku es la
+  //    fuente de verdad).
+  //  - Circuit breaker: si los "no vistos" superan el 30% de los publicados,
+  //    abortamos y solo logueamos. Eso indica un origen caído / scan corrupto,
+  //    no una baja real de productos.
+  private async deactivateRemovedProducts(
+    tenantId: string,
+    connectionId: string,
+    driver: any,
+    credentials: Record<string, string>,
+    config: Record<string, unknown> | undefined,
+    seenSkus: Set<string>,
+  ): Promise<number> {
+    // findBySku es opcional en la interfaz del driver. Sin él no podemos
+    // confirmar ausencia de forma segura → no purgamos.
+    if (typeof driver.findBySku !== 'function') return 0
+
+    // Productos activos publicados en ESTE catalog source (tienen mapping con
+    // marketplaceProductId). Solo consideramos los que NO se vieron en el scan.
+    const published = await this.prisma.product.findMany({
+      where: {
+        tenantId,
+        status: 'active',
+        marketplaceMappings: {
+          some: { connectionId, marketplaceProductId: { not: null } },
+        },
+      },
+      select: {
+        id: true,
+        sku: true,
+        inventory: {
+          where: { variantId: null, warehouse: { warehouseType: { in: ['online', 'store'] } } },
+          select: { id: true, quantity: true },
+        },
+      },
+    })
+
+    const candidates = published.filter((p) => p.sku && !seenSkus.has(String(p.sku)))
+    if (candidates.length === 0) return 0
+
+    // Circuit breaker: una baja masiva casi siempre significa que el origen
+    // respondió mal, no que el operador sacó medio catálogo.
+    const ratio = candidates.length / Math.max(1, published.length)
+    if (ratio > 0.3) {
+      this.logger.warn(
+        `deactivateRemovedProducts: ${candidates.length}/${published.length} (${Math.round(
+          ratio * 100,
+        )}%) no aparecieron en el scan — supera el 30%, ABORTANDO purga por seguridad (posible origen caído).`,
+      )
+      return 0
+    }
+
+    let deactivated = 0
+    for (const p of candidates) {
+      // Confirmación dura: ¿el origen realmente ya no lo tiene?
+      let stillExists = true
+      try {
+        const found = await driver.findBySku(credentials, String(p.sku), config)
+        stillExists = Array.isArray(found) ? found.length > 0 : !!found
+      } catch {
+        // Error de red consultando by-sku → NO arriesgamos, lo dejamos como está.
+        stillExists = true
+      }
+      if (stillExists) continue
+
+      // Confirmado ausente → stock 0 en SC + fan-out a marketplaces.
+      const hadStock = p.inventory.some((i) => i.quantity !== 0)
+      for (const inv of p.inventory) {
+        if (inv.quantity !== 0) {
+          await this.prisma.inventory.update({ where: { id: inv.id }, data: { quantity: 0 } })
+        }
+      }
+      if (hadStock || p.inventory.length > 0) {
+        // pushStockToMarketplaces excluye la propia conexión del catalog source.
+        await this.inventoryService.pushStockToMarketplaces(tenantId, p.id, 0, connectionId)
+        deactivated++
+        this.logger.log(`Producto SKU ${p.sku} eliminado del origen → stock 0 + pausado en marketplaces`)
+      }
+    }
+    return deactivated
   }
 
   // Cheap variant: only refresh stock, no product mutations.
