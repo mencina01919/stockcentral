@@ -20,6 +20,8 @@ import {
 //   GET  /products/{slug}                    detalle
 //   GET  /stock/by-sku/{sku}                 stockTiendas + stockOnline + stockTotal
 //   POST /stock/reduce                       descuento idempotente por clientOrderId
+// STOCK VENDIBLE: solo `stockTiendas` (tiendas físicas). `stockOnline` NO se
+// comercializa por este canal y NO se cuenta. Usar stockTotal causaba sobreventa.
 // Rate limits: 60/min get products · 120/min stock · 120/min reduce.
 // Errores: 401/403 auth · 404 SKU_NOT_FOUND/SLUG_NOT_FOUND · 409 INSUFFICIENT_STOCK · 429 con Retry-After.
 
@@ -177,31 +179,26 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       ) || data[0]
       if (match) {
         const mapped = this.mapProduct(match)
-        // El stock real lo tomamos del endpoint stock (es más fresco).
-        const stockTotal = Number(
-          stockResp.stockTotal ??
-            (Number(stockResp.stockTiendas || 0) + Number(stockResp.stockOnline || 0)),
-        )
-        return [{ ...mapped, stock: stockTotal }]
+        // Stock vendible = SOLO tiendas físicas (el online no se comercializa).
+        // Lo tomamos del endpoint stock (es más fresco).
+        const stockTiendas = Number(stockResp.stockTiendas || 0)
+        return [{ ...mapped, stock: stockTiendas }]
       }
     } catch {
       // si /products?q= no soporta el filtro o falla, caemos al fallback.
     }
 
     // 3) Fallback: devolver mínimo con el sku como externalId.
-    const stockTotal = Number(
-      stockResp.stockTotal ??
-        (Number(stockResp.stockTiendas || 0) + Number(stockResp.stockOnline || 0)),
-    )
+    const stockTiendas = Number(stockResp.stockTiendas || 0)
     return [
       {
         externalId: String(sku),
         externalSku: String(sku),
         title: '',
         price: 0,
-        stock: stockTotal,
+        stock: stockTiendas,
         images: [],
-        status: stockTotal > 0 ? 'active' : 'paused',
+        status: stockTiendas > 0 ? 'active' : 'paused',
         rawData: stockResp,
       },
     ]
@@ -240,10 +237,8 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       const r = await client.get(`/stock/by-sku/${encodeURIComponent(externalId)}`)
       const body = r.data?.data || r.data
       sku = String(body.sku ?? externalId)
-      currentStock = Number(
-        body.stockTotal ??
-          (Number(body.stockTiendas || 0) + Number(body.stockOnline || 0)),
-      )
+      // Stock vendible = SOLO tiendas físicas (el online no se comercializa).
+      currentStock = Number(body.stockTiendas || 0)
     } catch (err: any) {
       if (err?.response?.status !== 404) {
         return {
@@ -259,10 +254,8 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       try {
         const r2 = await client.get(`/stock/by-sku/${encodeURIComponent(sku)}`)
         const body = r2.data?.data || r2.data
-        currentStock = Number(
-          body.stockTotal ??
-            (Number(body.stockTiendas || 0) + Number(body.stockOnline || 0)),
-        )
+        // Stock vendible = SOLO tiendas físicas (el online no se comercializa).
+        currentStock = Number(body.stockTiendas || 0)
       } catch (err2: any) {
         return {
           success: false,
@@ -384,13 +377,11 @@ export class WonderStoreDriver implements IMarketplaceDriver {
   }
 
   private mapProduct(data: any): MarketplaceProduct {
-    // Stock: usar stockTotal si viene; sino sumar tiendas + online.
-    const stock = Number(
-      data.stockTotal ??
-        data.stock?.total ??
-        (Number(data.stockTiendas ?? data.stock?.tiendas ?? 0) +
-          Number(data.stockOnline ?? data.stock?.online ?? 0)),
-    )
+    // Stock vendible = SOLO stock de tiendas físicas (stockTiendas).
+    // El stock online (stockOnline) NO se comercializa por este canal, así que
+    // NO se cuenta. Usar stockTotal (tiendas + online) inflaba el stock y
+    // causaba sobreventa: un producto con tiendas=4/online=5 se publicaba con 9.
+    const stock = Number(data.stockTiendas ?? data.stock?.tiendas ?? 0)
 
     // Precio: WonderStore puede exponer prices.normal / price / sale_price.
     // Tomamos el primero válido > 0.
