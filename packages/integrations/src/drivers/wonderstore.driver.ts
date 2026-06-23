@@ -29,6 +29,16 @@ const DEFAULT_BASE_URL = 'https://wonderstore.cl/api/v1'
 const PAGE_SIZE = 50
 const SLUG_CACHE_TTL_MS = 10 * 60 * 1000
 
+// Regla de negocio: NO vender la última unidad. Si en tiendas físicas solo
+// queda 1 (o menos), el stock vendible para marketplaces es 0 → ML pausa el
+// item (out_of_stock). Evita vender el único ejemplar (suele ser muestra de
+// exhibición / reservado). Con 2+ unidades se vende normal. Esta es la ÚNICA
+// fuente de la regla: todos los cálculos de stock del driver pasan por aquí.
+function sellableStock(stockTiendas: number): number {
+  const t = Number(stockTiendas) || 0
+  return t <= 1 ? 0 : t
+}
+
 export class WonderStoreDriver implements IMarketplaceDriver {
   readonly provider = 'wonderstore'
   readonly supportsWriteSync = true
@@ -179,26 +189,27 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       ) || data[0]
       if (match) {
         const mapped = this.mapProduct(match)
-        // Stock vendible = SOLO tiendas físicas (el online no se comercializa).
-        // Lo tomamos del endpoint stock (es más fresco).
-        const stockTiendas = Number(stockResp.stockTiendas || 0)
-        return [{ ...mapped, stock: stockTiendas }]
+        // Stock vendible = SOLO tiendas físicas (el online no se comercializa),
+        // y la última unidad no se vende (sellableStock). Lo tomamos del
+        // endpoint stock (es más fresco).
+        const stock = sellableStock(Number(stockResp.stockTiendas || 0))
+        return [{ ...mapped, stock }]
       }
     } catch {
       // si /products?q= no soporta el filtro o falla, caemos al fallback.
     }
 
     // 3) Fallback: devolver mínimo con el sku como externalId.
-    const stockTiendas = Number(stockResp.stockTiendas || 0)
+    const stock = sellableStock(Number(stockResp.stockTiendas || 0))
     return [
       {
         externalId: String(sku),
         externalSku: String(sku),
         title: '',
         price: 0,
-        stock: stockTiendas,
+        stock,
         images: [],
-        status: stockTiendas > 0 ? 'active' : 'paused',
+        status: stock > 0 ? 'active' : 'paused',
         rawData: stockResp,
       },
     ]
@@ -381,7 +392,8 @@ export class WonderStoreDriver implements IMarketplaceDriver {
     // El stock online (stockOnline) NO se comercializa por este canal, así que
     // NO se cuenta. Usar stockTotal (tiendas + online) inflaba el stock y
     // causaba sobreventa: un producto con tiendas=4/online=5 se publicaba con 9.
-    const stock = Number(data.stockTiendas ?? data.stock?.tiendas ?? 0)
+    // Además, la última unidad no se vende (ver sellableStock).
+    const stock = sellableStock(Number(data.stockTiendas ?? data.stock?.tiendas ?? 0))
 
     // Precio: WonderStore puede exponer prices.normal / price / sale_price.
     // Tomamos el primero válido > 0.
