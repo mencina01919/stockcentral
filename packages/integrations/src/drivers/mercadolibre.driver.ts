@@ -610,10 +610,16 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       const res = await client.post('/items', payload)
       const itemId: string = res.data.id
 
-      // ML requires a separate request to set the description
-      const descText: string = fd.description || product.description || product.title || ''
-      if (descText) {
-        await client.post(`/items/${itemId}/description`, { plain_text: descText }).catch(() => {})
+      // ML requires a separate request to set the description.
+      // skipDescription: si el mapping lo marca, NO se envía descripción (se
+      // deja vacía en ML). Se usa para productos cuya descripción de origen es
+      // de mala calidad / engañosa y debe quedar en blanco hasta tener una
+      // buena (evita riesgo de baneo por descripciones autogeneradas).
+      if (!fd.skipDescription) {
+        const descText: string = fd.description || product.description || product.title || ''
+        if (descText) {
+          await client.post(`/items/${itemId}/description`, { plain_text: descText }).catch(() => {})
+        }
       }
 
       return { success: true, externalId: itemId, rawResponse: res.data }
@@ -722,7 +728,10 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
 
       // Update description separately — solo para items custom. Catalog
       // items tienen description heredada del producto del catálogo.
-      if (!isCatalogItem) {
+      // skipDescription: si el mapping lo marca, NO se toca la descripción en
+      // ML (se deja como esté, típicamente vacía). Para productos cuya
+      // descripción de origen es de mala calidad / engañosa (riesgo de baneo).
+      if (!isCatalogItem && !fd.skipDescription) {
         const descText: string = fd.description || product.description || ''
         if (descText) {
           await client.put(`/items/${externalId}/description`, { plain_text: descText }).catch(() => {})
