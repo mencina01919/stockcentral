@@ -20,8 +20,10 @@ import {
 //   GET  /products/{slug}                    detalle
 //   GET  /stock/by-sku/{sku}                 stockTiendas + stockOnline + stockTotal
 //   POST /stock/reduce                       descuento idempotente por clientOrderId
-// STOCK VENDIBLE: solo `stockTiendas` (tiendas físicas). `stockOnline` NO se
-// comercializa por este canal y NO se cuenta. Usar stockTotal causaba sobreventa.
+// STOCK VENDIBLE: `stockTiendas` + `stockPropio`. `stockOnline` NO se
+// comercializa por este canal y NO se cuenta. NO usar stockTotal (= tiendas +
+// online + propio) porque incluye el online → sobreventa. La API agregó
+// stockPropio en jul-2026; antes solo se usaba stockTiendas.
 // Rate limits: 60/min get products · 120/min stock · 120/min reduce.
 // Errores: 401/403 auth · 404 SKU_NOT_FOUND/SLUG_NOT_FOUND · 409 INSUFFICIENT_STOCK · 429 con Retry-After.
 
@@ -29,14 +31,28 @@ const DEFAULT_BASE_URL = 'https://wonderstore.cl/api/v1'
 const PAGE_SIZE = 50
 const SLUG_CACHE_TTL_MS = 10 * 60 * 1000
 
-// Regla de negocio: NO vender la última unidad. Si en tiendas físicas solo
-// queda 1 (o menos), el stock vendible para marketplaces es 0 → ML pausa el
-// item (out_of_stock). Evita vender el único ejemplar (suele ser muestra de
-// exhibición / reservado). Con 2+ unidades se vende normal. Esta es la ÚNICA
-// fuente de la regla: todos los cálculos de stock del driver pasan por aquí.
-function sellableStock(stockTiendas: number): number {
-  const t = Number(stockTiendas) || 0
-  return t <= 1 ? 0 : t
+// Stock vendible para marketplaces desde WonderStore.
+//
+// FUENTES: `stockTiendas` (tiendas físicas) + `stockPropio` (stock propio de
+// WonderStore, ej. productos cargados directo). El `stockOnline` NO se
+// comercializa por este canal y NUNCA se cuenta. (La API expone stockTotal =
+// tiendas + online + propio, por eso NO se usa stockTotal directamente.)
+//
+// REGLA última unidad: si el vendible resultante es 1 (o menos), se publica 0
+// → ML pausa el item (out_of_stock). Evita vender el único ejemplar (suele ser
+// muestra de exhibición / reservado). Con 2+ se vende normal.
+//
+// Esta es la ÚNICA fuente de la regla: todos los cálculos de stock del driver
+// pasan por aquí. `body` es el objeto de /stock/by-sku o del listado.
+function rawSellable(body: any): number {
+  const tiendas = Number(body?.stockTiendas ?? body?.stock?.tiendas ?? 0) || 0
+  const propio = Number(body?.stockPropio ?? body?.stock?.propio ?? 0) || 0
+  return tiendas + propio
+}
+
+function sellableStock(body: any): number {
+  const vendible = rawSellable(body)
+  return vendible <= 1 ? 0 : vendible
 }
 
 export class WonderStoreDriver implements IMarketplaceDriver {
@@ -189,10 +205,9 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       ) || data[0]
       if (match) {
         const mapped = this.mapProduct(match)
-        // Stock vendible = SOLO tiendas físicas (el online no se comercializa),
-        // y la última unidad no se vende (sellableStock). Lo tomamos del
-        // endpoint stock (es más fresco).
-        const stock = sellableStock(Number(stockResp.stockTiendas || 0))
+        // Stock vendible = tiendas + propio (ver sellableStock). Lo tomamos del
+        // endpoint stock (es más fresco que el listado).
+        const stock = sellableStock(stockResp)
         return [{ ...mapped, stock }]
       }
     } catch {
@@ -200,7 +215,7 @@ export class WonderStoreDriver implements IMarketplaceDriver {
     }
 
     // 3) Fallback: devolver mínimo con el sku como externalId.
-    const stock = sellableStock(Number(stockResp.stockTiendas || 0))
+    const stock = sellableStock(stockResp)
     return [
       {
         externalId: String(sku),
@@ -248,8 +263,9 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       const r = await client.get(`/stock/by-sku/${encodeURIComponent(externalId)}`)
       const body = r.data?.data || r.data
       sku = String(body.sku ?? externalId)
-      // Stock vendible = SOLO tiendas físicas (el online no se comercializa).
-      currentStock = Number(body.stockTiendas || 0)
+      // Stock vendible = tiendas + propio (sin la regla de última unidad: aquí
+      // es el stock físico real para calcular el delta del /stock/reduce).
+      currentStock = rawSellable(body)
     } catch (err: any) {
       if (err?.response?.status !== 404) {
         return {
@@ -265,8 +281,8 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       try {
         const r2 = await client.get(`/stock/by-sku/${encodeURIComponent(sku)}`)
         const body = r2.data?.data || r2.data
-        // Stock vendible = SOLO tiendas físicas (el online no se comercializa).
-        currentStock = Number(body.stockTiendas || 0)
+        // Stock vendible = tiendas + propio (stock físico real para el delta).
+        currentStock = rawSellable(body)
       } catch (err2: any) {
         return {
           success: false,
@@ -388,12 +404,9 @@ export class WonderStoreDriver implements IMarketplaceDriver {
   }
 
   private mapProduct(data: any): MarketplaceProduct {
-    // Stock vendible = SOLO stock de tiendas físicas (stockTiendas).
-    // El stock online (stockOnline) NO se comercializa por este canal, así que
-    // NO se cuenta. Usar stockTotal (tiendas + online) inflaba el stock y
-    // causaba sobreventa: un producto con tiendas=4/online=5 se publicaba con 9.
-    // Además, la última unidad no se vende (ver sellableStock).
-    const stock = sellableStock(Number(data.stockTiendas ?? data.stock?.tiendas ?? 0))
+    // Stock vendible = tiendas + propio (el online NO se comercializa). La
+    // última unidad tampoco se vende. Todo centralizado en sellableStock.
+    const stock = sellableStock(data)
 
     // Precio: WonderStore puede exponer prices.normal / price / sale_price.
     // Tomamos el primero válido > 0.
