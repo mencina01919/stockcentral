@@ -27,9 +27,11 @@ import {
 // Rate limits: 60/min get products · 120/min stock · 120/min reduce.
 // Errores: 401/403 auth · 404 SKU_NOT_FOUND/SLUG_NOT_FOUND · 409 INSUFFICIENT_STOCK · 429 con Retry-After.
 
-// build-bump 2026-07-09 stockPropio
 const DEFAULT_BASE_URL = 'https://wonderstore.cl/api/v1'
-const PAGE_SIZE = 50
+// perPage=100: la API de WonderStore es consistente con este tamaño (total ==
+// suma de items en las 50 páginas). Con 50 hacía el doble de requests, más
+// frágil ante rate-limit y pérdida de páginas.
+const PAGE_SIZE = 100
 const SLUG_CACHE_TTL_MS = 10 * 60 * 1000
 
 // Stock vendible para marketplaces desde WonderStore.
@@ -136,8 +138,27 @@ export class WonderStoreDriver implements IMarketplaceDriver {
     limit = PAGE_SIZE,
   ): Promise<PaginatedResult<MarketplaceProduct>> {
     const client = this.buildClient(credentials, config)
+    // El catalog sync avanza offset += items.length en cada vuelta. Pedimos la
+    // página que contiene ese offset. Para no perder productos, alineamos el
+    // offset al múltiplo de PAGE_SIZE (el caller avanza de a PAGE_SIZE, así que
+    // siempre cae alineado; si no, tomamos la página completa desde el inicio
+    // de ese bloque). Devolvemos la página COMPLETA — nada de slice frágil.
     const page = Math.floor(offset / PAGE_SIZE) + 1
-    const res = await client.get('/products', { params: { page, perPage: PAGE_SIZE } })
+
+    // Reintento por página: si una página falla (red/rate-limit), reintentamos
+    // en vez de devolver vacío (que cortaría el scan y perdería el resto del
+    // catálogo).
+    let res: any = null
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        res = await client.get('/products', { params: { page, perPage: PAGE_SIZE } })
+        break
+      } catch (err: any) {
+        if (attempt === 3) throw err
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
+      }
+    }
+
     // WonderStore devuelve: { items, page, perPage, total, totalPages }.
     // Mantenemos fallbacks por si el shape cambia (data/products/array directo).
     const data: any[] =
@@ -150,16 +171,18 @@ export class WonderStoreDriver implements IMarketplaceDriver {
       Number(res.data?.meta?.total) ||
       Number(res.data?.pagination?.total) ||
       data.length
+    const totalPages: number = Number(res.data?.totalPages) || Math.ceil(total / PAGE_SIZE)
 
-    const skipInPage = offset - (page - 1) * PAGE_SIZE
-    const items = data.slice(skipInPage, skipInPage + limit).map((p) => this.mapProduct(p))
+    const items = data.map((p) => this.mapProduct(p))
 
+    // hasMore por número de página (robusto): hay más mientras no lleguemos a la
+    // última página reportada por la API.
     return {
       items,
       total,
       offset,
-      limit,
-      hasMore: offset + items.length < total,
+      limit: PAGE_SIZE,
+      hasMore: page < totalPages,
     }
   }
 
