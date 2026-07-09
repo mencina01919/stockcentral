@@ -27,6 +27,7 @@ import {
 // Rate limits: 60/min get products · 120/min stock · 120/min reduce.
 // Errores: 401/403 auth · 404 SKU_NOT_FOUND/SLUG_NOT_FOUND · 409 INSUFFICIENT_STOCK · 429 con Retry-After.
 
+// build-bump 2026-07-09 stockPropio
 const DEFAULT_BASE_URL = 'https://wonderstore.cl/api/v1'
 const PAGE_SIZE = 50
 const SLUG_CACHE_TTL_MS = 10 * 60 * 1000
