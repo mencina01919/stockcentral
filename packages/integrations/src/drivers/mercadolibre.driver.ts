@@ -688,21 +688,23 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
       const condition = fd.condition
       const listingTypeId = fd.listingTypeId
 
-      if (price !== undefined)       payload.price              = price
-      if (stock !== undefined)       payload.available_quantity = stock
-
-      // SKU del seller: lo mandamos SIEMPRE (también en catalog items, ML lo
-      // acepta) para que el SKU del maestro quede registrado en ML al
-      // sincronizar, sin depender de que el operador haya usado "Vincular".
-      // product.sku viene del maestro. seller_custom_field es el campo
-      // top-level; attributes[SELLER_SKU] es el que muestra el portal.
-      if (product.sku) {
-        payload.seller_custom_field = product.sku
-      }
-
-      // Campos NO permitidos en catalog items — solo los mandamos para
-      // items custom del seller.
+      // Campos NO permitidos en catalog items (items con user_product_id) — solo
+      // los mandamos para items custom del seller.
+      //
+      // IMPORTANTE: price, available_quantity y seller_custom_field TAMPOCO son
+      // modificables vía PUT /items en catalog items. ML responde
+      // `price.not_modifiable` / `available_quantity is not modifiable` /
+      // `seller_custom_field is not modifiable` y falla TODO el update. En
+      // catalog items el precio y el SKU los gestiona el user_product, y el
+      // stock se sincroniza aparte vía updateStock (PUT /user-products/.../stock).
+      // Por eso todo esto va dentro del if (!isCatalogItem).
       if (!isCatalogItem) {
+        if (price !== undefined)       payload.price              = price
+        if (stock !== undefined)       payload.available_quantity = stock
+        // SKU del seller: seller_custom_field es el campo top-level;
+        // attributes[SELLER_SKU] es el que muestra el portal.
+        if (product.sku) payload.seller_custom_field = product.sku
+
         if (title !== undefined)       payload.title              = title
         if (condition !== undefined)   payload.condition          = condition
         if (listingTypeId !== undefined) payload.listing_type_id  = listingTypeId
@@ -724,7 +726,13 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
         }
       }
 
-      await client.put(`/items/${externalId}`, payload)
+      // Si no queda nada modificable en el payload (típico en catalog items:
+      // price/stock/sku/title/attrs los gestiona ML), omitimos el PUT /items
+      // para no enviar un body vacío. El stock de catalog items se sincroniza
+      // por updateStock (user-products). Igual seguimos al bloque de descripción.
+      if (Object.keys(payload).length > 0) {
+        await client.put(`/items/${externalId}`, payload)
+      }
 
       // Update description separately — solo para items custom. Catalog
       // items tienen description heredada del producto del catálogo.
