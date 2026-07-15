@@ -498,6 +498,55 @@ export class MercadoLibreDriver implements IMarketplaceDriver {
     }
   }
 
+  // Lista TODOS los items ACTIVOS del seller con su SKU (seller_custom_field)
+  // y user_product_id. Se usa para detectar publicaciones huérfanas/duplicadas
+  // que StockCentral no tiene mapeadas: un mismo SKU puede tener 2 items en ML
+  // (uno mapeado, otro no), y el no-mapeado se sigue vendiendo aunque el
+  // producto ya no exista en el origen. Devuelve [{ externalId, externalSku,
+  // userProductId }]. Items sin seller_custom_field vienen con externalSku
+  // vacío (no verificables por SKU).
+  async listActiveItems(
+    credentials: DriverCredentials,
+  ): Promise<Array<{ externalId: string; externalSku: string; userProductId?: string }>> {
+    const client = this.buildClient(credentials.accessToken)
+    const sellerId = credentials.sellerId
+    const out: Array<{ externalId: string; externalSku: string; userProductId?: string }> = []
+
+    let scrollId: string | undefined
+    let safety = 0
+    const MAX_PAGES = 200 // 200 * 100 = 20.000 items máx
+    while (safety++ < MAX_PAGES) {
+      const params: Record<string, any> = { status: 'active', limit: 100, search_type: 'scan' }
+      if (scrollId) params.scroll_id = scrollId
+      let res
+      try {
+        res = await client.get(`/users/${sellerId}/items/search`, { params })
+      } catch (err: any) {
+        if (err?.response?.status === 400 && safety === 1) break
+        throw err
+      }
+      const ids: string[] = res.data?.results || []
+      scrollId = res.data?.scroll_id
+      if (!ids.length) break
+      for (const chunk of this.chunkArray(ids, 20)) {
+        const detailRes = await client.get('/items', {
+          params: { ids: chunk.join(','), attributes: 'id,seller_custom_field,user_product_id' },
+        })
+        for (const entry of detailRes.data) {
+          if (entry.code === 200 && entry.body?.id) {
+            out.push({
+              externalId: entry.body.id,
+              externalSku: entry.body.seller_custom_field || '',
+              userProductId: entry.body.user_product_id || undefined,
+            })
+          }
+        }
+      }
+      if (!scrollId || ids.length < 100) break
+    }
+    return out
+  }
+
   async getProduct(credentials: DriverCredentials, externalId: string): Promise<MarketplaceProduct | null> {
     try {
       const client = this.buildClient(credentials.accessToken)

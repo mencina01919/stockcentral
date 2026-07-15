@@ -251,6 +251,20 @@ export class CatalogSourceService {
       } catch (err: any) {
         this.logger.error(`deactivateRemovedProducts [${conn.provider}] failed: ${err?.message}`)
       }
+
+      // Barrido de items HUÉRFANOS/DUPLICADOS en los marketplaces target.
+      // deactivateRemovedProducts solo ve items con mapping en SC. Pero en ML
+      // puede haber publicaciones del mismo SKU que SC NO tiene mapeadas (un
+      // SKU con 2 items: uno mapeado, otro no). El no-mapeado se sigue vendiendo
+      // aunque el producto ya no exista en el origen. Este barrido consulta el
+      // catálogo REAL del marketplace por seller_custom_field y pausa los
+      // activos cuyo SKU no esté vivo en el origen.
+      try {
+        const orphaned = await this.pauseOrphanedMarketplaceItems(tenantId, conn.id, seenSkus)
+        ;(stats as any).orphansPaused = orphaned
+      } catch (err: any) {
+        this.logger.error(`pauseOrphanedMarketplaceItems failed: ${err?.message}`)
+      }
     }
 
     await this.prisma.connection.update({
@@ -262,7 +276,7 @@ export class CatalogSourceService {
     })
 
     this.logger.log(
-      `Catalog import [${conn.provider}] tenant=${tenantId} scanned=${stats.scanned} created=${stats.created} updated=${stats.updated} unchanged=${stats.unchanged} errors=${stats.errors} removed=${(stats as any).removedFromSource ?? 0}`,
+      `Catalog import [${conn.provider}] tenant=${tenantId} scanned=${stats.scanned} created=${stats.created} updated=${stats.updated} unchanged=${stats.unchanged} errors=${stats.errors} removed=${(stats as any).removedFromSource ?? 0} orphansPaused=${(stats as any).orphansPaused ?? 0}`,
     )
     return stats
   }
@@ -356,6 +370,120 @@ export class CatalogSourceService {
       }
     }
     return deactivated
+  }
+
+  // Pausa las publicaciones ACTIVAS en los marketplaces target cuyo SKU
+  // (seller_custom_field) YA NO esté vivo en el origen (no está en seenSkus).
+  // Cubre el gap de deactivateRemovedProducts: items huérfanos/duplicados que
+  // SC no tiene mapeados y que por eso nunca se pausaban (se seguían vendiendo
+  // aunque el producto estuviera archivado en el origen).
+  //
+  // Salvaguardas (idénticas a deactivateRemovedProducts):
+  //  - Solo corre tras un scan COMPLETO del origen (garantizado por el caller).
+  //  - Confirmación por findBySku: el SKU debe estar realmente ausente (404).
+  //  - Circuit breaker: si los "a pausar" superan el 30% de los activos del
+  //    marketplace, aborta (indica origen caído / scan incompleto).
+  private async pauseOrphanedMarketplaceItems(
+    tenantId: string,
+    catalogConnectionId: string,
+    seenSkus: Set<string>,
+  ): Promise<number> {
+    // Marketplaces target del tenant: conexiones distintas del catalog source,
+    // conectadas, con syncEnabled, cuyo driver soporte listActiveItems + updateStock.
+    const targets = await this.prisma.connection.findMany({
+      where: {
+        tenantId,
+        status: 'connected',
+        syncEnabled: true,
+        id: { not: catalogConnectionId },
+      },
+      select: { id: true, provider: true, credentials: true, config: true },
+    })
+
+    let totalPaused = 0
+    for (const target of targets) {
+      let driver: any
+      try {
+        driver = getDriver(target.provider)
+      } catch {
+        continue
+      }
+      if (typeof driver.listActiveItems !== 'function' || typeof driver.updateStock !== 'function') continue
+
+      const credentials = target.credentials as Record<string, string>
+      const config = target.config as Record<string, unknown> | undefined
+
+      let active: Array<{ externalId: string; externalSku: string; userProductId?: string }>
+      try {
+        active = await driver.listActiveItems(credentials, config)
+      } catch (err: any) {
+        this.logger.error(`listActiveItems [${target.provider}] failed: ${err?.message}`)
+        continue
+      }
+
+      // Candidatos: activos con SKU conocido que NO está vivo en el origen.
+      const candidates = active.filter((it) => it.externalSku && !seenSkus.has(String(it.externalSku)))
+      if (candidates.length === 0) continue
+
+      // Circuit breaker.
+      const ratio = candidates.length / Math.max(1, active.length)
+      if (ratio > 0.3) {
+        this.logger.warn(
+          `pauseOrphaned [${target.provider}]: ${candidates.length}/${active.length} (${Math.round(
+            ratio * 100,
+          )}%) activos con SKU no-vivo — supera 30%, ABORTANDO por seguridad.`,
+        )
+        continue
+      }
+
+      // Confirmación por findBySku: el scan completo + circuit breaker ya dan
+      // confianza, pero el listado paginado del origen puede tener falsos
+      // negativos (un SKU vivo que no salió en el scan). Confirmamos cada
+      // candidato contra el origen (findBySku → 404 = realmente muerto) para NO
+      // pausar productos buenos. Es el mismo criterio que deactivateRemovedProducts.
+      let paused = 0
+      for (const it of candidates) {
+        const stillAlive = await this.isSkuAliveInSource(tenantId, it.externalSku)
+        if (stillAlive) continue
+
+        try {
+          // updateStock a 0 → el driver pausa el item (out_of_stock).
+          await driver.updateStock(credentials, it.externalId, 0, config)
+          paused++
+          this.logger.log(
+            `pauseOrphaned [${target.provider}]: item ${it.externalId} SKU ${it.externalSku} pausado (huérfano/duplicado, SKU no vive en origen)`,
+          )
+        } catch (err: any) {
+          this.logger.error(`pauseOrphaned: fallo pausando ${it.externalId}: ${err?.message}`)
+        }
+      }
+      totalPaused += paused
+    }
+    return totalPaused
+  }
+
+  // Confirma si un SKU sigue vivo en el catalog source activo (via findBySku).
+  // true si existe / si no podemos confirmar (error de red → no arriesgamos).
+  private async isSkuAliveInSource(tenantId: string, sku: string): Promise<boolean> {
+    const source = await this.getActive(tenantId)
+    if (!source) return true
+    let driver: any
+    try {
+      driver = getDriver(source.provider)
+    } catch {
+      return true
+    }
+    if (typeof driver.findBySku !== 'function') return true
+    try {
+      const found = await driver.findBySku(
+        source.credentials as Record<string, string>,
+        String(sku),
+        source.config as Record<string, unknown> | undefined,
+      )
+      return Array.isArray(found) ? found.length > 0 : !!found
+    } catch {
+      return true
+    }
   }
 
   // Cheap variant: only refresh stock, no product mutations.

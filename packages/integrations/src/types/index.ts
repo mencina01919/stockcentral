@@ -197,6 +197,14 @@ export interface IMarketplaceDriver {
     title?: string,
   ): Promise<MarketplaceProduct[]>
 
+  // Lista los items ACTIVOS del seller con su SKU (seller_custom_field) y
+  // user_product_id. Opcional — lo usa el catalog source para detectar y pausar
+  // publicaciones huérfanas/duplicadas cuyo SKU ya no vive en el origen.
+  listActiveItems?(
+    credentials: DriverCredentials,
+    config?: DriverConfig,
+  ): Promise<Array<{ externalId: string; externalSku: string; userProductId?: string }>>
+
   createProduct(
     credentials: DriverCredentials,
     product: SyncProductInput,
